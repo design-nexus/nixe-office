@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-nexus-write">
+    <comment>Nexus Write document</comment>
+    <generic-icon name="x-office-document"/>
+    <glob weight="80" pattern="*.nwrite"/>
+    <magic priority="80">
+      <match type="string" value="manifest.json" offset="30"/>
+    </magic>
+  </mime-type>
+  <mime-type type="application/x-nexus-sheets">
+    <comment>Nexus Sheets spreadsheet</comment>
+    <generic-icon name="x-office-spreadsheet"/>
+    <glob weight="80" pattern="*.nsheets"/>
+    <magic priority="80">
+      <match type="string" value="&quot;format&quot;:&quot;nexus-sheets&quot;" offset="0:16384"/>
+    </magic>
+  </mime-type>
+  <mime-type type="application/x-nexus-present">
+    <comment>Nexus Present presentation</comment>
+    <generic-icon name="x-office-presentation"/>
+    <glob weight="80" pattern="*.npresent"/>
+    <magic priority="80">
+      <match type="string" value="&quot;format&quot;:&quot;nexus-present&quot;" offset="0:1024"/>
+    </magic>
+  </mime-type>
+</mime-info>

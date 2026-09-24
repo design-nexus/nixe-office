@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Nexus Sheets
+Comment=Home spreadsheets in Nexus Office Suite
+Exec=nexus-sheets %f
+Icon=x-office-spreadsheet
+Terminal=false
+Categories=Office;Spreadsheet;
+MimeType=application/x-nexus-sheets;text/csv;

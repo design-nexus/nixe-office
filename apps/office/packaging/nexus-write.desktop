@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Nexus Write
+Comment=Home documents in Nexus Office Suite
+Exec=nexus-write %f
+Icon=accessories-text-editor
+Terminal=false
+Categories=Office;WordProcessor;
+MimeType=application/x-nexus-write;

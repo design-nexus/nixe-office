@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Nexus Present
+Comment=Home presentations in Nexus Office Suite
+Exec=nexus-present %f
+Icon=x-office-presentation
+Terminal=false
+Categories=Office;Presentation;
+MimeType=application/x-nexus-present;
