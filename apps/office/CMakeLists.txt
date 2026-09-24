@@ -80,6 +80,14 @@ if(BUILD_TESTING)
     target_link_libraries(sheets-tests PRIVATE nexus-core Qt6::Test)
     add_test(NAME sheets-tests COMMAND sheets-tests)
 
+    add_executable(sheets-ui-tests tests/SheetsUiTests.cpp src/IconProvider.cpp src/IconProvider.h)
+    target_include_directories(sheets-ui-tests PRIVATE src)
+    target_link_libraries(sheets-ui-tests PRIVATE nexus-core Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Svg Qt6::Test)
+    target_compile_definitions(sheets-ui-tests PRIVATE SHEETS_EDITOR_QML_PATH="${CMAKE_CURRENT_SOURCE_DIR}/qml/SheetsEditor.qml")
+    qt_add_resources(sheets-ui-tests "sheets_ui_test_resources" PREFIX "/" FILES
+        assets/themes.json assets/icons/x.svg assets/icons/file-plus.svg assets/icons/table-2.svg)
+    add_test(NAME sheets-ui-tests COMMAND sheets-ui-tests)
+
     add_executable(present-tests tests/PresentTests.cpp)
     target_link_libraries(present-tests PRIVATE nexus-core Qt6::Test)
     add_test(NAME present-tests COMMAND present-tests)

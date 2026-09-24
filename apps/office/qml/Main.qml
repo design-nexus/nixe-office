@@ -119,8 +119,26 @@ ApplicationWindow {
         const selected = Present.currentElements.find(function(item) { return item.id === presentEditor.selectedElementId })
         colorDialog.selectedColor = target === "presentBackground" ? (Present.currentBackgroundColor || "#ffffff")
             : target === "presentText" ? (Present.currentFontColor || "#202536")
-            : target === "presentShape" ? (selected ? selected.fill : "#5273cf") : "#202329"
+            : target === "presentShape" ? (selected ? selected.fill : "#5273cf")
+            : "#202329"
         colorDialog.open()
+    }
+    function chooseSheetColor(target, button) {
+        sheetColorMenu.target = target
+        sheetColorMenu.currentColor = target === "fill"
+            ? (Sheets.fillColorAt(sheetsEditor.selectedRow, sheetsEditor.selectedColumn) || "")
+            : (Sheets.textColorAt(sheetsEditor.selectedRow, sheetsEditor.selectedColumn) || "")
+        sheetColorInput.text = sheetColorMenu.currentColor
+        showToolbarMenu(sheetColorMenu, button)
+    }
+    function applySheetColor(color) {
+        const firstRow = sheetsEditor.anchorRow
+        const firstColumn = sheetsEditor.anchorColumn
+        const lastRow = sheetsEditor.selectedRow
+        const lastColumn = sheetsEditor.selectedColumn
+        if (sheetColorMenu.target === "fill") Sheets.setRangeFillColor(firstRow, firstColumn, lastRow, lastColumn, color)
+        else Sheets.setRangeTextColor(firstRow, firstColumn, lastRow, lastColumn, color)
+        sheetColorMenu.close()
     }
     function applyFontFamily(family) {
         if (App.appId === "present") Present.setFontFamily(family)
@@ -133,11 +151,16 @@ ApplicationWindow {
     function runSheetFormatAction(action) {
         const row = sheetsEditor.selectedRow
         const column = sheetsEditor.selectedColumn
-        if (action === "general") Sheets.setNumberFormat(row, column, 0)
-        else if (action === "number") Sheets.setNumberFormat(row, column, 1)
-        else if (action === "currency") Sheets.setNumberFormat(row, column, 2)
-        else if (action === "percent") Sheets.setNumberFormat(row, column, 3)
-        else if (action === "bold") Sheets.toggleBold(row, column)
+        const firstRow = sheetsEditor.anchorRow
+        const firstColumn = sheetsEditor.anchorColumn
+        if (action === "general") Sheets.setRangeNumberFormat(firstRow, firstColumn, row, column, 0)
+        else if (action === "number") Sheets.setRangeNumberFormat(firstRow, firstColumn, row, column, 1)
+        else if (action === "currency") Sheets.setRangeNumberFormat(firstRow, firstColumn, row, column, 2)
+        else if (action === "percent") Sheets.setRangeNumberFormat(firstRow, firstColumn, row, column, 3)
+        else if (action === "bold") Sheets.toggleRangeBold(firstRow, firstColumn, row, column)
+        else if (action === "align_left") Sheets.setRangeAlignment(firstRow, firstColumn, row, column, 0)
+        else if (action === "align_center") Sheets.setRangeAlignment(firstRow, firstColumn, row, column, 1)
+        else if (action === "align_right") Sheets.setRangeAlignment(firstRow, firstColumn, row, column, 2)
         else if (action === "sort_asc") Sheets.sortBy(column, true)
         else if (action === "sort_desc") Sheets.sortBy(column, false)
         else if (action === "clear_sort") Sheets.clearSort()
@@ -220,7 +243,17 @@ ApplicationWindow {
     Timer { id: sizeSave; interval: 350; onTriggered: App.setWindowSize(window.width, window.height) }
     Shortcut { sequence: "Ctrl+Q"; onActivated: window.close() }
     Shortcut { sequence: "Ctrl+,"; onActivated: themePopup.open() }
-    Shortcut { sequence: "Escape"; onActivated: { themePopup.close(); appPopup.close() } }
+    Shortcut {
+        sequence: "Escape"
+        onActivated: {
+            if (App.appId === "sheets" && window.section === "editor") {
+                if (formulaInput.activeFocus && formulaInput.editingRow >= 0) { formulaInput.cancel(); return }
+                if (sheetsEditor.cancelEditing()) return
+            }
+            themePopup.close()
+            appPopup.close()
+        }
+    }
     Shortcut { sequence: "Ctrl+N"; onActivated: window.requestAction("new") }
     Shortcut { sequence: "Ctrl+O"; onActivated: openDialog.open() }
     Shortcut { sequence: "Ctrl+S"; enabled: window.section === "editor"; onActivated: window.requestSave() }
@@ -230,6 +263,8 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+Y"; enabled: App.appId !== "write" && window.section === "editor"; onActivated: { window.commitSheetEdits(); activeDocument.redo() } }
     Shortcut { sequence: "Ctrl+C"; enabled: App.appId === "sheets" && window.section === "editor" && !formulaInput.activeFocus && sheetsEditor.activeEditor === null; onActivated: sheetsEditor.copySelection() }
     Shortcut { sequence: "Ctrl+V"; enabled: App.appId === "sheets" && window.section === "editor" && !formulaInput.activeFocus && sheetsEditor.activeEditor === null; onActivated: sheetsEditor.pasteSelection() }
+    Shortcut { sequence: "Ctrl+D"; enabled: App.appId === "sheets" && window.section === "editor" && sheetsEditor.activeEditor === null; onActivated: sheetsEditor.fillSelectionDown() }
+    Shortcut { sequence: "Ctrl+R"; enabled: App.appId === "sheets" && window.section === "editor" && sheetsEditor.activeEditor === null; onActivated: sheetsEditor.fillSelectionRight() }
     Shortcut { sequence: "Ctrl+B"; enabled: App.appId === "write" && window.section === "editor"; onActivated: writeEditor.toggleBold() }
     Shortcut { sequence: "Ctrl+I"; enabled: App.appId === "write" && window.section === "editor"; onActivated: writeEditor.toggleItalic() }
     Shortcut { sequence: "F5"; enabled: App.appId === "present" && window.section === "editor"; onActivated: window.startSlideshow(false) }
@@ -285,8 +320,20 @@ ApplicationWindow {
                     IconButton { id: tableButton; iconName: "table-2"; helpText: "Insert table"; visible: window.width >= 1000; onClicked: window.showToolbarMenu(tableMenu, tableButton) }
                     IconButton { iconName: "settings-2"; helpText: "Page setup"; visible: window.width >= 1100; onClicked: pageSetupPopup.open() }
                 }
-                RowLayout {
+                Flickable {
+                    id: sheetToolbarScroll
                     visible: App.appId === "sheets" && window.section === "editor"
+                    Layout.fillWidth: visible
+                    Layout.preferredWidth: window.width - (window.width >= 1450 ? 365 : 165)
+                    Layout.minimumWidth: 0
+                    Layout.preferredHeight: 36
+                    clip: true
+                    contentWidth: sheetToolbar.implicitWidth
+                    contentHeight: height
+                    flickableDirection: Flickable.HorizontalFlick
+                    boundsBehavior: Flickable.StopAtBounds
+                    RowLayout {
+                    id: sheetToolbar
                     spacing: 2
                     IconButton { iconName: "arrow-left"; helpText: "Back to Home"; onClicked: window.section = "home" }
                     IconButton { iconName: "file-plus"; helpText: "New spreadsheet · Ctrl+N"; visible: window.width >= 940; onClicked: window.requestAction("new") }
@@ -296,13 +343,14 @@ ApplicationWindow {
                     IconButton { iconName: "undo-2"; helpText: "Undo · Ctrl+Z"; enabled: Sheets.canUndo; onClicked: { window.commitSheetEdits(); Sheets.undo() } }
                     IconButton { iconName: "redo-2"; helpText: "Redo · Ctrl+Shift+Z"; enabled: Sheets.canRedo; onClicked: { window.commitSheetEdits(); Sheets.redo() } }
                     Rectangle {
-                        Layout.preferredWidth: 48; Layout.preferredHeight: 32
+                        Layout.preferredWidth: sheetsEditor.anchorRow === sheetsEditor.selectedRow && sheetsEditor.anchorColumn === sheetsEditor.selectedColumn ? 48 : 88
+                        Layout.preferredHeight: 32
                         radius: 5; color: Theme.palette.raised
                         Text { anchors.centerIn: parent; text: sheetsEditor.selectionName; color: Theme.palette.accent; font.pixelSize: 11; font.weight: Font.DemiBold }
                     }
                     Text { text: "fx"; color: Theme.palette.accent; font.pixelSize: 13; font.italic: true; Layout.leftMargin: 6; Layout.rightMargin: 4 }
                     Rectangle {
-                        Layout.preferredWidth: Math.max(210, Math.min(380, window.width - 760))
+                        Layout.preferredWidth: Math.max(170, Math.min(280, window.width - 1000))
                         Layout.preferredHeight: 32
                         radius: 5
                         color: Theme.palette.raised
@@ -326,7 +374,19 @@ ApplicationWindow {
                                 Sheets.setCell(row, column, text)
                                 focus = false
                             }
+                            function cancel() {
+                                if (editingRow < 0) return
+                                const row = editingRow
+                                const column = editingColumn
+                                editingRow = -1
+                                editingColumn = -1
+                                text = Sheets.rawAt(row, column)
+                                focus = false
+                                sheetsEditor.endReference()
+                                sheetsEditor.focusGrid()
+                            }
                             onAccepted: commit()
+                            Keys.onEscapePressed: function(event) { event.accepted = true; cancel() }
                             onActiveFocusChanged: {
                                 if (activeFocus) {
                                     editingRow = sheetsEditor.selectedRow
@@ -335,12 +395,60 @@ ApplicationWindow {
                             }
                         }
                     }
-                    Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 22; Layout.leftMargin: 5; Layout.rightMargin: 5; color: Theme.palette.border; visible: window.width >= 1050 }
-                    IconButton { id: sheetFormatButton; iconName: "sliders-horizontal"; helpText: "Number format"; visible: window.width >= 1050; onClicked: window.showToolbarMenu(sheetFormatMenu, sheetFormatButton) }
-                    IconButton { iconName: "bold"; helpText: "Bold cell"; visible: window.width >= 1050; selected: Sheets.boldAt(sheetsEditor.selectedRow, sheetsEditor.selectedColumn) && Sheets.revision >= 0; onClicked: Sheets.toggleBold(sheetsEditor.selectedRow, sheetsEditor.selectedColumn) }
-                    IconButton { iconName: "arrow-up-narrow-wide"; helpText: "Sort selected column"; visible: window.width >= 1050; onClicked: Sheets.sortBy(sheetsEditor.selectedColumn, true) }
-                    IconButton { iconName: "filter"; helpText: "Filter selected column"; visible: window.width >= 1050; onClicked: filterPopup.open() }
-                    IconButton { iconName: "chart-column"; helpText: "Create chart"; visible: window.width >= 1050; onClicked: chartPopup.open() }
+                    Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 22; Layout.leftMargin: 5; Layout.rightMargin: 5; color: Theme.palette.border }
+                    IconButton { iconName: "type"; helpText: "General format"; selected: Sheets.numberFormatAt(sheetsEditor.selectedRow, sheetsEditor.selectedColumn) === 0 && Sheets.revision >= 0; onClicked: window.runSheetFormatAction("general") }
+                    IconButton { iconName: "decimal"; helpText: "Number · 2 decimals"; selected: Sheets.numberFormatAt(sheetsEditor.selectedRow, sheetsEditor.selectedColumn) === 1 && Sheets.revision >= 0; onClicked: window.runSheetFormatAction("number") }
+                    IconButton { iconName: "currency"; helpText: "Currency"; selected: Sheets.numberFormatAt(sheetsEditor.selectedRow, sheetsEditor.selectedColumn) === 2 && Sheets.revision >= 0; onClicked: window.runSheetFormatAction("currency") }
+                    IconButton { iconName: "percent"; helpText: "Percent"; selected: Sheets.numberFormatAt(sheetsEditor.selectedRow, sheetsEditor.selectedColumn) === 3 && Sheets.revision >= 0; onClicked: window.runSheetFormatAction("percent") }
+                    Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 22; Layout.leftMargin: 5; Layout.rightMargin: 5; color: Theme.palette.border }
+                    IconButton { iconName: "bold"; helpText: "Bold selected cells"; selected: Sheets.boldAt(sheetsEditor.selectedRow, sheetsEditor.selectedColumn) && Sheets.revision >= 0; onClicked: window.runSheetFormatAction("bold") }
+                    IconButton {
+                        id: sheetFillButton
+                        iconName: "palette"; helpText: "Cell fill color"
+                        onClicked: window.chooseSheetColor("fill", sheetFillButton)
+                        Rectangle {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            anchors.bottom: parent.bottom
+                            anchors.bottomMargin: 3
+                            width: 17; height: 3; radius: 1
+                            color: { Sheets.revision; return Sheets.fillColorAt(sheetsEditor.selectedRow, sheetsEditor.selectedColumn) || Theme.palette.background }
+                            border.width: 1; border.color: Theme.palette.border
+                        }
+                    }
+                    IconButton {
+                        id: sheetTextButton
+                        iconName: "type"; helpText: "Cell text color"
+                        onClicked: window.chooseSheetColor("text", sheetTextButton)
+                        Rectangle {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            anchors.bottom: parent.bottom
+                            anchors.bottomMargin: 3
+                            width: 17; height: 3; radius: 1
+                            color: { Sheets.revision; return Sheets.textColorAt(sheetsEditor.selectedRow, sheetsEditor.selectedColumn) || Theme.palette.text }
+                            border.width: 1; border.color: Theme.palette.border
+                        }
+                    }
+                    Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 22; Layout.leftMargin: 5; Layout.rightMargin: 5; color: Theme.palette.border }
+                    IconButton { iconName: "align-left"; helpText: "Align left"; selected: Sheets.alignmentAt(sheetsEditor.selectedRow, sheetsEditor.selectedColumn) === 0 && Sheets.revision >= 0; onClicked: window.runSheetFormatAction("align_left") }
+                    IconButton { iconName: "align-center"; helpText: "Align center"; selected: Sheets.alignmentAt(sheetsEditor.selectedRow, sheetsEditor.selectedColumn) === 1 && Sheets.revision >= 0; onClicked: window.runSheetFormatAction("align_center") }
+                    IconButton { iconName: "align-right"; helpText: "Align right"; selected: Sheets.alignmentAt(sheetsEditor.selectedRow, sheetsEditor.selectedColumn) === 2 && Sheets.revision >= 0; onClicked: window.runSheetFormatAction("align_right") }
+                    Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 22; Layout.leftMargin: 5; Layout.rightMargin: 5; color: Theme.palette.border }
+                    IconButton { iconName: "arrow-up-narrow-wide"; helpText: "Sort selected column"; onClicked: Sheets.sortBy(sheetsEditor.selectedColumn, true) }
+                    IconButton { iconName: "filter"; helpText: "Filter selected column"; onClicked: filterPopup.open() }
+                    IconButton { iconName: "chart-column"; helpText: "Create chart"; onClicked: chartPopup.open() }
+                    }
+                }
+                IconButton {
+                    iconName: "arrow-left"
+                    helpText: "Previous toolbar tools"
+                    visible: sheetToolbarScroll.visible && sheetToolbarScroll.contentX > 1
+                    onClicked: sheetToolbarScroll.contentX = Math.max(0, sheetToolbarScroll.contentX - 250)
+                }
+                IconButton {
+                    iconName: "arrow-right"
+                    helpText: "More toolbar tools"
+                    visible: sheetToolbarScroll.visible && sheetToolbarScroll.contentX < sheetToolbarScroll.contentWidth - sheetToolbarScroll.width - 1
+                    onClicked: sheetToolbarScroll.contentX = Math.min(sheetToolbarScroll.contentWidth - sheetToolbarScroll.width, sheetToolbarScroll.contentX + 250)
                 }
                 RowLayout {
                     visible: App.appId === "present" && window.section === "editor"
@@ -454,6 +562,7 @@ ApplicationWindow {
                 }
                 SheetsEditor {
                     id: sheetsEditor
+                    formulaBarEditor: formulaInput
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     visible: App.appId === "sheets" && window.section === "editor"
@@ -770,7 +879,7 @@ ApplicationWindow {
         width: 205
         padding: 6
         delegate: AppMenuItem {
-            iconName: text === "File" ? "file-text" : text === "Edit" ? "scissors" : text === "Format" ? "type" : "panel-left"
+            iconName: text === "File" ? "file-text" : text === "Edit" ? "scissors" : text === "Format" ? "type" : text === "Data" ? "table-2" : "panel-left"
         }
         background: Rectangle { radius: 7; color: Theme.palette.surface; border.color: Theme.palette.border }
         Menu {
@@ -885,7 +994,8 @@ ApplicationWindow {
                             else if (modelData.action === "redo") Sheets.redo()
                             else if (modelData.action === "copy") sheetsEditor.copySelection()
                             else if (modelData.action === "paste") sheetsEditor.pasteSelection()
-                            else Sheets.setCell(sheetsEditor.selectedRow, sheetsEditor.selectedColumn, "")
+                            else Sheets.clearRange(sheetsEditor.anchorRow, sheetsEditor.anchorColumn,
+                                                   sheetsEditor.selectedRow, sheetsEditor.selectedColumn)
                         }
                         else if (modelData.action === "undo") { Write.undo(); writeEditor.focusEditor() }
                         else if (modelData.action === "redo") { Write.redo(); writeEditor.focusEditor() }
@@ -901,7 +1011,7 @@ ApplicationWindow {
         }
         Menu {
             id: formatMenu
-            title: "Format"
+            title: App.appId === "sheets" ? "Data" : "Format"
             width: 270
             padding: 6
             background: Rectangle { radius: 7; color: Theme.palette.surface; border.color: Theme.palette.border }
@@ -931,12 +1041,7 @@ ApplicationWindow {
                        { label: "Align middle", icon: "align-center", action: "align:middle" },
                        { label: "Align bottom", icon: "align-center", action: "align:bottom" }]
                     : App.appId === "sheets"
-                    ? [{ label: "General", icon: "type", action: "general" },
-                       { label: "Number · 2 decimals", icon: "type", action: "number" },
-                       { label: "Currency", icon: "type", action: "currency" },
-                       { label: "Percent", icon: "type", action: "percent" },
-                       { label: "Bold cell", icon: "bold", action: "bold" },
-                       { label: "Sort column ascending", icon: "arrow-up-narrow-wide", action: "sort_asc" },
+                    ? [{ label: "Sort column ascending", icon: "arrow-up-narrow-wide", action: "sort_asc" },
                        { label: "Sort column descending", icon: "arrow-up-narrow-wide", action: "sort_desc" },
                        { label: "Clear sort", icon: "x", action: "clear_sort" },
                        { label: "Filter column…", icon: "filter", action: "filter" },
@@ -977,19 +1082,31 @@ ApplicationWindow {
             }
         }
         Menu {
+            id: viewMenu
             title: "View"
             width: 270
             padding: 6
             background: Rectangle { radius: 7; color: Theme.palette.surface; border.color: Theme.palette.border }
-            AppMenuItem { text: "Play from beginning"; iconName: "play"; shortcutLabel: "F5"; visible: App.appId === "present"; enabled: window.section === "editor"; onTriggered: window.startSlideshow(false) }
-            AppMenuItem { text: "Play from this slide"; iconName: "play"; shortcutLabel: "Shift+F5"; visible: App.appId === "present"; enabled: window.section === "editor"; onTriggered: window.startSlideshow(true) }
+            Instantiator {
+                model: App.appId === "present" ? 2 : 0
+                delegate: AppMenuItem {
+                    text: index === 0 ? "Play from beginning" : "Play from this slide"
+                    iconName: "play"
+                    shortcutLabel: index === 0 ? "F5" : "Shift+F5"
+                    enabled: window.section === "editor"
+                    onTriggered: window.startSlideshow(index === 1)
+                }
+                onObjectAdded: function(index, object) { viewMenu.insertItem(index, object) }
+                onObjectRemoved: function(index, object) { viewMenu.removeItem(object) }
+            }
             AppMenuItem { text: "Appearance"; iconName: "palette"; shortcutLabel: "Ctrl+,"; onTriggered: themePopup.open() }
             AppMenuItem { text: "Home"; iconName: "house"; onTriggered: window.section = "home" }
         }
     }
     ColorDialog {
         id: colorDialog
-        title: colorTarget === "presentBackground" ? "Slide background" : colorTarget === "presentShape" ? "Shape fill" : "Text color"
+        title: colorTarget === "presentBackground" ? "Slide background" : colorTarget === "presentShape" ? "Shape fill"
+               : "Text color"
         onAccepted: {
             if (colorTarget === "presentBackground") Present.setBackgroundColor(selectedColor.toString())
             else if (colorTarget === "presentText") Present.setFontColor(selectedColor.toString())
@@ -1159,14 +1276,70 @@ ApplicationWindow {
         AppMenuItem { text: "4 × 4 table"; iconName: "table-2"; onTriggered: writeEditor.insertTable(4, 4) }
     }
     Menu {
-        id: sheetFormatMenu
-        width: 225
-        padding: 6
+        id: sheetColorMenu
+        property string target: "fill"
+        property string currentColor: ""
+        width: 234
+        padding: 10
         background: Rectangle { radius: 7; color: Theme.palette.surface; border.color: Theme.palette.border }
-        AppMenuItem { text: "General"; iconName: "type"; onTriggered: Sheets.setNumberFormat(sheetsEditor.selectedRow, sheetsEditor.selectedColumn, 0) }
-        AppMenuItem { text: "Number · 2 decimals"; iconName: "type"; onTriggered: Sheets.setNumberFormat(sheetsEditor.selectedRow, sheetsEditor.selectedColumn, 1) }
-        AppMenuItem { text: "Currency"; iconName: "type"; onTriggered: Sheets.setNumberFormat(sheetsEditor.selectedRow, sheetsEditor.selectedColumn, 2) }
-        AppMenuItem { text: "Percent"; iconName: "type"; onTriggered: Sheets.setNumberFormat(sheetsEditor.selectedRow, sheetsEditor.selectedColumn, 3) }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Text {
+                text: sheetColorMenu.target === "fill" ? "Cell fill" : "Text color"
+                color: Theme.palette.text
+                font.pixelSize: 12
+                font.weight: Font.DemiBold
+            }
+            GridLayout {
+                columns: 6
+                rowSpacing: 5
+                columnSpacing: 5
+                Repeater {
+                    model: ["#ffffff", "#e2e8f0", "#94a3b8", "#475569", "#1e293b", "#111827",
+                            "#fecaca", "#fed7aa", "#fef08a", "#bbf7d0", "#bfdbfe", "#ddd6fe",
+                            "#ef4444", "#f97316", "#eab308", "#22c55e", "#3b82f6", "#a855f7"]
+                    delegate: Rectangle {
+                        required property string modelData
+                        Layout.preferredWidth: 29
+                        Layout.preferredHeight: 25
+                        radius: 4
+                        color: modelData
+                        border.width: sheetColorMenu.currentColor.toLowerCase() === modelData ? 2 : 1
+                        border.color: sheetColorMenu.currentColor.toLowerCase() === modelData ? Theme.palette.accent : Theme.palette.border
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: window.applySheetColor(parent.modelData)
+                        }
+                    }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 5
+                TextField {
+                    id: sheetColorInput
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 30
+                    placeholderText: "#RRGGBB"
+                    color: Theme.palette.text
+                    selectionColor: Theme.palette.accent
+                    validator: RegularExpressionValidator { regularExpression: /^#[0-9a-fA-F]{6}$/ }
+                    onAccepted: if (acceptableInput) window.applySheetColor(text)
+                    background: Rectangle { radius: 4; color: Theme.palette.raised; border.color: Theme.palette.border }
+                }
+                IconButton {
+                    iconName: "check"
+                    helpText: "Apply custom color"
+                    enabled: sheetColorInput.acceptableInput
+                    onClicked: window.applySheetColor(sheetColorInput.text)
+                }
+            }
+            AppMenuButton {
+                text: sheetColorMenu.target === "fill" ? "Clear fill" : "Default text color"
+                onClicked: window.applySheetColor("")
+            }
+        }
     }
     Popup {
         id: filterPopup

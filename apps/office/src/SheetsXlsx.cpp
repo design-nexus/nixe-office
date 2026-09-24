@@ -1,5 +1,6 @@
 #include "SheetsDocument.h"
 #include "OfficeZip.h"
+#include <QColor>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QRegularExpression>
@@ -22,6 +23,35 @@ bool SheetsDocument::exportXlsx(const QUrl &url) {
     if (path.isEmpty()) { setError(QStringLiteral("Choose a local XLSX destination.")); return false; }
     if (!path.endsWith(".xlsx",Qt::CaseInsensitive)) path += ".xlsx";
     const QVector<SheetState> sheets=allSheets();
+    struct ExtraStyle { int base, fontId, fillId, alignment; QString textColor, fillColor; };
+    QVector<ExtraStyle> extraStyles;
+    QHash<QString,int> extraStyleIds;
+    QVector<QPair<bool,QString>> fonts{{false,{}},{true,{}}};
+    QHash<QString,int> fontIds{{"0|",0},{"1|",1}};
+    QVector<QString> fills{{},{}};
+    QHash<QString,int> fillIds{{{},0}};
+    auto extraKey = [](int base, const QString &fill, const QString &text, int alignment) {
+        return QString::number(base) + '|' + fill + '|' + text + '|' + QString::number(alignment);
+    };
+    for (const SheetState &sheet : sheets) {
+        QSet<int> addresses;
+        for (int address : sheet.fillColors.keys()) addresses.insert(address);
+        for (int address : sheet.textColors.keys()) addresses.insert(address);
+        for (int address : sheet.alignments.keys()) addresses.insert(address);
+        QList<int> sorted = addresses.values(); std::sort(sorted.begin(), sorted.end());
+        for (int address : sorted) {
+            const int base = std::clamp(sheet.numberFormats.value(address),0,3) + (sheet.boldCells.contains(address)?4:0);
+            const QString fill = sheet.fillColors.value(address), text = sheet.textColors.value(address);
+            const int alignment = sheet.alignments.value(address);
+            const QString key = extraKey(base,fill,text,alignment);
+            if (extraStyleIds.contains(key)) continue;
+            const QString fontKey = QString::number(base>=4) + '|' + text;
+            if (!fontIds.contains(fontKey)) { fontIds.insert(fontKey,fonts.size()); fonts.append({base>=4,text}); }
+            if (!fill.isEmpty() && !fillIds.contains(fill)) { fillIds.insert(fill,fills.size()); fills.append(fill); }
+            extraStyleIds.insert(key,8+extraStyles.size());
+            extraStyles.append({base,fontIds.value(fontKey),fillIds.value(fill,0),alignment,text,fill});
+        }
+    }
     QMap<QString,QByteArray> parts;
     parts["[Content_Types].xml"]=makeXml([&](QXmlStreamWriter &w){start(w,"Types");w.writeDefaultNamespace("http://schemas.openxmlformats.org/package/2006/content-types");
         auto def=[&](QString ext,QString type){start(w,"Default");w.writeAttribute("Extension",ext);w.writeAttribute("ContentType",type);w.writeEndElement();};
@@ -33,10 +63,42 @@ bool SheetsDocument::exportXlsx(const QUrl &url) {
     parts["_rels/.rels"]=makeXml([](QXmlStreamWriter &w){start(w,"Relationships");w.writeDefaultNamespace("http://schemas.openxmlformats.org/package/2006/relationships");start(w,"Relationship");w.writeAttribute("Id","rId1");w.writeAttribute("Type","http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument");w.writeAttribute("Target","xl/workbook.xml");w.writeEndElement();w.writeEndElement();});
     parts["xl/workbook.xml"]=makeXml([&](QXmlStreamWriter &w){start(w,"workbook");w.writeDefaultNamespace(ns);w.writeNamespace(relNs,"r");start(w,"bookViews");start(w,"workbookView");w.writeAttribute("activeTab",QString::number(m_activeSheet));w.writeEndElement();w.writeEndElement();start(w,"sheets");for(int i=0;i<sheets.size();++i){start(w,"sheet");w.writeAttribute("name",sheets[i].name);w.writeAttribute("sheetId",QString::number(i+1));w.writeAttribute(relNs,"id","rId"+QString::number(i+1));w.writeEndElement();}w.writeEndElement();start(w,"calcPr");w.writeAttribute("fullCalcOnLoad","1");w.writeEndElement();w.writeEndElement();});
     parts["xl/_rels/workbook.xml.rels"]=makeXml([&](QXmlStreamWriter &w){start(w,"Relationships");w.writeDefaultNamespace("http://schemas.openxmlformats.org/package/2006/relationships");auto rel=[&](QString id,QString type,QString target){start(w,"Relationship");w.writeAttribute("Id",id);w.writeAttribute("Type","http://schemas.openxmlformats.org/officeDocument/2006/relationships/"+type);w.writeAttribute("Target",target);w.writeEndElement();};for(int i=0;i<sheets.size();++i)rel("rId"+QString::number(i+1),"worksheet","worksheets/sheet"+QString::number(i+1)+".xml");rel("rId"+QString::number(sheets.size()+1),"styles","styles.xml");w.writeEndElement();});
-    parts["xl/styles.xml"]=makeXml([](QXmlStreamWriter &w){start(w,"styleSheet");w.writeDefaultNamespace(ns);start(w,"numFmts");w.writeAttribute("count","1");start(w,"numFmt");w.writeAttribute("numFmtId","164");w.writeAttribute("formatCode","$#,##0.00");w.writeEndElement();w.writeEndElement();start(w,"fonts");w.writeAttribute("count","2");for(int i=0;i<2;++i){start(w,"font");start(w,"sz");w.writeAttribute("val","11");w.writeEndElement();start(w,"name");w.writeAttribute("val","Noto Sans");w.writeEndElement();if(i){w.writeEmptyElement("b");}w.writeEndElement();}w.writeEndElement();start(w,"fills");w.writeAttribute("count","2");for(QString p:{"none","gray125"}){start(w,"fill");start(w,"patternFill");w.writeAttribute("patternType",p);w.writeEndElement();w.writeEndElement();}w.writeEndElement();start(w,"borders");w.writeAttribute("count","1");w.writeEmptyElement("border");w.writeEndElement();start(w,"cellStyleXfs");w.writeAttribute("count","1");start(w,"xf");w.writeAttribute("numFmtId","0");w.writeAttribute("fontId","0");w.writeAttribute("fillId","0");w.writeAttribute("borderId","0");w.writeEndElement();w.writeEndElement();start(w,"cellXfs");w.writeAttribute("count","8");for(int bold=0;bold<2;++bold)for(int fmt=0;fmt<4;++fmt){start(w,"xf");w.writeAttribute("numFmtId",QString::number(QList<int>{0,2,164,10}[fmt]));w.writeAttribute("fontId",QString::number(bold));w.writeAttribute("fillId","0");w.writeAttribute("borderId","0");w.writeAttribute("xfId","0");w.writeAttribute("applyNumberFormat","1");w.writeEndElement();}w.writeEndElement();w.writeEndElement();});
+    parts["xl/styles.xml"]=makeXml([&](QXmlStreamWriter &w){
+        start(w,"styleSheet");w.writeDefaultNamespace(ns);
+        start(w,"numFmts");w.writeAttribute("count","1");start(w,"numFmt");
+        w.writeAttribute("numFmtId","164");w.writeAttribute("formatCode","$#,##0.00");
+        w.writeEndElement();w.writeEndElement();
+        start(w,"fonts");w.writeAttribute("count",QString::number(fonts.size()));
+        for(const auto &font:fonts){start(w,"font");start(w,"sz");w.writeAttribute("val","11");w.writeEndElement();
+            start(w,"name");w.writeAttribute("val","Noto Sans");w.writeEndElement();
+            if(font.first)w.writeEmptyElement("b");
+            if(!font.second.isEmpty()){start(w,"color");w.writeAttribute("rgb","FF"+font.second.mid(1).toUpper());w.writeEndElement();}
+            w.writeEndElement();}w.writeEndElement();
+        start(w,"fills");w.writeAttribute("count",QString::number(fills.size()));
+        for(int index=0;index<fills.size();++index){start(w,"fill");start(w,"patternFill");
+            w.writeAttribute("patternType",index==0?"none":index==1?"gray125":"solid");
+            if(index>=2){start(w,"fgColor");w.writeAttribute("rgb","FF"+fills[index].mid(1).toUpper());w.writeEndElement();
+                start(w,"bgColor");w.writeAttribute("indexed","64");w.writeEndElement();}
+            w.writeEndElement();w.writeEndElement();}w.writeEndElement();
+        start(w,"borders");w.writeAttribute("count","1");w.writeEmptyElement("border");w.writeEndElement();
+        start(w,"cellStyleXfs");w.writeAttribute("count","1");start(w,"xf");
+        w.writeAttribute("numFmtId","0");w.writeAttribute("fontId","0");w.writeAttribute("fillId","0");
+        w.writeAttribute("borderId","0");w.writeEndElement();w.writeEndElement();
+        start(w,"cellXfs");w.writeAttribute("count",QString::number(8+extraStyles.size()));
+        auto writeXf=[&](int base,int fontId,int fillId,int alignment){start(w,"xf");
+            w.writeAttribute("numFmtId",QString::number(QList<int>{0,2,164,10}[base%4]));
+            w.writeAttribute("fontId",QString::number(fontId));w.writeAttribute("fillId",QString::number(fillId));
+            w.writeAttribute("borderId","0");w.writeAttribute("xfId","0");w.writeAttribute("applyNumberFormat","1");
+            if(fontId)w.writeAttribute("applyFont","1");if(fillId)w.writeAttribute("applyFill","1");
+            if(alignment){w.writeAttribute("applyAlignment","1");start(w,"alignment");
+                w.writeAttribute("horizontal",alignment==1?"center":"right");w.writeEndElement();}
+            w.writeEndElement();};
+        for(int bold=0;bold<2;++bold)for(int fmt=0;fmt<4;++fmt)writeXf(fmt+bold*4,bold,0,0);
+        for(const ExtraStyle &style:extraStyles)writeXf(style.base,style.fontId,style.fillId,style.alignment);
+        w.writeEndElement();w.writeEndElement();});
     for(int sheetIndex=0;sheetIndex<sheets.size();++sheetIndex){const SheetState &sh=sheets[sheetIndex];
     parts["xl/worksheets/sheet"+QString::number(sheetIndex+1)+".xml"]=makeXml([&](QXmlStreamWriter &w){start(w,"worksheet");w.writeDefaultNamespace(ns);if(!sh.columnWidths.isEmpty()){start(w,"cols");QList<int> cols=sh.columnWidths.keys();std::sort(cols.begin(),cols.end());for(int c:cols){start(w,"col");w.writeAttribute("min",QString::number(c+1));w.writeAttribute("max",QString::number(c+1));w.writeAttribute("width",QString::number(sh.columnWidths.value(c)/7.0,'f',2));w.writeAttribute("customWidth","1");w.writeEndElement();}w.writeEndElement();}
-        QSet<int> addresses;for(int k:sh.cells.keys())addresses.insert(k);for(int k:sh.numberFormats.keys())addresses.insert(k);addresses.unite(sh.boldCells);QList<int> keys=addresses.values();std::sort(keys.begin(),keys.end());start(w,"sheetData");int active=-1;for(int k:keys){int row=k/columns,col=k%columns;if(row!=active){if(active>=0)w.writeEndElement();for(int gap=active+1;gap<row;++gap)if(sh.rowHeights.contains(gap)){start(w,"row");w.writeAttribute("r",QString::number(gap+1));w.writeAttribute("ht",QString::number(sh.rowHeights.value(gap)*.75,'f',2));w.writeAttribute("customHeight","1");w.writeEndElement();}start(w,"row");w.writeAttribute("r",QString::number(row+1));if(sh.rowHeights.contains(row)){w.writeAttribute("ht",QString::number(sh.rowHeights.value(row)*.75,'f',2));w.writeAttribute("customHeight","1");}active=row;}start(w,"c");w.writeAttribute("r",colName(col)+QString::number(row+1));int style=std::clamp(sh.numberFormats.value(k),0,3)+(sh.boldCells.contains(k)?4:0);if(style)w.writeAttribute("s",QString::number(style));QString raw=sh.cells.value(k);if(raw.startsWith('=')){w.writeTextElement("f",raw.mid(1));}else{bool numeric=false;double number=raw.toDouble(&numeric);if(!raw.isEmpty()&&numeric&&std::isfinite(number)){w.writeTextElement("v",raw);}else if(!raw.isEmpty()){w.writeAttribute("t","inlineStr");start(w,"is");w.writeTextElement("t",raw);w.writeEndElement();}}w.writeEndElement();}if(active>=0)w.writeEndElement();for(int row=active+1;row<rows;++row)if(sh.rowHeights.contains(row)){start(w,"row");w.writeAttribute("r",QString::number(row+1));w.writeAttribute("ht",QString::number(sh.rowHeights.value(row)*.75,'f',2));w.writeAttribute("customHeight","1");w.writeEndElement();}w.writeEndElement();w.writeEndElement();});
+        QSet<int> addresses;for(int k:sh.cells.keys())addresses.insert(k);for(int k:sh.numberFormats.keys())addresses.insert(k);addresses.unite(sh.boldCells);for(int k:sh.alignments.keys())addresses.insert(k);for(int k:sh.fillColors.keys())addresses.insert(k);for(int k:sh.textColors.keys())addresses.insert(k);QList<int> keys=addresses.values();std::sort(keys.begin(),keys.end());start(w,"sheetData");int active=-1;for(int k:keys){int row=k/columns,col=k%columns;if(row!=active){if(active>=0)w.writeEndElement();for(int gap=active+1;gap<row;++gap)if(sh.rowHeights.contains(gap)){start(w,"row");w.writeAttribute("r",QString::number(gap+1));w.writeAttribute("ht",QString::number(sh.rowHeights.value(gap)*.75,'f',2));w.writeAttribute("customHeight","1");w.writeEndElement();}start(w,"row");w.writeAttribute("r",QString::number(row+1));if(sh.rowHeights.contains(row)){w.writeAttribute("ht",QString::number(sh.rowHeights.value(row)*.75,'f',2));w.writeAttribute("customHeight","1");}active=row;}start(w,"c");w.writeAttribute("r",colName(col)+QString::number(row+1));int base=std::clamp(sh.numberFormats.value(k),0,3)+(sh.boldCells.contains(k)?4:0);int style=base;const QString fill=sh.fillColors.value(k),text=sh.textColors.value(k);const int align=sh.alignments.value(k);if(!fill.isEmpty()||!text.isEmpty()||align)style=extraStyleIds.value(extraKey(base,fill,text,align),base);if(style)w.writeAttribute("s",QString::number(style));QString raw=sh.cells.value(k);if(raw.startsWith('=')){w.writeTextElement("f",raw.mid(1));}else{bool numeric=false;double number=raw.toDouble(&numeric);if(!raw.isEmpty()&&numeric&&std::isfinite(number)){w.writeTextElement("v",raw);}else if(!raw.isEmpty()){w.writeAttribute("t","inlineStr");start(w,"is");w.writeTextElement("t",raw);w.writeEndElement();}}w.writeEndElement();}if(active>=0)w.writeEndElement();for(int row=active+1;row<rows;++row)if(sh.rowHeights.contains(row)){start(w,"row");w.writeAttribute("r",QString::number(row+1));w.writeAttribute("ht",QString::number(sh.rowHeights.value(row)*.75,'f',2));w.writeAttribute("customHeight","1");w.writeEndElement();}w.writeEndElement();w.writeEndElement();});
     }
     if(!OfficeZip::writePackage(path,parts)){setError(QStringLiteral("Could not export the XLSX file."));return false;}setError({});return true;
 }
@@ -49,10 +111,84 @@ bool SheetsDocument::importXlsx(const QUrl &url) {
     QByteArray wb=OfficeZip::read(archive,workbook);if(wb.isEmpty())return fail();QXmlStreamReader wr(wb);QVector<QPair<QString,QString>> sheetEntries;int active=0;while(!wr.atEnd()){wr.readNext();if(wr.isStartElement()&&wr.name()==QLatin1StringView("workbookView"))active=wr.attributes().value("activeTab").toInt();if(wr.isStartElement()&&wr.name()==QLatin1StringView("sheet")){QString id=wr.attributes().value(relNs,"id").toString();QString name=wr.attributes().value("name").toString();if(!id.isEmpty())sheetEntries.append({id,name});}}if(wr.hasError()||sheetEntries.isEmpty()||sheetEntries.size()>20)return fail();active=std::clamp(active,0,int(sheetEntries.size())-1);
     QString folder=workbook.left(workbook.lastIndexOf('/'));auto rels=OfficeZip::relationships(OfficeZip::read(archive,relationPart(workbook)));
     QStringList shared;QByteArray strings=OfficeZip::read(archive,folder+"/sharedStrings.xml");if(!strings.isEmpty()){QXmlStreamReader sr(strings);while(!sr.atEnd()){sr.readNext();if(sr.isStartElement()&&sr.name()==QLatin1StringView("si")){QString value;while(sr.readNextStartElement()){if(sr.name()==QLatin1StringView("t"))value+=sr.readElementText();else if(sr.name()==QLatin1StringView("r")){while(sr.readNextStartElement()){if(sr.name()==QLatin1StringView("t"))value+=sr.readElementText();else sr.skipCurrentElement();}}else sr.skipCurrentElement();}shared.append(value);}}if(sr.hasError())return fail();}
-    QVector<bool> boldFonts;QVector<int> formats,boldStyles;QHash<int,QString> custom;QByteArray styles=OfficeZip::read(archive,folder+"/styles.xml");if(!styles.isEmpty()){QXmlStreamReader st(styles);QString section;while(!st.atEnd()){st.readNext();if(st.isStartElement()){QString n=st.name().toString();if(n=="fonts"||n=="cellXfs")section=n;else if(n=="numFmt")custom.insert(st.attributes().value("numFmtId").toInt(),st.attributes().value("formatCode").toString());else if(n=="font"&&section=="fonts"){bool b=false;while(st.readNextStartElement()){if(st.name()==QLatin1StringView("b"))b=st.attributes().value("val")!="0";st.skipCurrentElement();}boldFonts.append(b);}else if(n=="xf"&&section=="cellXfs"){int id=st.attributes().value("numFmtId").toInt();QString code=custom.value(id).toLower();int f=(id==10||code.contains('%'))?3:(id==164||code.contains('$')||code.contains("€")||code.contains("£"))?2:(id==2||id==4||code.contains("0.00"))?1:0;formats.append(f);int font=st.attributes().value("fontId").toInt();boldStyles.append(font>=0&&font<boldFonts.size()&&boldFonts[font]);}}else if(st.isEndElement()&&(st.name()==QLatin1StringView("fonts")||st.name()==QLatin1StringView("cellXfs")))section.clear();}if(st.hasError())return fail();}
+    QVector<bool> boldFonts;
+    QVector<QString> fontColors, fills, textColorStyles, fillColorStyles;
+    QVector<int> formats, boldStyles, alignmentStyles;
+    QHash<int,QString> custom;
+    const QByteArray styles=OfficeZip::read(archive,folder+"/styles.xml");
+    if(!styles.isEmpty()){
+        QXmlStreamReader st(styles);
+        auto rgbColor=[](const QString &rgb){
+            const QString color="#"+rgb.right(6);
+            return (rgb.size()==6||rgb.size()==8)&&QColor(color).isValid()
+                ? QColor(color).name(QColor::HexRgb) : QString();
+        };
+        while(!st.atEnd()){
+            st.readNext();
+            if(!st.isStartElement())continue;
+            const QString name=st.name().toString();
+            if(name=="numFmt"){
+                custom.insert(st.attributes().value("numFmtId").toInt(),
+                              st.attributes().value("formatCode").toString());
+            }else if(name=="fonts"){
+                while(st.readNextStartElement()){
+                    if(st.name()!=QLatin1StringView("font")){st.skipCurrentElement();continue;}
+                    bool bold=false;QString color;
+                    while(st.readNextStartElement()){
+                        if(st.name()==QLatin1StringView("b"))bold=st.attributes().value("val")!="0";
+                        else if(st.name()==QLatin1StringView("color"))color=rgbColor(st.attributes().value("rgb").toString());
+                        st.skipCurrentElement();
+                    }
+                    boldFonts.append(bold);fontColors.append(color);
+                }
+            }else if(name=="fills"){
+                while(st.readNextStartElement()){
+                    if(st.name()!=QLatin1StringView("fill")){st.skipCurrentElement();continue;}
+                    QString color;
+                    while(st.readNextStartElement()){
+                        const bool solid=st.name()==QLatin1StringView("patternFill")&&
+                                         st.attributes().value("patternType")=="solid";
+                        if(st.name()==QLatin1StringView("patternFill")){
+                            while(st.readNextStartElement()){
+                                if(solid&&st.name()==QLatin1StringView("fgColor"))
+                                    color=rgbColor(st.attributes().value("rgb").toString());
+                                st.skipCurrentElement();
+                            }
+                        }else st.skipCurrentElement();
+                    }
+                    fills.append(color);
+                }
+            }else if(name=="cellXfs"){
+                while(st.readNextStartElement()){
+                    if(st.name()!=QLatin1StringView("xf")){st.skipCurrentElement();continue;}
+                    const int id=st.attributes().value("numFmtId").toInt();
+                    const int font=st.attributes().value("fontId").toInt();
+                    const int fill=st.attributes().value("fillId").toInt();
+                    const QString code=custom.value(id).toLower();
+                    const int format=(id==10||code.contains('%'))?3:
+                        (id==164||code.contains('$')||code.contains("€")||code.contains("£"))?2:
+                        (id==2||id==4||code.contains("0.00"))?1:0;
+                    int alignment=0;
+                    while(st.readNextStartElement()){
+                        if(st.name()==QLatin1StringView("alignment")){
+                            const QString horizontal=st.attributes().value("horizontal").toString();
+                            alignment=horizontal=="center"?1:horizontal=="right"?2:0;
+                        }
+                        st.skipCurrentElement();
+                    }
+                    formats.append(format);
+                    boldStyles.append(font>=0&&font<boldFonts.size()&&boldFonts[font]);
+                    textColorStyles.append(font>=0&&font<fontColors.size()?fontColors[font]:QString());
+                    fillColorStyles.append(fill>=0&&fill<fills.size()?fills[fill]:QString());
+                    alignmentStyles.append(alignment);
+                }
+            }
+        }
+        if(st.hasError())return fail();
+    }
     QVector<SheetState> loaded;
     for(const auto &entry:sheetEntries){QString sheet=OfficeZip::resolve(folder,rels.value(entry.first));if(sheet.isEmpty())return fail();QByteArray xml=OfficeZip::read(archive,sheet);if(xml.isEmpty())return fail();
-    SheetState sh;sh.name=entry.second;if(sh.name.trimmed().isEmpty()||sh.name.size()>31)return fail();for(const auto &existing:loaded)if(existing.name.compare(sh.name,Qt::CaseInsensitive)==0)return fail();QXmlStreamReader r(xml);while(!r.atEnd()){r.readNext();if(!r.isStartElement())continue;QString n=r.name().toString();if(n=="col"){int first=r.attributes().value("min").toInt()-1,last=r.attributes().value("max").toInt()-1;int width=qRound(r.attributes().value("width").toDouble()*7);for(int c=std::max(0,first);c<=std::min(columns-1,last);++c)if(width>0)sh.columnWidths.insert(c,std::clamp(width,48,480));}else if(n=="row"){int row=r.attributes().value("r").toInt()-1;if(row>=0&&row<rows&&r.attributes().hasAttribute("ht"))sh.rowHeights.insert(row,std::clamp(qRound(r.attributes().value("ht").toDouble()/0.75),20,240));}else if(n=="c"){QString address=r.attributes().value("r").toString();QRegularExpressionMatch match=QRegularExpression("^([A-Za-z]+)([0-9]+)$").match(address);int col=match.hasMatch()?colIndex(match.captured(1)):-1,row=match.hasMatch()?match.captured(2).toInt()-1:-1;QString type=r.attributes().value("t").toString();int style=r.attributes().value("s").toInt();QString value,formula;while(r.readNextStartElement()){if(r.name()==QLatin1StringView("f"))formula=r.readElementText();else if(r.name()==QLatin1StringView("v"))value=r.readElementText();else if(r.name()==QLatin1StringView("is")){while(r.readNextStartElement()){if(r.name()==QLatin1StringView("t"))value+=r.readElementText();else r.skipCurrentElement();}}else r.skipCurrentElement();}if(row<0||row>=rows||col<0||col>=columns)continue;int k=key(row,col);if(!formula.isEmpty())value="="+formula;else if(type=="s"){bool ok=false;int i=value.toInt(&ok);if(!ok||i<0||i>=shared.size())return fail();value=shared[i];}else if(type=="b")value=value=="1"?"TRUE":"FALSE";if(!value.isEmpty())sh.cells.insert(k,value);if(style>=0&&style<formats.size()){if(formats[style])sh.numberFormats.insert(k,formats[style]);if(boldStyles[style])sh.boldCells.insert(k);}}}if(r.hasError())return fail();for(int row=0;row<rows;++row)sh.viewRows.append(row);loaded.append(sh);
+    SheetState sh;sh.name=entry.second;if(sh.name.trimmed().isEmpty()||sh.name.size()>31)return fail();for(const auto &existing:loaded)if(existing.name.compare(sh.name,Qt::CaseInsensitive)==0)return fail();QXmlStreamReader r(xml);while(!r.atEnd()){r.readNext();if(!r.isStartElement())continue;QString n=r.name().toString();if(n=="col"){int first=r.attributes().value("min").toInt()-1,last=r.attributes().value("max").toInt()-1;int width=qRound(r.attributes().value("width").toDouble()*7);for(int c=std::max(0,first);c<=std::min(columns-1,last);++c)if(width>0)sh.columnWidths.insert(c,std::clamp(width,48,480));}else if(n=="row"){int row=r.attributes().value("r").toInt()-1;if(row>=0&&row<rows&&r.attributes().hasAttribute("ht"))sh.rowHeights.insert(row,std::clamp(qRound(r.attributes().value("ht").toDouble()/0.75),20,240));}else if(n=="c"){QString address=r.attributes().value("r").toString();QRegularExpressionMatch match=QRegularExpression("^([A-Za-z]+)([0-9]+)$").match(address);int col=match.hasMatch()?colIndex(match.captured(1)):-1,row=match.hasMatch()?match.captured(2).toInt()-1:-1;QString type=r.attributes().value("t").toString();int style=r.attributes().value("s").toInt();QString value,formula;while(r.readNextStartElement()){if(r.name()==QLatin1StringView("f"))formula=r.readElementText();else if(r.name()==QLatin1StringView("v"))value=r.readElementText();else if(r.name()==QLatin1StringView("is")){while(r.readNextStartElement()){if(r.name()==QLatin1StringView("t"))value+=r.readElementText();else r.skipCurrentElement();}}else r.skipCurrentElement();}if(row<0||row>=rows||col<0||col>=columns)continue;int k=key(row,col);if(!formula.isEmpty())value="="+formula;else if(type=="s"){bool ok=false;int i=value.toInt(&ok);if(!ok||i<0||i>=shared.size())return fail();value=shared[i];}else if(type=="b")value=value=="1"?"TRUE":"FALSE";if(!value.isEmpty())sh.cells.insert(k,value);if(style>=0&&style<formats.size()){if(formats[style])sh.numberFormats.insert(k,formats[style]);if(boldStyles[style])sh.boldCells.insert(k);if(alignmentStyles[style])sh.alignments.insert(k,alignmentStyles[style]);if(!textColorStyles[style].isEmpty())sh.textColors.insert(k,textColorStyles[style]);if(!fillColorStyles[style].isEmpty())sh.fillColors.insert(k,fillColorStyles[style]);}}}if(r.hasError())return fail();for(int row=0;row<rows;++row)sh.viewRows.append(row);loaded.append(sh);
     }
     zip_close(archive);
     beginResetModel();m_sheets=std::move(loaded);m_activeSheet=active;loadActiveState(m_sheets[active]);endResetModel();m_path.clear();m_dirty=true;m_hasDocument=true;clearHistory();m_savedState.clear();removeSessionRecovery();m_recoveryTimer.start();setError({});refresh();emit dimensionsChanged();emit sheetsChanged();return true;

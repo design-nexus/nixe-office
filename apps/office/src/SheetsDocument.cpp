@@ -16,6 +16,7 @@ struct Value {
     QString error;
     bool numeric = true;
     bool populated = true;
+    QString text;
 };
 
 class FormulaParser {
@@ -24,7 +25,7 @@ public:
         : m_expression(std::move(expression)), m_cell(std::move(cell)) {}
 
     Value parse() {
-        Value value = expression();
+        Value value = comparison();
         spaces();
         if (m_position != m_expression.size() && value.error.isEmpty()) value.error = QStringLiteral("#ERROR!");
         return value;
@@ -64,6 +65,36 @@ private:
         column = col - 1;
         return true;
     }
+    Value comparison() {
+        Value left = expression();
+        spaces();
+        QString operation;
+        for (const QString &candidate : {QStringLiteral("<="), QStringLiteral(">="),
+                                         QStringLiteral("<>"), QStringLiteral("="),
+                                         QStringLiteral("<"), QStringLiteral(">")}) {
+            if (m_expression.mid(m_position).startsWith(candidate)) {
+                operation = candidate;
+                m_position += candidate.size();
+                break;
+            }
+        }
+        if (operation.isEmpty()) return left;
+        Value right = expression();
+        if (!left.error.isEmpty()) return left;
+        if (!right.error.isEmpty()) return right;
+        int result = 0;
+        if (left.numeric && right.numeric)
+            result = left.number < right.number ? -1 : left.number > right.number ? 1 : 0;
+        else {
+            const QString a = left.numeric ? QString::number(left.number, 'g', 12) : left.text;
+            const QString b = right.numeric ? QString::number(right.number, 'g', 12) : right.text;
+            result = QString::compare(a, b, Qt::CaseInsensitive);
+        }
+        const bool matches = operation == "=" ? result == 0 : operation == "<>" ? result != 0
+            : operation == "<" ? result < 0 : operation == ">" ? result > 0
+            : operation == "<=" ? result <= 0 : result >= 0;
+        return {matches ? 1.0 : 0.0, {}};
+    }
     Value expression() {
         Value left = term();
         while (true) {
@@ -102,7 +133,7 @@ private:
         return left;
     }
     Value function(const QString &name) {
-        QList<Value> values;
+        QList<QList<Value>> arguments;
         if (!take(')')) {
             while (true) {
                 const int start = m_position;
@@ -113,22 +144,85 @@ private:
                         lastRow < firstRow || lastColumn < firstColumn || lastRow - firstRow > 499 ||
                         lastColumn - firstColumn > 51)
                         return {0, QStringLiteral("#REF!")};
+                    QList<Value> range;
                     for (int row = firstRow; row <= lastRow; ++row)
                         for (int column = firstColumn; column <= lastColumn; ++column)
-                            values.append(m_cell(row, column));
+                            range.append(m_cell(row, column));
+                    arguments.append(range);
                 } else {
                     m_position = start;
-                    values.append(expression());
+                    arguments.append({comparison()});
                 }
                 if (take(')')) break;
                 if (!take(',')) return {0, QStringLiteral("#ERROR!")};
             }
         }
+        if (name == QStringLiteral("IF")) {
+            if (arguments.size() < 2 || arguments.size() > 3 ||
+                arguments[0].size() != 1 || arguments[1].size() != 1 ||
+                (arguments.size() == 3 && arguments[2].size() != 1)) return {0, QStringLiteral("#ERROR!")};
+            const Value &condition = arguments[0].first();
+            if (!condition.error.isEmpty()) return condition;
+            const bool trueBranch = condition.numeric ? condition.number != 0 : !condition.text.isEmpty();
+            return trueBranch ? arguments[1].first()
+                              : arguments.size() == 3 ? arguments[2].first() : Value{0, {}};
+        }
+        if (name == QStringLiteral("COUNTIF") || name == QStringLiteral("SUMIF")) {
+            if (arguments.size() < 2 || arguments.size() > (name == "SUMIF" ? 3 : 2) ||
+                arguments[1].size() != 1 || arguments[0].isEmpty()) return {0, QStringLiteral("#ERROR!")};
+            const QList<Value> &candidates = arguments[0];
+            const QList<Value> &sums = arguments.size() == 3 ? arguments[2] : candidates;
+            if (sums.size() != candidates.size()) return {0, QStringLiteral("#ERROR!")};
+            const Value &criterion = arguments[1].first();
+            if (!criterion.error.isEmpty()) return criterion;
+            QString target = criterion.numeric ? QString::number(criterion.number, 'g', 12) : criterion.text;
+            QString operation = "=";
+            for (const QString &prefix : {QStringLiteral(">="), QStringLiteral("<="),
+                                          QStringLiteral("<>"), QStringLiteral(">"),
+                                          QStringLiteral("<"), QStringLiteral("=")}) {
+                if (target.startsWith(prefix)) { operation = prefix; target.remove(0, prefix.size()); break; }
+            }
+            bool targetIsNumber = false;
+            const double numericTarget = target.toDouble(&targetIsNumber);
+            double result = 0;
+            for (int index = 0; index < candidates.size(); ++index) {
+                const Value &candidate = candidates[index];
+                if (!candidate.error.isEmpty()) return candidate;
+                int order = 0;
+                if (targetIsNumber && candidate.numeric)
+                    order = candidate.number < numericTarget ? -1 : candidate.number > numericTarget ? 1 : 0;
+                else {
+                    const QString actual = candidate.numeric ? QString::number(candidate.number, 'g', 12) : candidate.text;
+                    order = QString::compare(actual, target, Qt::CaseInsensitive);
+                }
+                const bool match = operation == "=" ? order == 0 : operation == "<>" ? order != 0
+                    : operation == "<" ? order < 0 : operation == ">" ? order > 0
+                    : operation == "<=" ? order <= 0 : order >= 0;
+                if (match) {
+                    if (name == "COUNTIF") ++result;
+                    else if (sums[index].numeric) result += sums[index].number;
+                }
+            }
+            return {result, {}};
+        }
+        QList<Value> values;
+        for (const QList<Value> &argument : arguments) values.append(argument);
         for (const Value &value : values)
             if (!value.error.isEmpty()) return value;
         QList<double> numbers;
         for(const Value &value:values)if(value.numeric)numbers.append(value.number);
         if(name==QStringLiteral("COUNT"))return {double(numbers.size()),{}};
+        if(name==QStringLiteral("AND")||name==QStringLiteral("OR")){
+            if(values.isEmpty())return {0,QStringLiteral("#ERROR!")};
+            bool result=name==QStringLiteral("AND");
+            for(const Value &value:values){const bool truth=value.numeric?value.number!=0:!value.text.isEmpty();
+                if(name==QStringLiteral("AND"))result&=truth;else result|=truth;}
+            return {result?1.0:0.0,{}};
+        }
+        if(name==QStringLiteral("NOT")){
+            if(values.size()!=1)return {0,QStringLiteral("#ERROR!")};
+            return {(values[0].numeric?values[0].number==0:values[0].text.isEmpty())?1.0:0.0,{}};
+        }
         if(name==QStringLiteral("COUNTA")){
             int count=0;for(const Value &value:values)if(value.populated)++count;
             return {double(count),{}};
@@ -169,6 +263,15 @@ private:
             if(values.size()!=2)return {0,QStringLiteral("#ERROR!")};
             return {std::pow(values[0].number,values[1].number),{}};
         }
+        if(name==QStringLiteral("MOD")){
+            if(values.size()!=2)return {0,QStringLiteral("#ERROR!")};
+            if(values[1].number==0)return {0,QStringLiteral("#DIV/0!")};
+            return {std::fmod(values[0].number,values[1].number),{}};
+        }
+        if(name==QStringLiteral("INT")){
+            if(values.size()!=1)return {0,QStringLiteral("#ERROR!")};
+            return {std::floor(values[0].number),{}};
+        }
         if(name==QStringLiteral("ROUND")){
             if(values.size()!=2)return {0,QStringLiteral("#ERROR!")};
             if(!std::isfinite(values[1].number))return {0,QStringLiteral("#ERROR!")};
@@ -188,9 +291,22 @@ private:
             return value;
         }
         if (take('(')) {
-            Value value = expression();
+            Value value = comparison();
             if (!take(')') && value.error.isEmpty()) value.error = QStringLiteral("#ERROR!");
             return value;
+        }
+        if (take('"')) {
+            QString literal;
+            bool closed = false;
+            while (m_position < m_expression.size()) {
+                const QChar character = m_expression.at(m_position++);
+                if (character == '"') {
+                    if (m_position < m_expression.size() && m_expression.at(m_position) == '"') {
+                        literal += '"'; ++m_position;
+                    } else { closed = true; break; }
+                } else literal += character;
+            }
+            return closed ? Value{0, {}, false, true, literal} : Value{0, QStringLiteral("#ERROR!")};
         }
         const int start = m_position;
         if (m_position < m_expression.size() && m_expression.at(m_position).isLetter()) {
@@ -323,11 +439,12 @@ QString SheetsDocument::evaluate(int row, int column, QSet<int> &visiting) const
         if (result.startsWith('#')) return {0, result};
         bool ok = false;
         const double number = result.toDouble(&ok);
-        return {ok ? number : 0, {}, ok, !result.isEmpty()};
+        return {ok ? number : 0, {}, ok, !result.isEmpty(), result};
     });
     const Value result = parser.parse();
     visiting.remove(address);
     if (!result.error.isEmpty()) return result.error;
+    if (!result.numeric) return result.text;
     if (!std::isfinite(result.number)) return QStringLiteral("#ERROR!");
     return QString::number(result.number, 'g', 12);
 }
@@ -363,6 +480,9 @@ void SheetsDocument::newDocument() {
     m_activeSheet = 0;
     m_cells.clear();
     m_numberFormats.clear();
+    m_alignments.clear();
+    m_fillColors.clear();
+    m_textColors.clear();
     m_boldCells.clear();
     m_rowHeights.clear();
     m_columnWidths.clear();
@@ -429,6 +549,9 @@ bool SheetsDocument::openCsv(const QString &path) {
     m_sheets = {SheetState()};
     m_activeSheet = 0;
     m_numberFormats.clear();
+    m_alignments.clear();
+    m_fillColors.clear();
+    m_textColors.clear();
     m_boldCells.clear();
     m_rowHeights.clear();
     m_columnWidths.clear();

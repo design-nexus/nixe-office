@@ -52,24 +52,112 @@ bool SheetsDocument::boldAt(int row, int column) const {
     return m_boldCells.contains(key(row, column));
 }
 
+QString SheetsDocument::fillColorAt(int row, int column) const {
+    return row >= 0 && row < rows && column >= 0 && column < columns
+        ? m_fillColors.value(key(row, column)) : QString();
+}
+
+QString SheetsDocument::textColorAt(int row, int column) const {
+    return row >= 0 && row < rows && column >= 0 && column < columns
+        ? m_textColors.value(key(row, column)) : QString();
+}
+
+int SheetsDocument::alignmentAt(int row, int column) const {
+    return row >= 0 && row < rows && column >= 0 && column < columns
+        ? m_alignments.value(key(row, column)) : 0;
+}
+
 void SheetsDocument::setNumberFormat(int row, int column, int format) {
-    if (row < 0 || row >= rows || column < 0 || column >= columns || format < 0 || format > 3) return;
-    const int address = key(row, column);
-    if (numberFormatAt(row, column) == format) return;
-    recordEdit();
-    if (format == 0) m_numberFormats.remove(address);
-    else m_numberFormats.insert(address, format);
-    m_dirty = true;
-    refresh();
+    setRangeNumberFormat(row, column, row, column, format);
 }
 
 void SheetsDocument::toggleBold(int row, int column) {
-    if (row < 0 || row >= rows || column < 0 || column >= columns) return;
-    const int address = key(row, column);
+    toggleRangeBold(row, column, row, column);
+}
+
+void SheetsDocument::setRangeNumberFormat(int firstRow, int firstColumn, int lastRow, int lastColumn, int format) {
+    const int top = std::min(firstRow, lastRow), bottom = std::max(firstRow, lastRow);
+    const int left = std::min(firstColumn, lastColumn), right = std::max(firstColumn, lastColumn);
+    if (top < 0 || bottom >= rows || left < 0 || right >= columns || format < 0 || format > 3) return;
+    bool changed = false;
+    for (int row = top; row <= bottom; ++row) for (int column = left; column <= right; ++column)
+        changed |= numberFormatAt(row, column) != format;
+    if (!changed) return;
     recordEdit();
-    if (m_boldCells.contains(address)) m_boldCells.remove(address);
-    else m_boldCells.insert(address);
-    m_dirty = true;
+    for (int row = top; row <= bottom; ++row) for (int column = left; column <= right; ++column) {
+        const int address = key(row, column);
+        if (format) m_numberFormats.insert(address, format); else m_numberFormats.remove(address);
+    }
+    m_dirty = m_hasDocument = true;
+    refresh();
+}
+
+void SheetsDocument::toggleRangeBold(int firstRow, int firstColumn, int lastRow, int lastColumn) {
+    const int top = std::min(firstRow, lastRow), bottom = std::max(firstRow, lastRow);
+    const int left = std::min(firstColumn, lastColumn), right = std::max(firstColumn, lastColumn);
+    if (top < 0 || bottom >= rows || left < 0 || right >= columns) return;
+    const bool makeBold = !boldAt(firstRow, firstColumn);
+    recordEdit();
+    for (int row = top; row <= bottom; ++row) for (int column = left; column <= right; ++column) {
+        const int address = key(row, column);
+        if (makeBold) m_boldCells.insert(address); else m_boldCells.remove(address);
+    }
+    m_dirty = m_hasDocument = true;
+    refresh();
+}
+
+void SheetsDocument::setRangeFillColor(int firstRow, int firstColumn, int lastRow, int lastColumn, const QString &color) {
+    const int top = std::min(firstRow, lastRow), bottom = std::max(firstRow, lastRow);
+    const int left = std::min(firstColumn, lastColumn), right = std::max(firstColumn, lastColumn);
+    const QColor chosen(color);
+    if (top < 0 || bottom >= rows || left < 0 || right >= columns || (!color.isEmpty() && !chosen.isValid())) return;
+    const QString normalized = color.isEmpty() ? QString() : chosen.name(QColor::HexRgb);
+    bool changed = false;
+    for (int row = top; row <= bottom; ++row) for (int column = left; column <= right; ++column)
+        changed |= fillColorAt(row, column) != normalized;
+    if (!changed) return;
+    recordEdit();
+    for (int row = top; row <= bottom; ++row) for (int column = left; column <= right; ++column) {
+        const int address = key(row, column);
+        if (normalized.isEmpty()) m_fillColors.remove(address); else m_fillColors.insert(address, normalized);
+    }
+    m_dirty = m_hasDocument = true;
+    refresh();
+}
+
+void SheetsDocument::setRangeTextColor(int firstRow, int firstColumn, int lastRow, int lastColumn, const QString &color) {
+    const int top = std::min(firstRow, lastRow), bottom = std::max(firstRow, lastRow);
+    const int left = std::min(firstColumn, lastColumn), right = std::max(firstColumn, lastColumn);
+    const QColor chosen(color);
+    if (top < 0 || bottom >= rows || left < 0 || right >= columns || (!color.isEmpty() && !chosen.isValid())) return;
+    const QString normalized = color.isEmpty() ? QString() : chosen.name(QColor::HexRgb);
+    bool changed = false;
+    for (int row = top; row <= bottom; ++row) for (int column = left; column <= right; ++column)
+        changed |= textColorAt(row, column) != normalized;
+    if (!changed) return;
+    recordEdit();
+    for (int row = top; row <= bottom; ++row) for (int column = left; column <= right; ++column) {
+        const int address = key(row, column);
+        if (normalized.isEmpty()) m_textColors.remove(address); else m_textColors.insert(address, normalized);
+    }
+    m_dirty = m_hasDocument = true;
+    refresh();
+}
+
+void SheetsDocument::setRangeAlignment(int firstRow, int firstColumn, int lastRow, int lastColumn, int alignment) {
+    const int top = std::min(firstRow, lastRow), bottom = std::max(firstRow, lastRow);
+    const int left = std::min(firstColumn, lastColumn), right = std::max(firstColumn, lastColumn);
+    if (top < 0 || bottom >= rows || left < 0 || right >= columns || alignment < 0 || alignment > 2) return;
+    bool changed = false;
+    for (int row = top; row <= bottom; ++row) for (int column = left; column <= right; ++column)
+        changed |= alignmentAt(row, column) != alignment;
+    if (!changed) return;
+    recordEdit();
+    for (int row = top; row <= bottom; ++row) for (int column = left; column <= right; ++column) {
+        const int address = key(row, column);
+        if (alignment) m_alignments.insert(address, alignment); else m_alignments.remove(address);
+    }
+    m_dirty = m_hasDocument = true;
     refresh();
 }
 
@@ -199,13 +287,18 @@ QVariantList SheetsDocument::chartData() const {
 
 bool SheetsDocument::hasNativeFeatures() const {
     return m_sheets.size() > 1 || m_sheets[m_activeSheet].name != QStringLiteral("Sheet 1") ||
-           !m_numberFormats.isEmpty() || !m_boldCells.isEmpty() || !m_chartRange.isEmpty() || !m_rowHeights.isEmpty() || !m_columnWidths.isEmpty();
+           !m_numberFormats.isEmpty() || !m_boldCells.isEmpty() || !m_alignments.isEmpty() ||
+           !m_fillColors.isEmpty() || !m_textColors.isEmpty() || !m_chartRange.isEmpty() ||
+           !m_rowHeights.isEmpty() || !m_columnWidths.isEmpty();
 }
 
 QJsonObject SheetsDocument::sheetObject(const SheetState &sheet) const {
     QSet<int> addresses;
     for (auto it = sheet.cells.cbegin(); it != sheet.cells.cend(); ++it) addresses.insert(it.key());
     for (auto it = sheet.numberFormats.cbegin(); it != sheet.numberFormats.cend(); ++it) addresses.insert(it.key());
+    for (auto it = sheet.alignments.cbegin(); it != sheet.alignments.cend(); ++it) addresses.insert(it.key());
+    for (auto it = sheet.fillColors.cbegin(); it != sheet.fillColors.cend(); ++it) addresses.insert(it.key());
+    for (auto it = sheet.textColors.cbegin(); it != sheet.textColors.cend(); ++it) addresses.insert(it.key());
     addresses.unite(sheet.boldCells);
     QList<int> sorted = addresses.values();
     std::sort(sorted.begin(), sorted.end());
@@ -217,6 +310,9 @@ QJsonObject SheetsDocument::sheetObject(const SheetState &sheet) const {
                                  {QStringLiteral("column"), column},
                                  {QStringLiteral("raw"), sheet.cells.value(address)},
                                  {QStringLiteral("numberFormat"), sheet.numberFormats.value(address)},
+                                 {QStringLiteral("alignment"), sheet.alignments.value(address)},
+                                 {QStringLiteral("fillColor"), sheet.fillColors.value(address)},
+                                 {QStringLiteral("textColor"), sheet.textColors.value(address)},
                                  {QStringLiteral("bold"), sheet.boldCells.contains(address)}});
     }
     QJsonArray rowHeights, columnWidths;
@@ -275,10 +371,17 @@ bool SheetsDocument::parseSheetObject(const QJsonObject &object, SheetState &she
     for(const QJsonValue &value:cells){
         if(!value.isObject())return false;
         QJsonObject cell=value.toObject();int row=cell.value("row").toInt(-1),column=cell.value("column").toInt(-1);
-        int format=cell.value("numberFormat").toInt();QString raw=cell.value("raw").toString();
-        if(row<0||row>=rows||column<0||column>=columns||format<0||format>3||raw.size()>10000)return false;
+        int format=cell.value("numberFormat").toInt(), alignment=cell.value("alignment").toInt();
+        QString raw=cell.value("raw").toString();
+        QString fill=cell.value("fillColor").toString(), textColor=cell.value("textColor").toString();
+        if(row<0||row>=rows||column<0||column>=columns||format<0||format>3||alignment<0||alignment>2||
+           raw.size()>10000||(!fill.isEmpty()&&!QColor(fill).isValid())||
+           (!textColor.isEmpty()&&!QColor(textColor).isValid()))return false;
         int address=key(row,column);if(!raw.isEmpty())sheet.cells.insert(address,raw);
         if(format)sheet.numberFormats.insert(address,format);if(cell.value("bold").toBool())sheet.boldCells.insert(address);
+        if(alignment)sheet.alignments.insert(address,alignment);
+        if(!fill.isEmpty())sheet.fillColors.insert(address,QColor(fill).name(QColor::HexRgb));
+        if(!textColor.isEmpty())sheet.textColors.insert(address,QColor(textColor).name(QColor::HexRgb));
     }
     const auto sizes=[](const QJsonArray &array,int count,int minimum,int maximum,QHash<int,int> &out){
         for(const QJsonValue &v:array){QJsonArray pair=v.toArray();if(pair.size()!=2||!pair[0].isDouble()||!pair[1].isDouble())return false;
@@ -374,15 +477,21 @@ bool SheetsDocument::exportPdf(const QUrl &url) {
                     for (int column = columnStart; column <= columnEnd; ++column) {
                         const QRect box(margin + (column - columnStart) * cellWidth,
                                         87 + offset * rowHeight, cellWidth, rowHeight);
+                        const QString fill = fillColorAt(row, column);
+                        if (!fill.isEmpty()) painter.fillRect(box, QColor(fill));
                         painter.setPen(QColor("#cfd4dc"));
                         painter.drawRect(box);
-                        painter.setPen(QColor("#202329"));
+                        const QString textColor = textColorAt(row, column);
+                        painter.setPen(textColor.isEmpty() ? QColor("#202329") : QColor(textColor));
                         QFont font(QStringLiteral("Noto Sans"), 8);
                         font.setBold(boldAt(row, column));
                         painter.setFont(font);
                         const QString value = painter.fontMetrics().elidedText(displayAt(row, column),
                                                                                 Qt::ElideRight, cellWidth - 10);
-                        painter.drawText(box.adjusted(5, 0, -5, 0), Qt::AlignVCenter, value);
+                        const int align = alignmentAt(row, column);
+                        painter.drawText(box.adjusted(5, 0, -5, 0),
+                                         Qt::AlignVCenter | (align == 1 ? Qt::AlignHCenter :
+                                                            align == 2 ? Qt::AlignRight : Qt::AlignLeft), value);
                     }
                 }
             }

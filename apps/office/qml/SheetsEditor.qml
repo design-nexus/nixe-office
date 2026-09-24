@@ -9,21 +9,227 @@ Item {
     property int anchorRow: 0
     property int anchorColumn: 0
     property var activeEditor: null
+    property var formulaBarEditor: null
+    property var referenceEditor: null
+    property int referenceAnchorRow: -1
+    property int referenceAnchorColumn: -1
+    property int referenceStart: 0
+    property int referenceLength: 0
+    property string dragMode: ""
+    property int dragTargetRow: -1
+    property int dragTargetColumn: -1
+    property int dragTop: 0
+    property int dragBottom: 0
+    property int dragLeft: 0
+    property int dragRight: 0
+    property var dragSourceDisplay: []
+    property var dragSourceBold: []
     property int dimensionRevision: 0
     readonly property int gridWidth: width - (Sheets.chartRange !== "" ? 320 : 0)
-    readonly property string selectionName: Sheets.cellName(selectedRow, selectedColumn)
+    readonly property string selectionName: anchorRow === selectedRow && anchorColumn === selectedColumn
+                                            ? Sheets.cellName(selectedRow, selectedColumn)
+                                            : Sheets.cellName(Math.min(anchorRow, selectedRow), Math.min(anchorColumn, selectedColumn))
+                                              + ":" + Sheets.cellName(Math.max(anchorRow, selectedRow), Math.max(anchorColumn, selectedColumn))
     signal selectionChanged()
     Connections { target: Sheets; function onDimensionsChanged() { root.dimensionRevision++; grid.forceLayout() } }
 
+    function viewRowFor(sourceRow) {
+        for (let row = 0; row < Sheets.visibleRowCount; row++)
+            if (Sheets.sourceRow(row) === sourceRow) return row
+        return -1
+    }
     function selectCell(row, column, extend) {
+        commitEditing()
         if (!extend) { anchorRow = row; anchorColumn = column }
         selectedRow = row
         selectedColumn = column
         selectionChanged()
+        const viewRow = viewRowFor(row)
+        if (viewRow >= 0)
+            grid.positionViewAtCell(Qt.point(column, viewRow), TableView.Contain)
+        grid.forceActiveFocus()
     }
-    function resetSelection() { anchorRow = 0; anchorColumn = 0; selectedRow = 0; selectedColumn = 0; selectionChanged() }
+    function extendSelection(row, column) {
+        if (row === selectedRow && column === selectedColumn) return
+        selectedRow = row
+        selectedColumn = column
+        selectionChanged()
+    }
+    function formulaEditor() {
+        if (activeEditor && activeEditor.activeFocus && activeEditor.text.startsWith("=")) return activeEditor
+        if (formulaBarEditor && formulaBarEditor.activeFocus && formulaBarEditor.text.startsWith("=")) return formulaBarEditor
+        return null
+    }
+    function beginReference(row, column) {
+        const editor = formulaEditor()
+        if (!editor) return false
+        let start = editor.selectionStart
+        let end = editor.selectionEnd
+        if (start < 0 || end < 0 || start === end) start = end = editor.cursorPosition
+        if (start === 0 && end === editor.text.length && editor.text.startsWith("=")) start = 1
+        editor.remove(start, end)
+        const label = Sheets.cellName(row, column)
+        editor.insert(start, label)
+        editor.cursorPosition = start + label.length
+        editor.forceActiveFocus()
+        referenceEditor = editor
+        referenceAnchorRow = row
+        referenceAnchorColumn = column
+        referenceStart = start
+        referenceLength = label.length
+        return true
+    }
+    function updateReference(row, column) {
+        if (!referenceEditor || row < 0) return
+        const label = row === referenceAnchorRow && column === referenceAnchorColumn
+                      ? Sheets.cellName(row, column)
+                      : Sheets.cellName(Math.min(referenceAnchorRow, row), Math.min(referenceAnchorColumn, column))
+                        + ":" + Sheets.cellName(Math.max(referenceAnchorRow, row), Math.max(referenceAnchorColumn, column))
+        if (referenceEditor.text.substring(referenceStart, referenceStart + referenceLength) === label) return
+        referenceEditor.remove(referenceStart, referenceStart + referenceLength)
+        referenceEditor.insert(referenceStart, label)
+        referenceLength = label.length
+        referenceEditor.cursorPosition = referenceStart + referenceLength
+        referenceEditor.forceActiveFocus()
+    }
+    function endReference() { referenceEditor = null }
+    function focusGrid() { grid.forceActiveFocus() }
+    function cancelEditing() {
+        if (!activeEditor || !activeEditor.activeFocus) return false
+        activeEditor.cancel()
+        return true
+    }
+    function cellAtGridPoint(point) {
+        const x = point.x + grid.contentX
+        const y = point.y + grid.contentY
+        let offset = 0
+        let column = 51
+        for (let index = 0; index < 52; index++) {
+            offset += Sheets.columnWidth(index)
+            if (x < offset) { column = index; break }
+        }
+        offset = 0
+        let viewRow = Math.max(0, Sheets.visibleRowCount - 1)
+        for (let index = 0; index < Sheets.visibleRowCount; index++) {
+            offset += Sheets.rowHeight(Sheets.sourceRow(index))
+            if (y < offset) { viewRow = index; break }
+        }
+        return { row: Sheets.sourceRow(viewRow), column: column }
+    }
+    function startDrag(mode) {
+        commitEditing()
+        dragTop = Math.min(anchorRow, selectedRow)
+        dragBottom = Math.max(anchorRow, selectedRow)
+        dragLeft = Math.min(anchorColumn, selectedColumn)
+        dragRight = Math.max(anchorColumn, selectedColumn)
+        const displays = [], bolds = []
+        for (let row = dragTop; row <= dragBottom; row++) {
+            const displayRow = [], boldRow = []
+            for (let column = dragLeft; column <= dragRight; column++) {
+                displayRow.push(Sheets.displayAt(row, column))
+                boldRow.push(Sheets.boldAt(row, column))
+            }
+            displays.push(displayRow)
+            bolds.push(boldRow)
+        }
+        dragSourceDisplay = displays
+        dragSourceBold = bolds
+        dragTargetRow = mode === "move" ? dragTop : dragBottom
+        dragTargetColumn = mode === "move" ? dragLeft : dragRight
+        dragMode = mode
+    }
+    function fillBounds() {
+        const verticalDistance = dragTargetRow < dragTop ? dragTop - dragTargetRow : Math.max(0, dragTargetRow - dragBottom)
+        const horizontalDistance = dragTargetColumn < dragLeft ? dragLeft - dragTargetColumn : Math.max(0, dragTargetColumn - dragRight)
+        const vertical = verticalDistance >= horizontalDistance
+        return { top: vertical ? Math.min(dragTop, dragTargetRow) : dragTop,
+                 bottom: vertical ? Math.max(dragBottom, dragTargetRow) : dragBottom,
+                 left: vertical ? dragLeft : Math.min(dragLeft, dragTargetColumn),
+                 right: vertical ? dragRight : Math.max(dragRight, dragTargetColumn) }
+    }
+    function previewFor(row, column) {
+        if (dragMode === "") return null
+        const height = dragBottom - dragTop + 1, width = dragRight - dragLeft + 1
+        if (dragMode === "fill") {
+            const bounds = fillBounds()
+            if (row < bounds.top || row > bounds.bottom || column < bounds.left || column > bounds.right ||
+                (row >= dragTop && row <= dragBottom && column >= dragLeft && column <= dragRight)) return null
+            const sourceRow = ((row - dragTop) % height + height) % height
+            const sourceColumn = ((column - dragLeft) % width + width) % width
+            return { display: dragSourceDisplay[sourceRow][sourceColumn],
+                     bold: dragSourceBold[sourceRow][sourceColumn], kind: "fill" }
+        }
+        const targetRow = Math.max(0, Math.min(500 - height, dragTargetRow))
+        const targetColumn = Math.max(0, Math.min(52 - width, dragTargetColumn))
+        if (row >= targetRow && row < targetRow + height && column >= targetColumn && column < targetColumn + width)
+            return { display: dragSourceDisplay[row - targetRow][column - targetColumn],
+                     bold: dragSourceBold[row - targetRow][column - targetColumn], kind: "move" }
+        if (row >= dragTop && row <= dragBottom && column >= dragLeft && column <= dragRight)
+            return { display: "", bold: false, kind: "cleared" }
+        return null
+    }
+    function cancelDrag() {
+        dragMode = ""
+        dragSourceDisplay = []
+        dragSourceBold = []
+    }
+    function finishDrag() {
+        const top = dragTop, bottom = dragBottom
+        const left = dragLeft, right = dragRight
+        if (dragMode === "fill") {
+            const bounds = fillBounds()
+            Sheets.fillRange(top, left, bottom, right, dragTargetRow, dragTargetColumn)
+            anchorRow = bounds.top
+            selectedRow = bounds.bottom
+            anchorColumn = bounds.left
+            selectedColumn = bounds.right
+            selectionChanged()
+        } else if (dragMode === "move") {
+            const targetRow = Math.max(0, Math.min(500 - (bottom - top + 1), dragTargetRow))
+            const targetColumn = Math.max(0, Math.min(52 - (right - left + 1), dragTargetColumn))
+            Sheets.moveRange(top, left, bottom, right, targetRow, targetColumn)
+            anchorRow = targetRow
+            anchorColumn = targetColumn
+            selectedRow = targetRow + bottom - top
+            selectedColumn = targetColumn + right - left
+            selectionChanged()
+        }
+        cancelDrag()
+        grid.forceActiveFocus()
+    }
+    function fillSelectionDown() {
+        const top = Math.min(anchorRow, selectedRow), bottom = Math.max(anchorRow, selectedRow)
+        if (bottom > top) Sheets.fillRange(top, Math.min(anchorColumn, selectedColumn), top,
+                                            Math.max(anchorColumn, selectedColumn), bottom, selectedColumn)
+    }
+    function fillSelectionRight() {
+        const left = Math.min(anchorColumn, selectedColumn), right = Math.max(anchorColumn, selectedColumn)
+        if (right > left) Sheets.fillRange(Math.min(anchorRow, selectedRow), left,
+                                          Math.max(anchorRow, selectedRow), left, selectedRow, right)
+    }
+    function beginSelectedEdit(replacement) {
+        const sourceRow = selectedRow
+        const column = selectedColumn
+        const viewRow = viewRowFor(selectedRow)
+        if (viewRow < 0) return
+        grid.positionViewAtCell(Qt.point(column, viewRow), TableView.Contain)
+        const visibleCell = grid.itemAtCell(Qt.point(column, viewRow))
+        if (visibleCell) { visibleCell.beginEditing(replacement); return }
+        Qt.callLater(function() {
+            if (selectedRow !== sourceRow || selectedColumn !== column) return
+            const cell = grid.itemAtCell(Qt.point(column, viewRow))
+            if (cell) cell.beginEditing(replacement)
+        })
+    }
+    function moveSelection(rowDelta, columnDelta, extend) {
+        if (Sheets.visibleRowCount === 0) return
+        const viewRow = viewRowFor(selectedRow)
+        const nextViewRow = Math.max(0, Math.min(Sheets.visibleRowCount - 1, viewRow + rowDelta))
+        selectCell(Sheets.sourceRow(nextViewRow), Math.max(0, Math.min(51, selectedColumn + columnDelta)), extend)
+    }
+    function resetSelection() { selectCell(0, 0, false) }
     function copySelection() { commitEditing(); Sheets.copyRange(anchorRow, anchorColumn, selectedRow, selectedColumn) }
-    function pasteSelection() { commitEditing(); Sheets.pasteRange(selectedRow, selectedColumn) }
+    function pasteSelection() { commitEditing(); Sheets.pasteRangeToSelection(anchorRow, anchorColumn, selectedRow, selectedColumn) }
     function commitEditing() {
         if (activeEditor) activeEditor.commit()
     }
@@ -122,6 +328,7 @@ Item {
     }
     TableView {
         id: grid
+        objectName: "sheetsGrid"
         x: 44; y: 28
         width: root.gridWidth - 44; height: parent.height - 64
         clip: true
@@ -129,12 +336,29 @@ Item {
         reuseItems: true
         rowSpacing: 0
         columnSpacing: 0
+        focus: true
+        Keys.onPressed: function(event) {
+            const extend = Boolean(event.modifiers & Qt.ShiftModifier)
+            if (event.key === Qt.Key_Left) root.moveSelection(0, -1, extend)
+            else if (event.key === Qt.Key_Right) root.moveSelection(0, 1, extend)
+            else if (event.key === Qt.Key_Up) root.moveSelection(-1, 0, extend)
+            else if (event.key === Qt.Key_Down || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) root.moveSelection(1, 0, extend)
+            else if (event.key === Qt.Key_Tab) root.moveSelection(0, extend ? -1 : 1, false)
+            else if (event.key === Qt.Key_F2) root.beginSelectedEdit()
+            else if (event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace)
+                Sheets.clearRange(root.anchorRow, root.anchorColumn, root.selectedRow, root.selectedColumn)
+            else if (event.text.length > 0 && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)))
+                root.beginSelectedEdit(event.text)
+            else return
+            event.accepted = true
+        }
         rowHeightProvider: function(row) { return Sheets.rowHeight(Sheets.sourceRow(row)) }
         columnWidthProvider: function(column) { return Sheets.columnWidth(column) }
         ScrollBar.vertical: ScrollBar { }
         ScrollBar.horizontal: ScrollBar { }
         delegate: Rectangle {
             id: cell
+            objectName: "sheetCell-" + sourceRow + "-" + column
             required property int row
             required property int column
             required property string display
@@ -142,25 +366,49 @@ Item {
             required property bool bold
             required property int sourceRow
             property bool editing: false
+            readonly property bool inSelection: sourceRow >= Math.min(root.anchorRow, root.selectedRow)
+                                                && sourceRow <= Math.max(root.anchorRow, root.selectedRow)
+                                                && column >= Math.min(root.anchorColumn, root.selectedColumn)
+                                                && column <= Math.max(root.anchorColumn, root.selectedColumn)
+            readonly property string fillColor: { Sheets.revision; return Sheets.fillColorAt(sourceRow, column) }
+            readonly property string textColor: { Sheets.revision; return Sheets.textColorAt(sourceRow, column) }
+            readonly property int cellAlignment: { Sheets.revision; return Sheets.alignmentAt(sourceRow, column) }
+            readonly property var dragPreview: root.previewFor(sourceRow, column)
+            readonly property string shownText: dragPreview ? dragPreview.display : display
+            function beginEditing(replacement) {
+                root.commitEditing()
+                editing = true
+                root.activeEditor = input
+                input.text = replacement === undefined ? raw : replacement
+                input.forceActiveFocus()
+                if (replacement === undefined) input.selectAll()
+                else input.cursorPosition = input.length
+            }
             implicitWidth: 112
             implicitHeight: 30
-            color: sourceRow >= Math.min(root.anchorRow, root.selectedRow) && sourceRow <= Math.max(root.anchorRow, root.selectedRow)
-                   && column >= Math.min(root.anchorColumn, root.selectedColumn) && column <= Math.max(root.anchorColumn, root.selectedColumn)
-                   ? Theme.palette.raised : Theme.palette.background
-            border.color: root.selectedRow === sourceRow && root.selectedColumn === column
-                          ? Theme.palette.accent : Theme.palette.border
-            border.width: root.selectedRow === sourceRow && root.selectedColumn === column ? 2 : 1
+            color: dragPreview && dragPreview.kind === "cleared" ? Theme.palette.background
+                   : dragPreview ? Theme.palette.raised
+                   : fillColor !== "" ? fillColor
+                   : inSelection ? Theme.palette.raised : Theme.palette.background
+            border.color: dragPreview && dragPreview.kind !== "cleared" ? Theme.palette.accent
+                          : inSelection ? Theme.palette.accent : Theme.palette.border
+            border.width: (dragPreview && dragPreview.kind !== "cleared") ||
+                          (root.selectedRow === sourceRow && root.selectedColumn === column) ? 2 : 1
 
             Text {
                 anchors.fill: parent
                 anchors.leftMargin: 8
                 anchors.rightMargin: 5
                 verticalAlignment: Text.AlignVCenter
-                text: cell.display
+                text: cell.shownText
                 visible: !cell.editing
-                color: text.startsWith("#") ? Theme.palette.accent : Theme.palette.text
+                color: cell.dragPreview && cell.dragPreview.kind !== "cleared" ? Theme.palette.accent
+                       : cell.textColor !== "" ? cell.textColor
+                       : text.startsWith("#") ? Theme.palette.accent : Theme.palette.text
                 font.pixelSize: 12
-                font.bold: cell.bold
+                font.bold: cell.dragPreview ? cell.dragPreview.bold : cell.bold
+                horizontalAlignment: cell.cellAlignment === 1 ? Text.AlignHCenter
+                                     : cell.cellAlignment === 2 ? Text.AlignRight : Text.AlignLeft
                 elide: Text.ElideRight
             }
             TextInput {
@@ -171,39 +419,104 @@ Item {
                 verticalAlignment: TextInput.AlignVCenter
                 visible: cell.editing
                 text: cell.raw
-                color: Theme.palette.text
+                color: cell.textColor !== "" ? cell.textColor : Theme.palette.text
                 selectionColor: Theme.palette.accent
                 selectByMouse: true
                 font.pixelSize: 12
+                horizontalAlignment: cell.cellAlignment === 1 ? TextInput.AlignHCenter
+                                     : cell.cellAlignment === 2 ? TextInput.AlignRight : TextInput.AlignLeft
                 function commit() {
                     if (!cell.editing) return
                     const row = cell.sourceRow
                     const column = cell.column
                     const value = text
                     cell.editing = false
+                    focus = false
                     if (root.activeEditor === input) root.activeEditor = null
                     Sheets.setCell(row, column, value)
                     root.selectionChanged()
                 }
-                onAccepted: commit()
-                onActiveFocusChanged: if (!activeFocus) commit()
-                Keys.onEscapePressed: {
+                function cancel() {
+                    if (!cell.editing) return
                     cell.editing = false
+                    focus = false
                     text = cell.raw
                     if (root.activeEditor === input) root.activeEditor = null
+                    root.endReference()
+                    grid.forceActiveFocus()
                 }
+                onActiveFocusChanged: if (!activeFocus) commit()
+                Keys.onReturnPressed: function(event) { event.accepted = true; commit(); root.moveSelection(1, 0, false) }
+                Keys.onEnterPressed: function(event) { event.accepted = true; commit(); root.moveSelection(1, 0, false) }
+                Keys.onTabPressed: function(event) { event.accepted = true; commit(); root.moveSelection(0, 1, false) }
+                Keys.onBacktabPressed: function(event) { event.accepted = true; commit(); root.moveSelection(0, -1, false) }
+                Keys.onEscapePressed: function(event) { event.accepted = true; cancel() }
             }
             MouseArea {
+                id: cellMouse
                 anchors.fill: parent
                 enabled: !cell.editing
-                onClicked: function(mouse) { root.selectCell(cell.sourceRow, cell.column, Boolean(mouse.modifiers & Qt.ShiftModifier)) }
+                preventStealing: true
+                cursorShape: Qt.ArrowCursor
+                onPressed: function(mouse) {
+                    if (!root.beginReference(cell.sourceRow, cell.column))
+                        root.selectCell(cell.sourceRow, cell.column, Boolean(mouse.modifiers & Qt.ShiftModifier))
+                }
+                onPositionChanged: function(mouse) {
+                    if (!pressed) return
+                    const point = mapToItem(grid, mouse.x, mouse.y)
+                    const target = root.cellAtGridPoint(point)
+                    if (root.referenceEditor) root.updateReference(target.row, target.column)
+                    else if (target.row >= 0) root.extendSelection(target.row, target.column)
+                }
+                onReleased: root.endReference()
+                onCanceled: root.endReference()
                 onDoubleClicked: {
+                    if (root.formulaEditor()) return
                     root.selectCell(cell.sourceRow, cell.column)
-                    cell.editing = true
-                    root.activeEditor = input
-                    input.text = cell.raw
-                    input.forceActiveFocus()
-                    input.selectAll()
+                    root.beginSelectedEdit()
+                }
+            }
+            Rectangle {
+                visible: !cell.editing && cell.sourceRow === Math.min(root.anchorRow, root.selectedRow)
+                         && cell.column === Math.min(root.anchorColumn, root.selectedColumn)
+                x: 0; y: 0; width: 9; height: 9
+                color: Theme.palette.accent
+                opacity: 0.75
+                MouseArea {
+                    anchors.fill: parent
+                    preventStealing: true
+                    cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                    onPressed: root.startDrag("move")
+                    onPositionChanged: function(mouse) {
+                        if (!pressed) return
+                        const target = root.cellAtGridPoint(mapToItem(grid, mouse.x, mouse.y))
+                        root.dragTargetRow = target.row
+                        root.dragTargetColumn = target.column
+                    }
+                    onReleased: root.finishDrag()
+                    onCanceled: root.cancelDrag()
+                }
+            }
+            Rectangle {
+                visible: !cell.editing && cell.sourceRow === Math.max(root.anchorRow, root.selectedRow)
+                         && cell.column === Math.max(root.anchorColumn, root.selectedColumn)
+                x: parent.width - 8; y: parent.height - 8; width: 8; height: 8
+                color: Theme.palette.accent
+                border.color: Theme.palette.background
+                MouseArea {
+                    anchors.fill: parent
+                    preventStealing: true
+                    cursorShape: Qt.CrossCursor
+                    onPressed: root.startDrag("fill")
+                    onPositionChanged: function(mouse) {
+                        if (!pressed) return
+                        const target = root.cellAtGridPoint(mapToItem(grid, mouse.x, mouse.y))
+                        root.dragTargetRow = target.row
+                        root.dragTargetColumn = target.column
+                    }
+                    onReleased: root.finishDrag()
+                    onCanceled: root.cancelDrag()
                 }
             }
             TableView.onPooled: {

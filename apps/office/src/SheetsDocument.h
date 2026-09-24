@@ -69,8 +69,16 @@ public:
     Q_INVOKABLE int sourceRow(int viewRow) const;
     Q_INVOKABLE int numberFormatAt(int row, int column) const;
     Q_INVOKABLE bool boldAt(int row, int column) const;
+    Q_INVOKABLE QString fillColorAt(int row, int column) const;
+    Q_INVOKABLE QString textColorAt(int row, int column) const;
+    Q_INVOKABLE int alignmentAt(int row, int column) const;
     Q_INVOKABLE void setNumberFormat(int row, int column, int format);
     Q_INVOKABLE void toggleBold(int row, int column);
+    Q_INVOKABLE void setRangeNumberFormat(int firstRow, int firstColumn, int lastRow, int lastColumn, int format);
+    Q_INVOKABLE void toggleRangeBold(int firstRow, int firstColumn, int lastRow, int lastColumn);
+    Q_INVOKABLE void setRangeFillColor(int firstRow, int firstColumn, int lastRow, int lastColumn, const QString &color);
+    Q_INVOKABLE void setRangeTextColor(int firstRow, int firstColumn, int lastRow, int lastColumn, const QString &color);
+    Q_INVOKABLE void setRangeAlignment(int firstRow, int firstColumn, int lastRow, int lastColumn, int alignment);
     Q_INVOKABLE int rowHeight(int row) const;
     Q_INVOKABLE int columnWidth(int column) const;
     Q_INVOKABLE void setRowHeight(int row, int height);
@@ -96,6 +104,12 @@ public:
     Q_INVOKABLE void selectSheet(int index);
     Q_INVOKABLE void copyRange(int firstRow, int firstColumn, int lastRow, int lastColumn);
     Q_INVOKABLE void pasteRange(int row, int column);
+    Q_INVOKABLE void pasteRangeToSelection(int firstRow, int firstColumn, int lastRow, int lastColumn);
+    Q_INVOKABLE void clearRange(int firstRow, int firstColumn, int lastRow, int lastColumn);
+    Q_INVOKABLE void fillRange(int firstRow, int firstColumn, int lastRow, int lastColumn,
+                               int targetRow, int targetColumn);
+    Q_INVOKABLE void moveRange(int firstRow, int firstColumn, int lastRow, int lastColumn,
+                               int targetRow, int targetColumn);
 
 signals:
     void stateChanged();
@@ -122,7 +136,8 @@ private:
     struct SheetState {
         QString name = QStringLiteral("Sheet 1");
         QHash<int, QString> cells;
-        QHash<int, int> numberFormats, rowHeights, columnWidths;
+        QHash<int, int> numberFormats, alignments, rowHeights, columnWidths;
+        QHash<int, QString> fillColors, textColors;
         QSet<int> boldCells;
         QVector<int> viewRows;
         int sortColumn = -1, filterColumn = -1;
@@ -148,6 +163,8 @@ private:
     QVector<SheetState> m_sheets{SheetState()};
     int m_activeSheet = 0;
     QHash<int, int> m_numberFormats;
+    QHash<int, int> m_alignments;
+    QHash<int, QString> m_fillColors, m_textColors;
     QSet<int> m_boldCells;
     QHash<int, int> m_rowHeights;
     QHash<int, int> m_columnWidths;

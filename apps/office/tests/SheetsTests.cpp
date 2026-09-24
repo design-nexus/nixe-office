@@ -19,7 +19,9 @@ private slots:
     void templatesCreateWorkingSheets();
     void xlsxRoundTrip();
     void multiSheetAndRangeClipboard();
+    void rangeFillMoveAndPaste();
     void expandedFormulasAndCharts();
+    void conditionalFormulasAndRangeStyles();
 };
 
 void SheetsTests::calculatesReferencesAndRanges() {
@@ -272,6 +274,10 @@ void SheetsTests::xlsxRoundTrip() {
     sheet.setCell(0, 0, "Item"); sheet.setCell(1, 0, "Rent");
     sheet.setCell(1, 1, "1200"); sheet.setCell(2, 1, "=B2*2");
     sheet.toggleBold(0, 0); sheet.setNumberFormat(1, 1, 2);
+    sheet.setRangeFillColor(0, 0, 0, 0, "#224466");
+    sheet.setRangeTextColor(0, 0, 0, 0, "#f0e0d0");
+    sheet.setRangeAlignment(0, 0, 0, 0, 1);
+    sheet.setRangeFillColor(4, 4, 4, 4, "#aabbcc");
     sheet.setColumnWidth(1, 210); sheet.setRowHeight(1, 40);
     const QString path=dir.path()+"/budget.xlsx";
     QVERIFY2(sheet.exportXlsx(QUrl::fromLocalFile(path)), qPrintable(sheet.errorString()));
@@ -284,6 +290,10 @@ void SheetsTests::xlsxRoundTrip() {
     QCOMPARE(imported.displayAt(2, 1), QString("2400"));
     QCOMPARE(imported.numberFormatAt(1, 1), 2);
     QVERIFY(imported.boldAt(0, 0));
+    QCOMPARE(imported.fillColorAt(0, 0), QString("#224466"));
+    QCOMPARE(imported.textColorAt(0, 0), QString("#f0e0d0"));
+    QCOMPARE(imported.alignmentAt(0, 0), 1);
+    QCOMPARE(imported.fillColorAt(4, 4), QString("#aabbcc"));
     QCOMPARE(imported.columnWidth(1), 210);
     QCOMPARE(imported.rowHeight(1), 40);
     QVERIFY(imported.path().isEmpty()); QVERIFY(imported.dirty());
@@ -320,6 +330,99 @@ void SheetsTests::multiSheetAndRangeClipboard() {
     QGuiApplication::clipboard()->setText("one\ttwo\nthree\tfour");imported.pasteRange(5,4);
     QCOMPARE(imported.rawAt(5,4),QString("one"));QCOMPARE(imported.rawAt(6,5),QString("four"));
     imported.undo();QCOMPARE(imported.rawAt(5,4),QString());
+}
+
+void SheetsTests::rangeFillMoveAndPaste() {
+    SheetsDocument book; book.newDocument();
+    book.setCell(0, 0, "Seed");
+    book.setCell(0, 1, "=A1");
+    book.toggleBold(0, 0);
+    book.fillRange(0, 0, 0, 1, 2, 1);
+    QCOMPARE(book.rawAt(1, 0), QString("Seed"));
+    QCOMPARE(book.rawAt(2, 1), QString("=A3"));
+    QVERIFY(book.boldAt(2, 0));
+    book.undo();
+    QCOMPARE(book.rawAt(1, 0), QString());
+    book.redo();
+    QCOMPARE(book.rawAt(2, 1), QString("=A3"));
+
+    book.moveRange(0, 0, 2, 1, 3, 2);
+    QCOMPARE(book.rawAt(0, 0), QString());
+    QCOMPARE(book.rawAt(3, 2), QString("Seed"));
+    QCOMPARE(book.rawAt(5, 3), QString("=A3"));
+    QVERIFY(book.boldAt(5, 2));
+    book.undo();
+    QCOMPARE(book.rawAt(0, 0), QString("Seed"));
+
+    book.copyRange(0, 0, 0, 0);
+    book.pasteRangeToSelection(5, 5, 6, 6);
+    QCOMPARE(book.rawAt(5, 5), QString("Seed"));
+    QCOMPARE(book.rawAt(6, 6), QString("Seed"));
+    book.clearRange(5, 5, 6, 6);
+    QCOMPARE(book.rawAt(5, 5), QString());
+    QCOMPARE(book.rawAt(6, 6), QString());
+    book.undo();
+    QCOMPARE(book.rawAt(6, 6), QString("Seed"));
+
+    book.setCell(8, 8, "=A1");
+    book.fillRange(8, 8, 8, 8, 8, 9);
+    QCOMPARE(book.rawAt(8, 9), QString("=B1"));
+    book.copyRange(8, 8, 8, 8);
+    book.pasteRangeToSelection(9, 8, 10, 8);
+    QCOMPARE(book.rawAt(9, 8), QString("=A2"));
+    QCOMPARE(book.rawAt(10, 8), QString("=A3"));
+
+    book.setCell(15, 0, "Top");
+    book.setCell(16, 0, "Bottom");
+    book.moveRange(15, 0, 16, 0, 16, 0);
+    QCOMPARE(book.rawAt(15, 0), QString());
+    QCOMPARE(book.rawAt(16, 0), QString("Top"));
+    QCOMPARE(book.rawAt(17, 0), QString("Bottom"));
+}
+
+void SheetsTests::conditionalFormulasAndRangeStyles() {
+    QTemporaryDir dir; QVERIFY(dir.isValid());
+    SheetsDocument sheet; sheet.newDocument();
+    sheet.setCell(0, 0, "Food"); sheet.setCell(0, 1, "12");
+    sheet.setCell(1, 0, "Travel"); sheet.setCell(1, 1, "8");
+    sheet.setCell(2, 0, "Food"); sheet.setCell(2, 1, "5");
+    sheet.setCell(0, 2, "=IF(B1>10,\"High\",\"Low\")");
+    QCOMPARE(sheet.displayAt(0, 2), QString("High"));
+    sheet.setCell(1, 2, "=IF(B2>10,1/0,42)");
+    QCOMPARE(sheet.displayAt(1, 2), QString("42"));
+    sheet.setCell(2, 2, "=COUNTIF(A1:A3,\"Food\")");
+    QCOMPARE(sheet.displayAt(2, 2), QString("2"));
+    sheet.setCell(3, 2, "=SUMIF(A1:A3,\"Food\",B1:B3)");
+    QCOMPARE(sheet.displayAt(3, 2), QString("17"));
+    sheet.setCell(4, 2, "=COUNTIF(B1:B3,\">7\")");
+    QCOMPARE(sheet.displayAt(4, 2), QString("2"));
+    sheet.setCell(5, 2, "=AND(B1>10,B2<10)");
+    QCOMPARE(sheet.displayAt(5, 2), QString("1"));
+    sheet.setCell(6, 2, "=MOD(B1,5)+INT(2.9)");
+    QCOMPARE(sheet.displayAt(6, 2), QString("4"));
+
+    sheet.setRangeFillColor(0, 0, 1, 1, "#224466");
+    sheet.setRangeTextColor(0, 0, 1, 1, "#f0e0d0");
+    sheet.setRangeAlignment(0, 0, 1, 1, 1);
+    sheet.setRangeNumberFormat(0, 1, 1, 1, 2);
+    sheet.toggleRangeBold(0, 0, 1, 1);
+    QCOMPARE(sheet.fillColorAt(1, 1), QString("#224466"));
+    QCOMPARE(sheet.textColorAt(0, 0), QString("#f0e0d0"));
+    QCOMPARE(sheet.alignmentAt(1, 0), 1);
+    QCOMPARE(sheet.displayAt(1, 1), QString("$8.00"));
+    QVERIFY(sheet.boldAt(1, 1));
+    sheet.undo();
+    QVERIFY(!sheet.boldAt(1, 1));
+    sheet.redo();
+    QVERIFY(sheet.boldAt(1, 1));
+
+    const QString native = dir.path() + "/styled.nsheets";
+    QVERIFY(sheet.saveAs(QUrl::fromLocalFile(native)));
+    SheetsDocument restored; QVERIFY(restored.open(QUrl::fromLocalFile(native)));
+    QCOMPARE(restored.fillColorAt(1, 1), QString("#224466"));
+    QCOMPARE(restored.textColorAt(0, 0), QString("#f0e0d0"));
+    QCOMPARE(restored.alignmentAt(1, 0), 1);
+    QCOMPARE(restored.displayAt(3, 2), QString("17"));
 }
 
 QTEST_MAIN(SheetsTests)
