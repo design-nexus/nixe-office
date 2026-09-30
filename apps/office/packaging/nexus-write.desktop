@@ -6,4 +6,4 @@ Exec=nexus-write %f
 Icon=accessories-text-editor
 Terminal=false
 Categories=Office;WordProcessor;
-MimeType=application/x-nexus-write;
+MimeType=application/x-nexus-write;application/vnd.openxmlformats-officedocument.wordprocessingml.document;

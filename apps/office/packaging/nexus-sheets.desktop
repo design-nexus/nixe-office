@@ -6,4 +6,4 @@ Exec=nexus-sheets %f
 Icon=x-office-spreadsheet
 Terminal=false
 Categories=Office;Spreadsheet;
-MimeType=application/x-nexus-sheets;text/csv;
+MimeType=application/x-nexus-sheets;text/csv;application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;
