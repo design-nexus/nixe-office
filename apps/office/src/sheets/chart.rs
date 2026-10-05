@@ -141,8 +141,16 @@ pub fn draw(cr: &cairo::Context, ctx: &pango::Context, kind: ChartKind, d: &Data
         return;
     }
 
-    // Value axis.
-    let all: Vec<f64> = d.series.iter().flatten().copied().collect();
+    // Value axis: stacked charts reach the sums of each point's values.
+    let n = d.labels.len();
+    let mut all: Vec<f64> = d.series.iter().flatten().copied().collect();
+    if kind.stacked() {
+        for i in 0..n {
+            let col = d.series.iter().filter_map(|s| s.get(i));
+            all.push(col.clone().filter(|v| **v > 0.0).sum());
+            all.push(col.filter(|v| **v < 0.0).sum());
+        }
+    }
     let (mut lo, mut hi) = (all.iter().cloned().fold(0.0, f64::min), all.iter().cloned().fold(0.0, f64::max));
     if hi == lo {
         hi = lo + 1.0;
@@ -166,8 +174,12 @@ pub fn draw(cr: &cairo::Context, ctx: &pango::Context, kind: ChartKind, d: &Data
         text(cr, ctx, &short(v), fs * 0.9, (px, yy - fs * 0.75, axis_w - 6.0), pango::Alignment::Right);
         v += step;
     }
-    let n = d.labels.len();
     let slot = gw / n as f64;
+    let zero = ypos(0.0f64.clamp(lo, hi));
+    if kind == ChartKind::Scatter {
+        scatter(cr, ctx, d, (gx, gy, gw, gh), &ypos);
+        return;
+    }
     // Category labels, thinned out when they'd crowd.
     let every = ((fs * 5.0) / slot).ceil().max(1.0) as usize;
     cr.set_source_rgb(0.42, 0.45, 0.5);
@@ -176,7 +188,11 @@ pub fn draw(cr: &cairo::Context, ctx: &pango::Context, kind: ChartKind, d: &Data
             text(cr, ctx, l, fs * 0.9, (gx + slot * i as f64, gy + gh + 4.0, slot * every as f64), pango::Alignment::Center);
         }
     }
-    let zero = ypos(0.0f64.clamp(lo, hi));
+    if kind.stacked() {
+        stacked(cr, kind, d, (gx, slot), &ypos);
+        axis_line(cr, gx, gw, zero);
+        return;
+    }
     let k = d.series.len().max(1);
     for (si, s) in d.series.iter().enumerate() {
         let (r, g, b) = SERIES[si % SERIES.len()];
@@ -220,9 +236,13 @@ pub fn draw(cr: &cairo::Context, ctx: &pango::Context, kind: ChartKind, d: &Data
                     }
                 }
             }
-            ChartKind::Pie => {}
+            _ => {}
         }
     }
+    axis_line(cr, gx, gw, zero);
+}
+
+fn axis_line(cr: &cairo::Context, gx: f64, gw: f64, zero: f64) {
     cr.set_source_rgb(0.6, 0.63, 0.67);
     cr.set_line_width(0.8);
     cr.move_to(gx, zero);
@@ -230,8 +250,113 @@ pub fn draw(cr: &cairo::Context, ctx: &pango::Context, kind: ChartKind, d: &Data
     let _ = cr.stroke();
 }
 
+/// Bars or bands of each series piled on the ones before, up from zero (and
+/// down from it for negative values).
+fn stacked(cr: &cairo::Context, kind: ChartKind, d: &Data, (gx, slot): (f64, f64), ypos: &dyn Fn(f64) -> f64) {
+    let n = d.labels.len();
+    let (mut up, mut down) = (vec![0.0; n], vec![0.0; n]);
+    for (si, s) in d.series.iter().enumerate() {
+        let (r, g, b) = SERIES[si % SERIES.len()];
+        let (start_up, start_down) = (up.clone(), down.clone());
+        for (i, v) in s.iter().enumerate().take(n) {
+            if *v >= 0.0 {
+                up[i] += v;
+            } else {
+                down[i] += v;
+            }
+        }
+        if kind == ChartKind::StackedBar {
+            cr.set_source_rgb(r, g, b);
+            for (i, v) in s.iter().enumerate().take(n) {
+                let (from, to) = if *v >= 0.0 { (start_up[i], up[i]) } else { (start_down[i], down[i]) };
+                let (y1, y2) = (ypos(from), ypos(to));
+                cr.rectangle(gx + slot * i as f64 + slot * 0.18, y1.min(y2), slot * 0.64, (y1 - y2).abs());
+            }
+            let _ = cr.fill();
+        } else if n > 0 {
+            // A band between this series' top and the one below.
+            let x = |i: usize| gx + slot * (i as f64 + 0.5);
+            cr.move_to(x(0), ypos(start_up[0]));
+            for (i, top) in up.iter().enumerate() {
+                cr.line_to(x(i), ypos(*top));
+            }
+            for i in (0..n).rev() {
+                cr.line_to(x(i), ypos(start_up[i]));
+            }
+            cr.close_path();
+            cr.set_source_rgba(r, g, b, 0.75);
+            let _ = cr.fill_preserve();
+            cr.set_source_rgb(r, g, b);
+            cr.set_line_width(1.2);
+            let _ = cr.stroke();
+        }
+    }
+}
+
+/// Points at (x, y): x from the first column, one colour per series.
+fn scatter(cr: &cairo::Context, ctx: &pango::Context, d: &Data, (gx, gy, gw, gh): (f64, f64, f64, f64), ypos: &dyn Fn(f64) -> f64) {
+    let xs: Vec<f64> = d
+        .labels
+        .iter()
+        .enumerate()
+        .map(|(i, l)| super::formula::parse_number(l).unwrap_or(i as f64 + 1.0))
+        .collect();
+    let (mut lo, mut hi) = (xs.iter().cloned().fold(f64::INFINITY, f64::min), xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+    if !lo.is_finite() {
+        return;
+    }
+    if hi == lo {
+        hi = lo + 1.0;
+    }
+    let step = nice_step(hi - lo);
+    lo = (lo / step).floor() * step;
+    hi = (hi / step).ceil() * step;
+    let xpos = |v: f64| gx + (v - lo) / (hi - lo) * gw;
+    let fs = 9.0;
+    let mut v = lo;
+    while v <= hi + step * 0.01 {
+        let x = xpos(v);
+        cr.set_source_rgb(GRID.0, GRID.1, GRID.2);
+        cr.set_line_width(0.6);
+        cr.move_to(x, gy);
+        cr.line_to(x, gy + gh);
+        let _ = cr.stroke();
+        cr.set_source_rgb(0.42, 0.45, 0.5);
+        text(cr, ctx, &short(v), fs * 0.9, (x - 30.0, gy + gh + 4.0, 60.0), pango::Alignment::Center);
+        v += step;
+    }
+    for (si, s) in d.series.iter().enumerate() {
+        let (r, g, b) = SERIES[si % SERIES.len()];
+        cr.set_source_rgb(r, g, b);
+        for (x, y) in xs.iter().zip(s) {
+            cr.new_sub_path();
+            cr.arc(xpos(*x), ypos(*y), 3.5, 0.0, std::f64::consts::TAU);
+        }
+        let _ = cr.fill();
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// `NXO_SAMPLE_DIR=/tmp/x cargo test -- --ignored chart_pictures`: one PNG per kind.
+    #[test]
+    #[ignore]
+    fn chart_pictures() {
+        let dir = std::path::PathBuf::from(std::env::var("NXO_SAMPLE_DIR").expect("NXO_SAMPLE_DIR"));
+        let ctx = crate::print::text_context();
+        let names = ["North".to_string(), "South".to_string()];
+        let labels: Vec<String> = ["1", "2", "3.5", "5", "6"].iter().map(|s| s.to_string()).collect();
+        let series = [vec![3.0, 5.0, 4.0, 7.0, 6.0], vec![2.0, 1.0, 3.0, 2.5, 4.0]];
+        for kind in super::ChartKind::ALL {
+            let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 360, 240).unwrap();
+            let cr = cairo::Context::new(&surface).unwrap();
+            super::draw(&cr, &ctx, kind, &super::Data { names: &names, labels: &labels, series: &series }, (0.0, 0.0, 360.0, 240.0));
+            drop(cr);
+            let mut f = std::fs::File::create(dir.join(format!("chart-{}.png", kind.name()))).unwrap();
+            surface.write_to_png(&mut f).unwrap();
+        }
+    }
+
     #[test]
     fn steps_are_round() {
         assert_eq!(super::nice_step(100.0), 20.0);

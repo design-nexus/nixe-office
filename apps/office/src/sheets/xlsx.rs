@@ -260,6 +260,7 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
                     color,
                     borders: borders.get(get("borderId")).copied().unwrap_or(0),
                     wrap,
+                    checkbox: false,
                 });
             }
         }
@@ -395,6 +396,59 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
         sheet.rules = rules.into_iter().map(|(_, r)| r).collect();
         // Comments live in their own part, linked from the sheet.
         let sheet_rels = relationships(&part(&mut zip, &rels_of(&path)).unwrap_or_default(), folder(&path));
+        // Tables: their range, name and look.
+        for target in sheet_rels.values().filter(|t| t.contains("/tables/")) {
+            let Some(x) = part(&mut zip, target) else { continue };
+            let Ok(tdoc) = roxmltree::Document::parse(&x) else { continue };
+            let t = tdoc.root_element();
+            let Some(a) = t.attribute("ref").and_then(Area::parse) else { continue };
+            let info = t.children().find(|n| n.has_tag_name("tableStyleInfo"));
+            let style = info.and_then(|i| i.attribute("name")).unwrap_or("");
+            sheet.tables.push(TableRegion {
+                name: t.attribute("displayName").or(t.attribute("name")).unwrap_or("Table").to_string(),
+                range: a.name(),
+                look: TABLE_LOOKS.iter().position(|l| l.3 == style).unwrap_or(0),
+                header: t.attribute("headerRowCount").is_none_or(|v| v != "0"),
+                banded: info.and_then(|i| i.attribute("showRowStripes")).is_none_or(|v| v == "1" || v == "true"),
+                total: t.attribute("totalsRowCount").is_some_and(|v| v != "0"),
+            });
+        }
+        // Charts drawn on the sheet: where they sit, and the cells they chart.
+        for target in sheet_rels.values().filter(|t| t.contains("/drawings/") && t.ends_with(".xml")) {
+            let Some(x) = part(&mut zip, target) else { continue };
+            let Ok(ddoc) = roxmltree::Document::parse(&x) else { continue };
+            let drels = relationships(&part(&mut zip, &rels_of(target)).unwrap_or_default(), folder(target));
+            for anchor in ddoc.root_element().children().filter(|n| n.tag_name().name().ends_with("Anchor")) {
+                let Some(rid) = anchor
+                    .descendants()
+                    .find(|n| n.tag_name().name() == "chart")
+                    .and_then(|c| c.attributes().find(|a| a.name() == "id").map(|a| a.value()))
+                else {
+                    continue;
+                };
+                let Some(chart_xml) = drels.get(rid).and_then(|t| part(&mut zip, t)) else { continue };
+                let Some((kind, range)) = chart_source(&chart_xml) else { continue };
+                // Pixels from the cells' top left: whole cells, then the offset (EMU) into one.
+                let corner = |tag: &str| -> Option<(f64, f64)> {
+                    let n = anchor.children().find(|c| c.tag_name().name() == tag)?;
+                    let get = |k: &str| n.children().find(|c| c.tag_name().name() == k).and_then(|c| c.text()).and_then(|t| t.trim().parse::<f64>().ok());
+                    let (col, row) = (get("col")? as u32, get("row")? as u32);
+                    let x: f64 = (0..col.min(COLS)).map(|c| sheet.col_w(c) as f64).sum::<f64>() + get("colOff").unwrap_or(0.0) / 9525.0;
+                    let y: f64 = (0..row.min(ROWS)).map(|r| sheet.row_h(r) as f64).sum::<f64>() + get("rowOff").unwrap_or(0.0) / 9525.0;
+                    Some((x, y))
+                };
+                let Some((x, y)) = corner("from") else { continue };
+                let size = anchor.children().find(|c| c.tag_name().name() == "ext").and_then(|e| {
+                    Some((e.attribute("cx")?.parse::<f64>().ok()? / 9525.0, e.attribute("cy")?.parse::<f64>().ok()? / 9525.0))
+                });
+                let (w, h) = match (corner("to"), size) {
+                    (Some((x2, y2)), _) => (x2 - x, y2 - y),
+                    (None, Some(s)) => s,
+                    _ => (420.0, 260.0),
+                };
+                sheet.charts.push(PlacedChart { range, kind, x, y, w: w.max(160.0), h: h.max(120.0) });
+            }
+        }
         for target in sheet_rels.values().filter(|t| t.contains("comments")) {
             let Some(x) = part(&mut zip, target) else { continue };
             let Ok(cdoc) = roxmltree::Document::parse(&x) else { continue };
@@ -427,6 +481,40 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
     }
     out.active = active.min(out.sheets.len().saturating_sub(1));
     Ok(Opened { workbook: out, truncated, dropped_rules })
+}
+
+/// An Excel chart's kind and the block of cells it charts (on its own sheet).
+fn chart_source(xml: &str) -> Option<(ChartKind, String)> {
+    let doc = roxmltree::Document::parse(xml).ok()?;
+    let plot = doc.descendants().find(|n| n.tag_name().name() == "plotArea")?;
+    let node = plot.children().find(|n| n.tag_name().name().ends_with("Chart"))?;
+    let stacked = node
+        .children()
+        .find(|c| c.tag_name().name() == "grouping")
+        .and_then(|g| g.attribute("val"))
+        .is_some_and(|v| v.contains("tacked"));
+    let kind = match node.tag_name().name() {
+        "barChart" | "bar3DChart" if stacked => ChartKind::StackedBar,
+        "barChart" | "bar3DChart" => ChartKind::Bar,
+        "lineChart" | "line3DChart" => ChartKind::Line,
+        "areaChart" | "area3DChart" if stacked => ChartKind::StackedArea,
+        "areaChart" | "area3DChart" => ChartKind::Area,
+        "pieChart" | "pie3DChart" | "doughnutChart" => ChartKind::Pie,
+        "scatterChart" => ChartKind::Scatter,
+        _ => return None,
+    };
+    // Every cell reference the series use (`'Sheet 1'!$B$2:$B$9`), joined into one block.
+    let mut area: Option<Area> = None;
+    for f in node.descendants().filter(|n| n.tag_name().name() == "f") {
+        let text = f.text().unwrap_or("");
+        let cells = text.rsplit('!').next().unwrap_or(text).replace('$', "");
+        let Some(a) = Area::parse(&cells) else { continue };
+        area = Some(match area {
+            None => a,
+            Some(b) => Area::new(a.top.min(b.top), a.left.min(b.left), a.bottom.max(b.bottom), a.right.max(b.right)),
+        });
+    }
+    Some((kind, area?.name()))
 }
 
 /// A conditional format's look, from styles.xml's `dxfs`.
@@ -520,6 +608,87 @@ fn xlsx_format(f: &Format) -> rust_xlsxwriter::Format {
     }
 }
 
+/// The cell a position falls in, and how far into it: (index, offset).
+fn cell_at(pos: f64, size: impl Fn(u32) -> u32, max: u32) -> (u32, u32) {
+    let mut left = pos.max(0.0);
+    for i in 0..max {
+        let w = size(i) as f64;
+        if left < w {
+            return (i, left as u32);
+        }
+        left -= w;
+    }
+    (max - 1, 0)
+}
+
+/// A chart of `range` for Excel, its series named by a first row of words.
+fn excel_chart(wb: &Workbook, calc: &Calc, si: usize, range: &str, kind: ChartKind) -> Option<rust_xlsxwriter::Chart> {
+    use rust_xlsxwriter::{Chart, ChartType};
+    let ((r1, c1), (r2, c2)) = formula::parse_range(range)?;
+    let s = &wb.sheets[si];
+    let kind = match kind {
+        ChartKind::Bar => ChartType::Column,
+        ChartKind::Line => ChartType::Line,
+        ChartKind::Area => ChartType::Area,
+        ChartKind::Pie => ChartType::Pie,
+        ChartKind::StackedBar => ChartType::ColumnStacked,
+        ChartKind::StackedArea => ChartType::AreaStacked,
+        ChartKind::Scatter => ChartType::Scatter,
+    };
+    let mut chart = Chart::new(kind);
+    let label_col = (c2 > c1).then_some(c1);
+    let first_value = if label_col.is_some() { c1 + 1 } else { c1 };
+    let named = (first_value..=c2).all(|c| matches!(calc.value(wb, si, r1, c), formula::Value::Text(_))) && r2 > r1;
+    let start = if named { r1 + 1 } else { r1 };
+    for c in (first_value..=c2).take(CHART_SERIES) {
+        let series = chart.add_series();
+        series.set_values((s.name.as_str(), start, c as u16, r2.min(r1 + CHART_ROWS), c as u16));
+        if let Some(lc) = label_col {
+            series.set_categories((s.name.as_str(), start, lc as u16, r2.min(r1 + CHART_ROWS), lc as u16));
+        }
+        if named {
+            series.set_name((s.name.as_str(), r1, c as u16));
+        }
+    }
+    Some(chart)
+}
+
+/// A table region as an Excel table, its columns named by its heading row.
+fn add_table(ws: &mut rust_xlsxwriter::Worksheet, s: &Sheet, calc: &Calc, wb: &Workbook, si: usize, t: &TableRegion, a: Area) -> Result<()> {
+    use rust_xlsxwriter::{Table, TableColumn, TableStyle};
+    let mut seen: Vec<String> = Vec::new();
+    let columns: Vec<TableColumn> = (a.left..=a.right)
+        .map(|c| {
+            // Excel wants each column's name once, and as it shows in the heading.
+            let shown = display(&calc.value(wb, si, a.top, c), s.raw(a.top, c), &s.format(a.top, c)).0;
+            let mut name = if t.header && !shown.trim().is_empty() { shown } else { format!("Column{}", c - a.left + 1) };
+            let mut k = 2;
+            while seen.iter().any(|x| x.eq_ignore_ascii_case(&name)) {
+                name = format!("{name}{k}");
+                k += 1;
+            }
+            seen.push(name.clone());
+            TableColumn::new().set_header(name)
+        })
+        .collect();
+    let style = match t.look {
+        1 => TableStyle::Medium3,
+        2 => TableStyle::Medium4,
+        3 => TableStyle::Medium5,
+        4 => TableStyle::Medium7,
+        _ => TableStyle::Medium2,
+    };
+    let table = Table::new()
+        .set_name(&t.name)
+        .set_style(style)
+        .set_header_row(t.header)
+        .set_banded_rows(t.banded)
+        .set_autofilter(false)
+        .set_columns(&columns);
+    ws.add_table(a.top, a.left as u16, a.bottom, a.right as u16, &table)?;
+    Ok(())
+}
+
 /// A highlight rule as an Excel conditional format.
 fn add_rule(ws: &mut rust_xlsxwriter::Worksheet, a: Area, rule: &Rule) -> Result<()> {
     use rust_xlsxwriter::{
@@ -567,7 +736,7 @@ fn add_rule(ws: &mut rust_xlsxwriter::Worksheet, a: Area, rule: &Rule) -> Result
 
 /// The workbook as an .xlsx file, and what Excel can't hold (shown once to the user).
 pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
-    use rust_xlsxwriter::{Chart, ChartType, Workbook as X};
+    use rust_xlsxwriter::Workbook as X;
     let mut book = X::new();
     let mut lost = Vec::new();
     for (si, s) in wb.sheets.iter().enumerate() {
@@ -584,6 +753,14 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
         }
         if s.freeze {
             ws.set_freeze_panes(1, 0)?;
+        }
+        // Tables first: they write their heading row, which the cells below then fill in.
+        for t in &s.tables {
+            let Some(a) = t.area() else { continue };
+            add_table(ws, s, calc, wb, si, t, a)?;
+            if t.total && !lost.iter().any(|l: &String| l.contains("total row")) {
+                lost.push("tables' total-row look (the row stays, as an ordinary row)".into());
+            }
         }
         // Merges first: merging writes the top-left cell, which the cells below then fill in.
         for m in &s.merges {
@@ -625,36 +802,41 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
                 _ => ws.write_string_with_format(r, c16, raw, &fmt)?,
             };
         }
+        if s.cells.values().any(|c| c.format.checkbox) && !lost.iter().any(|l: &String| l.contains("checkbox")) {
+            lost.push("checkboxes (they show as TRUE and FALSE)".into());
+        }
         if s.filter.is_some() && !lost.iter().any(|l: &String| l.contains("filter")) {
             lost.push("the filter (every row is shown)".into());
         }
         if let Some(ch) = &s.chart
-            && let Some(((r1, c1), (r2, c2))) = formula::parse_range(&ch.range)
+            && let Some(chart) = excel_chart(wb, calc, si, &ch.range, ch.kind)
         {
-            let kind = match ch.kind {
-                ChartKind::Bar => ChartType::Column,
-                ChartKind::Line => ChartType::Line,
-                ChartKind::Area => ChartType::Area,
-                ChartKind::Pie => ChartType::Pie,
-            };
-            let mut chart = Chart::new(kind);
-            let label_col = (c2 > c1).then_some(c1);
-            let first_value = if label_col.is_some() { c1 + 1 } else { c1 };
-            let named = (first_value..=c2).all(|c| matches!(calc.value(wb, si, r1, c), formula::Value::Text(_))) && r2 > r1;
-            let start = if named { r1 + 1 } else { r1 };
-            for c in (first_value..=c2).take(CHART_SERIES) {
-                let series = chart.add_series();
-                series.set_values((s.name.as_str(), start, c as u16, r2.min(r1 + CHART_ROWS), c as u16));
-                if let Some(lc) = label_col {
-                    series.set_categories((s.name.as_str(), start, lc as u16, r2.min(r1 + CHART_ROWS), lc as u16));
-                }
-                if named {
-                    series.set_name((s.name.as_str(), r1, c as u16));
-                }
-            }
+            let c2 = formula::parse_range(&ch.range).map(|r| r.1.1).unwrap_or(0);
             // Beside the data.
             let right = s.used().map(|(_, c)| c + 2).unwrap_or(c2 + 2);
             ws.insert_chart(1, right.min(COLS) as u16, &chart)?;
+        }
+        // Charts placed on the sheet: in the cell under their corner, offset within it.
+        // Excel's default sizes differ from ours, so the cells they span get theirs.
+        if let Some((right, bottom)) = s.charts.iter().fold(None, |acc: Option<(f64, f64)>, c| {
+            let (r, b) = (c.x + c.w, c.y + c.h);
+            Some(acc.map_or((r, b), |(ar, ab)| (ar.max(r), ab.max(b))))
+        }) {
+            let (last_col, _) = cell_at(right, |c| s.col_w(c), COLS);
+            let (last_row, _) = cell_at(bottom, |r| s.row_h(r), ROWS);
+            for c in 0..=last_col {
+                ws.set_column_width_pixels(c as u16, s.col_w(c))?;
+            }
+            for r in 0..=last_row {
+                ws.set_row_height_pixels(r, s.row_h(r))?;
+            }
+        }
+        for pc in &s.charts {
+            let Some(mut chart) = excel_chart(wb, calc, si, &pc.range, pc.kind) else { continue };
+            chart.set_width(pc.w.round().max(1.0) as u32).set_height(pc.h.round().max(1.0) as u32);
+            let (col, xo) = cell_at(pc.x, |c| s.col_w(c), COLS);
+            let (row, yo) = cell_at(pc.y, |r| s.row_h(r), ROWS);
+            ws.insert_chart_with_offset(row, col as u16, &chart, xo, yo)?;
         }
     }
     Ok((book.save_to_buffer()?, lost))
@@ -695,6 +877,15 @@ mod tests {
         wb.merge(Area::new(8, 0, 9, 2));
         wb.set_comment(1, 1, "Due on the 1st");
         wb.set_borders(Area::new(2, 0, 3, 1), Borders::Outside);
+        wb.sheet_mut().tables.push(TableRegion {
+            name: "Costs".into(),
+            range: "A1:B3".into(),
+            look: 4,
+            header: true,
+            banded: true,
+            total: false,
+        });
+        wb.sheet_mut().charts.push(PlacedChart { range: "A1:B3".into(), kind: ChartKind::StackedBar, x: 500.0, y: 40.0, w: 400.0, h: 240.0 });
         wb.format(Area::cell(4, 0), |f| f.wrap = true);
         wb.sheet_mut().rules = vec![
             Rule {
@@ -749,6 +940,11 @@ mod tests {
         assert_eq!(s.format(2, 0).borders, TOP | LEFT);
         assert_eq!(s.format(3, 1).borders, BOTTOM | RIGHT);
         assert!(s.format(4, 0).wrap);
+        assert_eq!(s.tables, wb.sheets[0].tables);
+        let pc = s.charts.iter().find(|c| c.kind == ChartKind::StackedBar).expect("the placed chart");
+        assert_eq!(pc.range, "A1:B3");
+        assert!((pc.x - 500.0).abs() < 2.0 && (pc.y - 40.0).abs() < 2.0, "{pc:?}");
+        assert!((pc.w - 400.0).abs() < 2.0 && (pc.h - 240.0).abs() < 2.0, "{pc:?}");
         // Excel groups rules by range; within a range the order holds, and only
         // rules on the same cells compete.
         let by_range = |rules: &[Rule]| {

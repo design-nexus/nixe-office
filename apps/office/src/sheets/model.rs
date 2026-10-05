@@ -60,6 +60,9 @@ pub struct Format {
     /// Long text wraps onto more lines inside the cell.
     #[serde(skip_serializing_if = "is_default")]
     pub wrap: bool,
+    /// Shown as a box to tick: the value is TRUE or FALSE.
+    #[serde(skip_serializing_if = "is_default")]
+    pub checkbox: bool,
 }
 
 /// Border edges, for `Format::borders`.
@@ -112,17 +115,36 @@ pub enum ChartKind {
     Line,
     Area,
     Pie,
+    /// Bars of each series on top of one another.
+    StackedBar,
+    StackedArea,
+    /// Points: the first column holds the x values.
+    Scatter,
 }
 
 impl ChartKind {
-    pub const ALL: [ChartKind; 4] = [ChartKind::Bar, ChartKind::Line, ChartKind::Area, ChartKind::Pie];
+    pub const ALL: [ChartKind; 7] = [
+        ChartKind::Bar,
+        ChartKind::StackedBar,
+        ChartKind::Line,
+        ChartKind::Area,
+        ChartKind::StackedArea,
+        ChartKind::Pie,
+        ChartKind::Scatter,
+    ];
     pub fn name(self) -> &'static str {
         match self {
             ChartKind::Bar => "Bar",
             ChartKind::Line => "Line",
             ChartKind::Area => "Area",
             ChartKind::Pie => "Pie",
+            ChartKind::StackedBar => "Stacked bar",
+            ChartKind::StackedArea => "Stacked area",
+            ChartKind::Scatter => "Scatter",
         }
+    }
+    pub fn stacked(self) -> bool {
+        matches!(self, ChartKind::StackedBar | ChartKind::StackedArea)
     }
 }
 
@@ -157,9 +179,62 @@ pub struct Sheet {
     pub merges: Vec<Area>,
     /// Conditional highlighting, first match wins.
     pub rules: Vec<Rule>,
+    /// Charts placed on the sheet, over the cells.
+    pub charts: Vec<PlacedChart>,
+    /// Blocks of cells styled as tables: a heading row, banded rows, a total row.
+    pub tables: Vec<TableRegion>,
+}
+
+/// A chart on the sheet: its data, and where it sits (pixels from the top
+/// left of the cells, as drawn at normal size).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlacedChart {
+    pub range: String,
+    pub kind: ChartKind,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+/// A table's colour scheme: (name, heading fill, band fill, Excel's style).
+pub const TABLE_LOOKS: [(&str, &str, &str, &str); 5] = [
+    ("Blue", "#3d6fc4", "#e8eef9", "TableStyleMedium2"),
+    ("Orange", "#d9763a", "#fbeee4", "TableStyleMedium3"),
+    ("Grey", "#6b7280", "#eef0f3", "TableStyleMedium4"),
+    ("Gold", "#c9971c", "#fbf3dc", "TableStyleMedium5"),
+    ("Green", "#3f8f5a", "#e6f3ea", "TableStyleMedium7"),
+];
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TableRegion {
+    pub name: String,
+    /// "B2:E20", the heading row included.
+    pub range: String,
+    /// An index into `TABLE_LOOKS`.
+    #[serde(default)]
+    pub look: usize,
+    #[serde(default = "yes")]
+    pub header: bool,
+    #[serde(default = "yes")]
+    pub banded: bool,
+    /// The last row totals the columns above it.
+    #[serde(default)]
+    pub total: bool,
+}
+
+impl TableRegion {
+    pub fn area(&self) -> Option<Area> {
+        Area::parse(&self.range)
+    }
 }
 
 impl Sheet {
+    /// The table covering (r, c), if any.
+    pub fn table_at(&self, r: u32, c: u32) -> Option<&TableRegion> {
+        self.tables.iter().find(|t| t.area().is_some_and(|a| a.contains(r, c)))
+    }
+
     pub fn new(name: &str) -> Sheet {
         Sheet {
             name: name.into(),
@@ -172,6 +247,8 @@ impl Sheet {
             chart: None,
             merges: Vec::new(),
             rules: Vec::new(),
+            charts: Vec::new(),
+            tables: Vec::new(),
         }
     }
 
@@ -252,6 +329,8 @@ impl Sheet {
             || self.chart.is_some()
             || !self.merges.is_empty()
             || !self.rules.is_empty()
+            || !self.charts.is_empty()
+            || !self.tables.is_empty()
             || self.cells.values().any(|c| c.comment.is_some())
     }
 }
@@ -435,6 +514,22 @@ impl Calc {
     pub fn look(&self, wb: &Workbook, si: usize, r: u32, c: u32) -> Format {
         let Some(s) = wb.sheets.get(si) else { return Format::default() };
         let mut f = s.format(r, c);
+        // A table's look, under the cell's own fill and colour.
+        if let Some(t) = s.table_at(r, c)
+            && let Some(a) = t.area()
+        {
+            let (_, head, band, _) = TABLE_LOOKS[t.look.min(TABLE_LOOKS.len() - 1)];
+            if t.header && r == a.top {
+                f.bold = true;
+                f.fill = f.fill.or(Some(head.into()));
+                f.color = f.color.or(Some("#ffffff".into()));
+            } else if t.total && r == a.bottom {
+                f.bold = true;
+                f.borders |= TOP;
+            } else if t.banded && (r - a.top - t.header as u32) % 2 == 1 {
+                f.fill = f.fill.or(Some(band.into()));
+            }
+        }
         for (i, rule) in s.rules.iter().enumerate() {
             let Some(area) = Area::parse(&rule.range) else { continue };
             if !area.contains(r, c) {
@@ -674,6 +769,20 @@ impl Workbook {
         }
     }
 
+    /// Tick or untick the checkbox cells in `area` (all the same way: ticked
+    /// unless they all already are).
+    pub fn toggle_checks(&mut self, area: Area, calc: &Calc) {
+        let si = self.active;
+        let cells: Vec<(u32, u32)> = area
+            .iter()
+            .filter(|(r, c)| self.sheet().format(*r, *c).checkbox && !self.sheet().raw(*r, *c).starts_with('='))
+            .collect();
+        let all_on = cells.iter().all(|(r, c)| calc.value(self, si, *r, *c).truthy().unwrap_or(false));
+        for (r, c) in cells {
+            self.set(r, c, if all_on { "FALSE" } else { "TRUE" });
+        }
+    }
+
     // ---------- Merges and comments ----------
 
     /// Merge `area` into one cell. Merges it overlaps are replaced; content
@@ -883,9 +992,13 @@ impl Workbook {
 
     /// The chart's labels and series: (series names, labels, values per series).
     pub fn chart_data(&self, si: usize, calc: &Calc) -> Option<ChartData> {
-        let s = &self.sheets[si];
-        let chart = s.chart.as_ref()?;
-        let ((r1, c1), (r2, c2)) = formula::parse_range(&chart.range)?;
+        let range = self.sheets[si].chart.as_ref()?.range.clone();
+        self.chart_data_for(si, &range, calc)
+    }
+
+    /// A chart's data from any range of a sheet (the side chart's, or one placed on the sheet).
+    pub fn chart_data_for(&self, si: usize, range: &str, calc: &Calc) -> Option<ChartData> {
+        let ((r1, c1), (r2, c2)) = formula::parse_range(range)?;
         let r2 = r2.min(r1 + CHART_ROWS - 1).min(ROWS - 1);
         let label_col = (c2 > c1).then_some(c1);
         let first_value = if label_col.is_some() { c1 + 1 } else { c1 };
@@ -947,6 +1060,10 @@ struct SheetFile {
     merges: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     rules: Vec<Rule>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    charts: Vec<PlacedChart>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tables: Vec<TableRegion>,
 }
 
 fn yes() -> bool {
@@ -987,6 +1104,8 @@ impl Workbook {
                     chart: s.chart.clone(),
                     merges: s.merges.iter().map(Area::name).collect(),
                     rules: s.rules.clone(),
+                    charts: s.charts.clone(),
+                    tables: s.tables.clone(),
                 })
                 .collect(),
         };
@@ -1011,6 +1130,8 @@ impl Workbook {
             s.chart = sf.chart;
             s.merges = sf.merges.iter().filter_map(|m| Area::parse(m)).filter(|a| !a.is_cell()).collect();
             s.rules = sf.rules;
+            s.charts = sf.charts;
+            s.tables = sf.tables;
             wb.sheets.push(s);
         }
         if wb.sheets.is_empty() {

@@ -101,8 +101,8 @@ impl Present {
         }
         let i = self.current.get();
         let scale = self.frame().2;
-        let mut deck = self.deck.borrow_mut();
-        let Some(slide) = deck.slides.get_mut(i) else { return };
+        let master = self.master_mode.get();
+        let mut slide = self.deck.borrow().editing(i, master);
         let ids: Vec<u32> = from.iter().map(|f| f.0).collect();
         // The moving box at the unsnapped position.
         let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
@@ -158,7 +158,7 @@ impl Present {
                 o.clamp();
             }
         }
-        drop(deck);
+        self.deck.borrow_mut().edit(i, master, |s| *s = slide);
         *self.guides.borrow_mut() = guides;
         self.canvas.queue_draw();
     }

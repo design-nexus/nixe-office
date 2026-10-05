@@ -103,6 +103,27 @@ pub enum Block {
     PageBreak,
     /// A table of contents: the headings with their page numbers.
     Contents,
+    /// What follows has its own columns, and starts a new page or carries on.
+    Section(Section),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Section {
+    /// Text columns from here on, 1 to 3.
+    pub columns: u8,
+    /// Start on a new page (otherwise straight on, below what's before).
+    pub new_page: bool,
+}
+
+impl Section {
+    pub fn describe(&self) -> String {
+        let cols = match self.columns {
+            0 | 1 => "one column",
+            2 => "two columns",
+            _ => "three columns",
+        };
+        format!("Section break · {cols}{}", if self.new_page { " · new page" } else { "" })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -236,13 +257,56 @@ impl Paragraph {
 pub enum Run {
     Image(Image),
     Note(Note),
+    Drawing(Drawing),
     Text(TextRun),
 }
 
+/// A shape or a chart in the line, drawn rather than a picture.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Drawing {
+    pub drawing: Figure,
+    /// Points on the page.
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Figure {
+    Shape {
+        shape: crate::present::model::Shape,
+        fill: String,
+    },
+    /// Labels, one list of values per series, as in a slide's chart.
+    Chart {
+        chart: crate::sheets::model::ChartKind,
+        names: Vec<String>,
+        labels: Vec<String>,
+        series: Vec<Vec<f64>>,
+    },
+}
+
+impl Figure {
+    pub fn sample_chart() -> Figure {
+        match crate::present::model::Kind::sample_chart() {
+            crate::present::model::Kind::Chart { chart, names, labels, series } => Figure::Chart { chart, names, labels, series },
+            _ => unreachable!("the sample is a chart"),
+        }
+    }
+}
+
 /// A footnote: its mark sits in the text, its words at the foot of the page.
+/// An endnote's words go at the end of the document instead.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Note {
     pub note: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub end: bool,
+}
+
+/// An endnote's mark: i, ii, iii…
+pub fn endnote_label(n: usize) -> String {
+    roman(n)
 }
 
 impl Run {
@@ -550,7 +614,7 @@ mod tests {
                 Block::Paragraph(Paragraph {
                     runs: vec![
                         Run::styled("noted", |r| r.comment = Some(1)),
-                        Run::Note(Note { note: "A footnote.".into() }),
+                        Run::Note(Note { note: "A footnote.".into(), end: false }),
                     ],
                     ..Default::default()
                 }),

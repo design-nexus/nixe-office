@@ -2,9 +2,10 @@
 //! ellipses both ways; speaker notes come in from PowerPoint but aren't written.
 
 use super::model::*;
+use super::render;
 use super::pptx_more as more;
 use anyhow::{Context, Result, bail};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::io::{Cursor, Read, Write};
 
@@ -42,7 +43,8 @@ pub(super) fn emu(v: f64) -> i64 {
 fn rels(entries: &[(String, &str, String)]) -> String {
     let mut s = format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="{PKG}">"#);
     for (id, kind, target) in entries {
-        let _ = write!(s, r#"<Relationship Id="{id}" Type="{R}/{kind}" Target="{}"/>"#, esc(target));
+        let kind = if kind.starts_with("http") { kind.to_string() } else { format!("{R}/{kind}") };
+        let _ = write!(s, r#"<Relationship Id="{id}" Type="{kind}" Target="{}"/>"#, esc(target));
     }
     s.push_str("</Relationships>");
     s
@@ -67,6 +69,25 @@ fn deco(o: &Object) -> String {
         out.push_str(r#"<a:effectLst><a:outerShdw blurRad="76200" dist="50800" dir="3600000" algn="tl" rotWithShape="0"><a:srgbClr val="000000"><a:alpha val="35000"/></a:srgbClr></a:outerShdw></a:effectLst>"#);
     }
     out
+}
+
+const MEDIA_REL: &str = "http://schemas.microsoft.com/office/2007/relationships/media";
+
+/// The content type for a video or audio file's extension.
+fn media_type(ext: &str) -> &'static str {
+    match ext {
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        "avi" => "video/x-msvideo",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "wav" => "audio/wav",
+        "ogg" | "oga" => "audio/ogg",
+        "flac" => "audio/flac",
+        _ => "application/octet-stream",
+    }
 }
 
 fn xfrm(x: f64, y: f64, w: f64, h: f64) -> String {
@@ -95,18 +116,29 @@ fn text_shape(t: TextShape, s: &Slide) -> String {
     let (x, y, w, h) = frame;
     let ph = ph.map(|t| format!(r#"<p:ph type="{t}"/>"#)).unwrap_or_default();
     let mut paras = String::new();
+    let rpr = format!(
+        r#"<a:rPr lang="en-US" sz="{sz}"{b}{i} dirty="0"><a:solidFill><a:srgbClr val="{col}"/></a:solidFill><a:latin typeface="{font}"/></a:rPr>"#,
+        sz = (size * 100.0).round() as i64,
+        b = if bold || s.bold { r#" b="1""# } else { "" },
+        i = if s.italic { r#" i="1""# } else { "" },
+        col = hex(&s.color),
+        font = esc(&s.font),
+    );
     for line in text.split('\n') {
-        let _ = write!(
-            paras,
-            r#"<a:p>{algn}<a:r><a:rPr lang="en-US" sz="{sz}"{b}{i} dirty="0"><a:solidFill><a:srgbClr val="{col}"/></a:solidFill><a:latin typeface="{font}"/></a:rPr><a:t>{t}</a:t></a:r></a:p>"#,
-            algn = if centred { r#"<a:pPr algn="ctr"/>"# } else { "" },
-            sz = (size * 100.0).round() as i64,
-            b = if bold || s.bold { r#" b="1""# } else { "" },
-            i = if s.italic { r#" i="1""# } else { "" },
-            col = hex(&s.color),
-            font = esc(&s.font),
-            t = esc(line),
-        );
+        // `{n}` is the slide number: a field PowerPoint fills in.
+        let mut runs = String::new();
+        for (k, part) in line.split(SLIDE_NUMBER).enumerate() {
+            if k > 0 {
+                let _ = write!(
+                    runs,
+                    r#"<a:fld id="{{B6F15528-21DE-4FAA-801E-634DDDAF4B2B}}" type="slidenum">{rpr}<a:t>‹#›</a:t></a:fld>"#
+                );
+            }
+            if !part.is_empty() || line.is_empty() {
+                let _ = write!(runs, r#"<a:r>{rpr}<a:t>{}</a:t></a:r>"#, esc(part));
+            }
+        }
+        let _ = write!(paras, r#"<a:p>{}{runs}</a:p>"#, if centred { r#"<a:pPr algn="ctr"/>"# } else { "" });
     }
     format!(
         r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="{name}"/><p:cNvSpPr txBox="1"/><p:nvPr>{ph}</p:nvPr></p:nvSpPr><p:spPr>{xf}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/>{deco}</p:spPr><p:txBody><a:bodyPr wrap="square" anchor="{anchor}"><a:normAutofit/></a:bodyPr><a:lstStyle/>{paras}</p:txBody></p:sp>"#,
@@ -121,6 +153,9 @@ struct Out {
     parts: Vec<(String, Vec<u8>)>,
     slide_rels: Vec<(String, &'static str, String)>,
     media_n: usize,
+    /// Video and audio files written, and their file extensions.
+    videos: usize,
+    exts: BTreeSet<String>,
     charts: usize,
 }
 
@@ -168,6 +203,32 @@ fn object_xml(o: &Object, id: usize, s: &Slide, media: &BTreeMap<String, Vec<u8>
             );
         }
         Kind::Table { rows, header } => tree.push_str(&more::table_frame(id, o, rows, *header, s)),
+        Kind::Media { media: file, video } => {
+            let Some(bytes) = media.get(file) else { return tree };
+            let ext = file.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_else(|| "bin".into());
+            out.videos += 1;
+            let name = format!("media{}.{ext}", out.videos);
+            out.parts.push((format!("ppt/media/{name}"), bytes.clone()));
+            out.exts.insert(ext);
+            let rid_media = format!("rId{}", out.slide_rels.len() + 1);
+            out.slide_rels.push((rid_media.clone(), MEDIA_REL, format!("../media/{name}")));
+            let rid_link = format!("rId{}", out.slide_rels.len() + 1);
+            out.slide_rels.push((rid_link.clone(), if *video { "video" } else { "audio" }, format!("../media/{name}")));
+            // PowerPoint shows a still until it plays.
+            out.media_n += 1;
+            let poster = format!("image{}.png", out.media_n);
+            out.parts.push((format!("ppt/media/{poster}"), render::media_poster(*video, file, (o.w, o.h))));
+            let rid_img = format!("rId{}", out.slide_rels.len() + 1);
+            out.slide_rels.push((rid_img.clone(), "image", format!("../media/{poster}")));
+            let _ = write!(
+                tree,
+                r#"<p:pic><p:nvPicPr><p:cNvPr id="{id}" name="{}"><a:hlinkClick r:id="" action="ppaction://media"/></p:cNvPr><p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr><a:{kind} r:link="{rid_link}"/><p:extLst><p:ext uri="{{DAA4B4D4-6D71-4841-9C94-3DE7FCFB9230}}"><p14:media xmlns:p14="http://schemas.microsoft.com/office/powerpoint/2010/main" r:embed="{rid_media}"/></p:ext></p:extLst></p:nvPr></p:nvPicPr><p:blipFill><a:blip r:embed="{rid_img}"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>{}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>{}</p:spPr></p:pic>"#,
+                esc(file),
+                xfrm_rot(o.x, o.y, o.w, o.h, o.rotation),
+                deco(o),
+                kind = if *video { "videoFile" } else { "audioFile" },
+            );
+        }
         Kind::Chart { chart, names, labels, series } => {
             out.charts += 1;
             let rid = format!("rId{}", out.slide_rels.len() + 1);
@@ -217,18 +278,6 @@ pub fn write(deck: &Deck, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u8>,
     let empty_tree =
         r#"<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree>"#;
     parts.push((
-        "ppt/slideMasters/slideMaster1.xml".into(),
-        format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sldMaster xmlns:a="{A}" xmlns:r="{R}" xmlns:p="{P}"><p:cSld>{empty_tree}</p:cSld><p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/><p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst><p:txStyles><p:titleStyle/><p:bodyStyle/><p:otherStyle/></p:txStyles></p:sldMaster>"#).into_bytes(),
-    ));
-    parts.push((
-        "ppt/slideMasters/_rels/slideMaster1.xml.rels".into(),
-        rels(&[
-            ("rId1".into(), "slideLayout", "../slideLayouts/slideLayout1.xml".into()),
-            ("rId2".into(), "theme", "../theme/theme1.xml".into()),
-        ])
-        .into_bytes(),
-    ));
-    parts.push((
         "ppt/slideLayouts/slideLayout1.xml".into(),
         format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sldLayout xmlns:a="{A}" xmlns:r="{R}" xmlns:p="{P}" type="blank" preserve="1"><p:cSld name="Nexus Office">{empty_tree}</p:cSld></p:sldLayout>"#).into_bytes(),
     ));
@@ -258,7 +307,23 @@ pub fn write(deck: &Deck, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u8>,
         format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><a:theme xmlns:a="{A}" name="Nexus Office"><a:themeElements><a:clrScheme name="Nexus Office">{clr}</a:clrScheme><a:fontScheme name="Nexus Office"><a:majorFont><a:latin typeface="{DEFAULT_FONT}"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="{DEFAULT_FONT}"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme><a:fmtScheme name="Nexus Office"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w="6350"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="12700"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="19050"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>"#).into_bytes(),
     ));
 
-    let mut out = Out { parts, slide_rels: Vec::new(), media_n: 0, charts: 0 };
+    let mut out = Out { parts, slide_rels: Vec::new(), media_n: 0, charts: 0, videos: 0, exts: BTreeSet::new() };
+    // The master slide: its objects, drawn on every slide that shows them.
+    out.slide_rels = vec![
+        ("rId1".to_string(), "slideLayout", "../slideLayouts/slideLayout1.xml".to_string()),
+        ("rId2".to_string(), "theme", "../theme/theme1.xml".to_string()),
+    ];
+    let mut master_tree = String::from(empty_tree.trim_end_matches("</p:spTree>"));
+    let look = deck.slides.first().cloned().unwrap_or_default();
+    for (k, o) in deck.master.iter().enumerate() {
+        master_tree.push_str(&object_xml(o, k + 2, &look, media, &mut out));
+    }
+    master_tree.push_str("</p:spTree>");
+    out.parts.push((
+        "ppt/slideMasters/slideMaster1.xml".into(),
+        format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sldMaster xmlns:a="{A}" xmlns:r="{R}" xmlns:p="{P}"><p:cSld>{master_tree}</p:cSld><p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/><p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst><p:txStyles><p:titleStyle/><p:bodyStyle/><p:otherStyle/></p:txStyles></p:sldMaster>"#).into_bytes(),
+    ));
+    out.parts.push(("ppt/slideMasters/_rels/slideMaster1.xml.rels".into(), rels(&out.slide_rels).into_bytes()));
     for (i, s) in deck.slides.iter().enumerate() {
         let mut tree = String::from(empty_tree.trim_end_matches("</p:spTree>"));
         out.slide_rels = vec![("rId1".to_string(), "slideLayout", "../slideLayouts/slideLayout1.xml".to_string())];
@@ -336,13 +401,17 @@ pub fn write(deck: &Deck, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u8>,
         }
         tree.push_str("</p:spTree>");
         let slide = format!(
-            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="{A}" xmlns:r="{R}" xmlns:p="{P}"><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="{}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>{tree}</p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>{}{}</p:sld>"#,
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="{A}" xmlns:r="{R}" xmlns:p="{P}"{}><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="{}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>{tree}</p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>{}{}</p:sld>"#,
+            if s.hide_master { r#" showMasterSp="0""# } else { "" },
             hex(&s.background),
             s.transition.as_ref().map(more::transition).unwrap_or_default(),
             more::timing(s, &shape_id),
         );
         out.parts.push((format!("ppt/slides/slide{}.xml", i + 1), slide.into_bytes()));
         out.parts.push((format!("ppt/slides/_rels/slide{}.xml.rels", i + 1), rels(&out.slide_rels).into_bytes()));
+    }
+    for ext in &out.exts {
+        let _ = write!(types, r#"<Default Extension="{ext}" ContentType="{}"/>"#, media_type(ext));
     }
     for k in 1..=out.charts {
         let _ = write!(types, r#"<Override PartName="/ppt/charts/chart{k}.xml" ContentType="{}"/>"#, more::CHART_TYPE);
@@ -364,6 +433,97 @@ pub fn write(deck: &Deck, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u8>,
 }
 
 // ---------- Reading ----------
+
+/// Video or audio in a picture element, taken into `media`.
+fn read_media(
+    pic: &roxmltree::Node,
+    srels: &HashMap<String, (String, String)>,
+    zip: &mut zip::ZipArchive<Cursor<&[u8]>>,
+    media: &mut BTreeMap<String, Vec<u8>>,
+) -> Option<Kind> {
+    let file = pic.descendants().find(|n| n.has_tag_name((A, "videoFile")) || n.has_tag_name((A, "audioFile")))?;
+    let video = file.has_tag_name((A, "videoFile"));
+    // PowerPoint embeds the file under p14:media; older files link it from videoFile.
+    let rid = pic
+        .descendants()
+        .find(|n| n.tag_name().name() == "media")
+        .and_then(|m| attr_ns(&m, "embed"))
+        .or_else(|| attr_ns(&file, "link"))?;
+    let (_, target) = srels.get(rid)?;
+    let mut f = zip.by_name(target.trim_start_matches('/')).ok()?;
+    if f.size() > 1024 * 1024 * 1024 {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    f.read_to_end(&mut bytes).ok()?;
+    let ext = target.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_else(|| "mp4".into());
+    let name = format!("clip-{}.{ext}", media.len() + 1);
+    media.insert(name.clone(), bytes);
+    Some(Kind::Media { media: name, video })
+}
+
+/// The master slide's own shapes: text boxes, filled shapes, pictures, media.
+fn read_master(
+    path: &str,
+    zip: &mut zip::ZipArchive<Cursor<&[u8]>>,
+    media: &mut BTreeMap<String, Vec<u8>>,
+    (fx, fy): (f64, f64),
+) -> Vec<Object> {
+    let Some(xml) = text_part(zip, path) else { return Vec::new() };
+    let Ok(doc) = roxmltree::Document::parse(&xml) else { return Vec::new() };
+    let rels = read_rels(&text_part(zip, &rels_of(path)).unwrap_or_default(), folder(path));
+    let mut out: Vec<Object> = Vec::new();
+    let next = |out: &Vec<Object>| out.iter().map(|o| o.id).max().unwrap_or(0) + 1;
+    for sp in doc.descendants().filter(|n| n.has_tag_name((P, "sp"))) {
+        // Placeholders only describe the layouts' title and text.
+        if sp.descendants().any(|n| n.has_tag_name((P, "ph"))) {
+            continue;
+        }
+        let Some((x, y, w, h)) = geometry(&sp).map(|(x, y, w, h)| (x * fx, y * fy, w * fx, h * fy)) else { continue };
+        let text = shape_text(&sp);
+        let fill = sp
+            .children()
+            .find(|n| n.has_tag_name((P, "spPr")))
+            .and_then(|p| p.children().find(|n| n.has_tag_name((A, "solidFill"))))
+            .and_then(|f| f.descendants().find(|n| n.has_tag_name((A, "srgbClr"))))
+            .and_then(|c| c.attribute("val"))
+            .map(|v| format!("#{}", v.to_lowercase()));
+        let prst = sp.descendants().find(|n| n.has_tag_name((A, "prstGeom"))).and_then(|g| g.attribute("prst")).unwrap_or("rect");
+        let kind = if !text.trim().is_empty() {
+            Kind::Text { text }
+        } else if let Some(fill) = fill {
+            Kind::Shape { shape: Shape::from_preset(prst), fill }
+        } else {
+            continue;
+        };
+        let mut o = Object::new(next(&out), kind, (x, y, w, h));
+        o.clamp();
+        read_deco(&sp, &mut o);
+        out.push(o);
+    }
+    for pic in doc.descendants().filter(|n| n.has_tag_name((P, "pic"))) {
+        let Some((x, y, w, h)) = geometry(&pic).map(|(x, y, w, h)| (x * fx, y * fy, w * fx, h * fy)) else { continue };
+        let kind = match read_media(&pic, &rels, zip, media) {
+            Some(k) => k,
+            None => {
+                let Some(rid) = pic.descendants().find(|n| n.has_tag_name((A, "blip"))).and_then(|b| attr_ns(&b, "embed")) else {
+                    continue;
+                };
+                let Some((_, target)) = rels.get(rid) else { continue };
+                let Some(png) = part(zip, target).and_then(|b| as_png(&b)) else { continue };
+                let name = format!("picture-{}.png", media.len() + 1);
+                media.insert(name.clone(), png);
+                Kind::Image { image: name }
+            }
+        };
+        let mut o = Object::new(next(&out), kind, (x, y, w, h));
+        o.clamp();
+        read_deco(&pic, &mut o);
+        out.push(o);
+    }
+    out.truncate(MAX_OBJECTS);
+    out
+}
 
 fn part(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Option<Vec<u8>> {
     let mut f = zip.by_name(name.trim_start_matches('/')).ok()?;
@@ -500,7 +660,20 @@ fn shape_text(n: &roxmltree::Node) -> String {
     let Some(body) = n.children().find(|c| c.has_tag_name((P, "txBody"))) else { return String::new() };
     body.children()
         .filter(|p| p.has_tag_name((A, "p")))
-        .map(|p| p.descendants().filter(|t| t.has_tag_name((A, "t"))).filter_map(|t| t.text()).collect::<String>())
+        .map(|p| {
+            // Runs, and slide-number fields as `{n}`.
+            p.children()
+                .filter_map(|r| {
+                    if r.has_tag_name((A, "fld")) && r.attribute("type") == Some("slidenum") {
+                        return Some(SLIDE_NUMBER.to_string());
+                    }
+                    if r.has_tag_name((A, "r")) || r.has_tag_name((A, "fld")) {
+                        return Some(r.descendants().filter(|t| t.has_tag_name((A, "t"))).filter_map(|t| t.text()).collect());
+                    }
+                    None
+                })
+                .collect::<String>()
+        })
         .collect::<Vec<_>>()
         .join("\n")
         .trim_end_matches('\n')
@@ -545,6 +718,7 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
         let doc = roxmltree::Document::parse(&xml).with_context(|| format!("{path} is damaged"))?;
         let srels = read_rels(&text_part(&mut zip, &rels_of(path)).unwrap_or_default(), folder(path));
         let mut s = Slide { layout: Layout::Blank, ..Default::default() };
+        s.hide_master = doc.root_element().attribute("showMasterSp") == Some("0");
         let mut spids: HashMap<String, u32> = HashMap::new();
         if let Some(c) = doc
             .descendants()
@@ -636,6 +810,21 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
             }
         }
         for pic in doc.descendants().filter(|n| n.has_tag_name((P, "pic"))) {
+            // Video and audio sit in a picture (their still).
+            if let Some(kind) = read_media(&pic, &srels, &mut zip, &mut media) {
+                if let Some((x, y, w, h)) = geometry(&pic).map(|(x, y, w, h)| (x * fx, y * fy, w * fx, h * fy))
+                    && s.objects.len() < MAX_OBJECTS
+                {
+                    let mut o = Object::new(s.next_id(), kind, (x, y, w, h));
+                    o.clamp();
+                    o.group = group_number(&pic);
+                    if let Some(sid) = shape_id(&pic) {
+                        spids.insert(sid, o.id);
+                    }
+                    s.objects.push(o);
+                }
+                continue;
+            }
             let Some(rid) = pic.descendants().find(|n| n.has_tag_name((A, "blip"))).and_then(|b| attr_ns(&b, "embed")) else {
                 continue;
             };
@@ -692,11 +881,16 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
             }
         }
         s.transition = more::read_transition(&doc);
-        for (sid, order, effect) in more::read_builds(&doc) {
+        for (sid, order, effect, exit) in more::read_builds(&doc) {
             if let Some(oid) = spids.get(&sid)
                 && let Some(o) = s.objects.iter_mut().find(|o| o.id == *oid)
             {
-                o.build = Some(Build { order, effect });
+                let b = Some(Build { order, effect });
+                if exit {
+                    o.build_out = b;
+                } else {
+                    o.build = b;
+                }
             }
         }
         // Speaker notes, from the notes slide's body.
@@ -734,7 +928,13 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
     if slides.is_empty() {
         bail!("the presentation has no slides");
     }
-    Ok((Deck { slides }, media))
+    let master = prels
+        .values()
+        .find(|(k, _)| k == "slideMaster")
+        .map(|(_, path)| path.clone())
+        .map(|path| read_master(&path, &mut zip, &mut media, (fx, fy)))
+        .unwrap_or_default();
+    Ok((Deck { slides, master }, media))
 }
 
 #[cfg(test)]
@@ -795,6 +995,7 @@ mod tests {
         a.group = Some(1);
         b.group = Some(1);
         b.build = Some(Build { order: 3, effect: Effect::Appear });
+        b.build_out = Some(Build { order: 4, effect: Effect::Fade });
         a.rotation = 30.0;
         a.outline = Some(Outline { color: "#c62828".into(), width: 4.0 });
         a.shadow = true;
@@ -806,12 +1007,45 @@ mod tests {
         let (back, _) = read(&bytes).unwrap();
         let s = &back.slides[0];
         assert_eq!(s.transition.map(|t| t.kind), Some(TransitionKind::Push));
+        let morph = super::super::pptx_more::transition(&Transition { kind: TransitionKind::MagicMove, secs: 1.5 });
+        let xml = format!(r#"<p:sld xmlns:p="{P}">{morph}</p:sld>"#);
+        let doc = roxmltree::Document::parse(&xml).unwrap();
+        assert_eq!(super::super::pptx_more::read_transition(&doc).map(|t| t.kind), Some(TransitionKind::MagicMove));
         let find = |f: fn(&Kind) -> bool| s.objects.iter().find(|o| f(&o.kind)).expect("the object came back");
         let t = find(|k| matches!(k, Kind::Table { .. }));
         assert_eq!(t.kind, deck.slides[0].objects[0].kind);
         assert!((t.x - 40.0).abs() < 0.01 && (t.w - 400.0).abs() < 0.01);
         let c = find(|k| matches!(k, Kind::Chart { .. }));
         assert_eq!(c.kind, Kind::sample_chart());
+        // The master, video and audio, and a slide that hides the master.
+        let mut deck = Deck::default();
+        deck.add_after(0);
+        deck.master.push(Object::new(1, Kind::Text { text: "Slide {n}".into() }, (800.0, 500.0, 120.0, 30.0)));
+        deck.master.push(Object::new(2, Kind::Shape { shape: Shape::Rectangle, fill: "#5273cf".into() }, (0.0, 0.0, 960.0, 12.0)));
+        deck.slides[0].hide_master = true;
+        deck.slides[1].objects.push(Object::new(1, Kind::Media { media: "clip-1.mp4".into(), video: true }, (100.0, 100.0, 480.0, 270.0)));
+        deck.slides[1].objects.push(Object::new(2, Kind::Media { media: "clip-2.mp3".into(), video: false }, (100.0, 400.0, 300.0, 60.0)));
+        let media: BTreeMap<String, Vec<u8>> =
+            [("clip-1.mp4".to_string(), b"not really a video".to_vec()), ("clip-2.mp3".to_string(), b"nor audio".to_vec())].into();
+        let (bytes, _) = write(&deck, &media).unwrap();
+        let (back, back_media) = read(&bytes).unwrap();
+        assert!(back.slides[0].hide_master && !back.slides[1].hide_master);
+        assert!(back.master.iter().any(|o| matches!(&o.kind, Kind::Text { text } if text == "Slide {n}")));
+        assert!(back.master.iter().any(|o| matches!(o.kind, Kind::Shape { .. })));
+        let clips: Vec<(bool, Vec<u8>)> = back.slides[1]
+            .objects
+            .iter()
+            .filter_map(|o| if let Kind::Media { media, video } = &o.kind { Some((*video, back_media[media].clone())) } else { None })
+            .collect();
+        assert_eq!(clips, [(true, b"not really a video".to_vec()), (false, b"nor audio".to_vec())]);
+
+        // Stacked and scatter charts come back as themselves.
+        for kind in [ChartKind::StackedBar, ChartKind::StackedArea, ChartKind::Scatter] {
+            let xml = super::super::pptx_more::chart_part(kind, &["A".into()], &["1".into(), "2.5".into()], &[vec![3.0, 4.0]]);
+            let Some(Kind::Chart { chart, labels, series, .. }) = super::super::pptx_more::read_chart(&xml) else { panic!() };
+            assert_eq!((chart, series), (kind, vec![vec![3.0, 4.0]]));
+            assert_eq!(labels, ["1", "2.5"]);
+        }
         let shape = find(|k| matches!(k, Kind::Shape { .. }));
         let text = find(|k| matches!(k, Kind::Text { .. }));
         assert!(shape.group.is_some() && shape.group == text.group);
@@ -823,7 +1057,9 @@ mod tests {
         assert!(c.group.is_none());
         // The click order and effects survive.
         let steps: Vec<Effect> =
-            s.build_steps().iter().map(|id| s.objects.iter().find(|o| o.id == *id).unwrap().build.unwrap().effect).collect();
+            s.steps().iter().filter(|st| !st.out).map(|st| st.effect).collect();
         assert_eq!(steps, [Effect::Fly, Effect::Fade, Effect::Appear]);
+        let all: Vec<(Effect, bool)> = s.steps().iter().map(|st| (st.effect, st.out)).collect();
+        assert_eq!(all, [(Effect::Fly, false), (Effect::Fade, false), (Effect::Appear, false), (Effect::Fade, true)]);
     }
 }

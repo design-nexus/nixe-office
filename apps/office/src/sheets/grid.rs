@@ -442,7 +442,7 @@ impl Sheets {
             cr.stroke().ok();
             // Cell borders, darker than the gridlines.
             for c in first_col..=last_col {
-                let b = s.format(src, c).borders;
+                let b = calc.look(&wb, wb.active, src, c).borders;
                 if b != 0 && !in_merge(src, c) {
                     let (x, cw) = self.col_rect(c);
                     stroke_borders(cr, b, (x, y, cw, rh));
@@ -452,10 +452,16 @@ impl Sheets {
             // Text. Words that don't fit run on into empty cells to their right.
             for c in first_col..=last_col {
                 let raw = s.raw(src, c);
-                if raw.is_empty() {
+                if self.editing.get() && (vi, c) == self.cursor.get() || in_merge(src, c) {
                     continue;
                 }
-                if self.editing.get() && (vi, c) == self.cursor.get() || in_merge(src, c) {
+                if s.cells.get(&(src, c)).is_some_and(|cell| cell.format.checkbox) {
+                    let on = calc.value(&wb, wb.active, src, c).truthy().unwrap_or(false);
+                    let (x, cw) = self.col_rect(c);
+                    draw_checkbox(cr, check_box((x, y, cw, rh)), on);
+                    continue;
+                }
+                if raw.is_empty() {
                     continue;
                 }
                 let f = calc.look(&wb, wb.active, src, c);
@@ -574,6 +580,9 @@ impl Sheets {
             }
             cr.restore().ok();
         }
+
+        // Charts placed on the sheet, over the cells.
+        self.draw_placed(cr, (&wb, &calc), (w, h), accent);
 
         // Comments: a small corner mark.
         cr.save().ok();
@@ -812,6 +821,12 @@ impl Sheets {
         click.connect_pressed(move |_, n, x, y| {
             let Some(s) = me.upgrade() else { return };
             if n == 2
+                && let Some((i, _)) = s.chart_hit(x, y)
+            {
+                s.edit_chart(i);
+                return;
+            }
+            if n == 2
                 && let Hit::Cell(r, c) = s.hit(x, y)
                 && !s.editing.get()
             {
@@ -826,6 +841,10 @@ impl Sheets {
         motion.connect_motion(move |_, x, y| {
             let Some(s) = me.upgrade() else { return };
             if s.drag.get() != Drag::None {
+                return;
+            }
+            if let Some((_, corner)) = s.chart_hit(x, y) {
+                s.area.set_cursor_from_name(Some(if corner { "nwse-resize" } else { "move" }));
                 return;
             }
             let name = match s.hit(x, y) {
@@ -873,6 +892,9 @@ impl Sheets {
             self.drag.set(Drag::Pick { at, len: name.chars().count() as i32, from: (r, c) });
             return;
         }
+        if self.press_chart(x, y) {
+            return;
+        }
         if self.editing.get() {
             self.end_edit(true);
         }
@@ -913,6 +935,20 @@ impl Sheets {
                 self.drag.set(Drag::Fill);
             }
             Hit::Cell(r, c) => {
+                // A click on a checkbox ticks it.
+                let src = self.src_row(r);
+                if !shift && self.wb.borrow().sheet().format(src, c).checkbox {
+                    let (cx, cw) = self.col_rect(c);
+                    let (cy, ch) = self.row_rect(r);
+                    let (bx, by, bs) = check_box((cx, cy, cw, ch));
+                    if x >= bx - 4.0 && x <= bx + bs + 4.0 && y >= by - 4.0 && y <= by + bs + 4.0 {
+                        self.cursor.set((r, c));
+                        self.anchor.set((r, c));
+                        let calc = Calc::new(&self.wb.borrow(), 0.0);
+                        self.change(|wb| wb.toggle_checks(Area::cell(src, c), &calc));
+                        return;
+                    }
+                }
                 self.cursor.set((r, c));
                 if !shift {
                     self.anchor.set((r, c));
@@ -970,6 +1006,7 @@ impl Sheets {
                 self.wb.borrow_mut().set_col_w(c, nw);
                 self.relayout();
             }
+            Drag::MoveChart { .. } | Drag::SizeChart { .. } => self.drag_chart(dx, dy),
             Drag::ResizeRow { r, y0: _, h0 } => {
                 let nh = (h0 as f64 + dy).round().max(20.0) as u32;
                 let src = self.src_row(r);
@@ -992,7 +1029,7 @@ impl Sheets {
                     self.select_src(done);
                 }
             }
-            Drag::ResizeCol { .. } | Drag::ResizeRow { .. } => {
+            Drag::ResizeCol { .. } | Drag::ResizeRow { .. } | Drag::MoveChart { .. } | Drag::SizeChart { .. } => {
                 // The undo step was noted when the drag began.
                 if self.undo.borrow().last() == Some(&*self.wb.borrow()) {
                     self.undo.borrow_mut().pop();
@@ -1009,7 +1046,7 @@ impl Sheets {
         self.area.queue_draw();
     }
 
-    fn push_undo(&self) {
+    pub(super) fn push_undo(&self) {
         let snap = self.wb.borrow().clone();
         self.undo.borrow_mut().push(snap);
     }
@@ -1068,6 +1105,11 @@ impl Sheets {
                 self.move_to(nr.min(rows - 1), nc, false)
             }
             gdk::Key::F2 => self.begin_edit(None, true),
+            gdk::Key::Delete | gdk::Key::KP_Delete | gdk::Key::BackSpace if self.chart_sel.get().is_some() => self.delete_chart(),
+            gdk::Key::Escape if self.chart_sel.get().is_some() => {
+                self.chart_sel.set(None);
+                self.area.queue_draw();
+            }
             gdk::Key::Delete | gdk::Key::KP_Delete => {
                 let areas = self.selection_rows();
                 self.change(|wb| {
@@ -1075,6 +1117,11 @@ impl Sheets {
                         wb.clear(a);
                     }
                 });
+            }
+            gdk::Key::space if !ctrl && self.wb.borrow().sheet().format(self.src_row(r), c).checkbox => {
+                let a = self.selection_src();
+                let calc = Calc::new(&self.wb.borrow(), 0.0);
+                self.change(|wb| wb.toggle_checks(a, &calc));
             }
             gdk::Key::BackSpace => {
                 self.change(|wb| wb.set(self.src_row(r), c, ""));
@@ -1227,6 +1274,42 @@ impl Sheets {
         });
         self.entry.add_controller(keys);
     }
+}
+
+/// Where a cell's checkbox sits: (x, y, size), centred.
+fn check_box((x, y, w, h): (f64, f64, f64, f64)) -> (f64, f64, f64) {
+    let size = 14.0f64.min(h - 6.0).max(8.0);
+    ((x + (w - size) / 2.0).floor() + 0.5, (y + (h - size) / 2.0).floor() + 0.5, size)
+}
+
+/// A box, filled and ticked when on.
+pub(super) fn draw_checkbox(cr: &cairo::Context, (x, y, s): (f64, f64, f64), on: bool) {
+    cr.save().ok();
+    cr.new_sub_path();
+    let r = 3.0;
+    cr.arc(x + s - r, y + r, r, -std::f64::consts::FRAC_PI_2, 0.0);
+    cr.arc(x + s - r, y + s - r, r, 0.0, std::f64::consts::FRAC_PI_2);
+    cr.arc(x + r, y + s - r, r, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
+    cr.arc(x + r, y + r, r, std::f64::consts::PI, 1.5 * std::f64::consts::PI);
+    cr.close_path();
+    if on {
+        cr.set_source_rgb(0.239, 0.482, 0.878);
+        cr.fill_preserve().ok();
+        cr.stroke().ok();
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+        cr.set_line_width(2.0);
+        cr.move_to(x + s * 0.24, y + s * 0.52);
+        cr.line_to(x + s * 0.43, y + s * 0.72);
+        cr.line_to(x + s * 0.78, y + s * 0.3);
+        cr.stroke().ok();
+    } else {
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+        cr.fill_preserve().ok();
+        cr.set_source_rgb(0.55, 0.58, 0.63);
+        cr.set_line_width(1.2);
+        cr.stroke().ok();
+    }
+    cr.restore().ok();
 }
 
 /// Draw the edges `b` names around a cell box.

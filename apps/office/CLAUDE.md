@@ -44,6 +44,13 @@
   Pictures wrapped beside a paragraph (`Image.wrap`) take no room in the line; the page
   view draws them and `wrap.rs` gives the paragraph margin tags (`wl:`/`wr:`/`wb:`,
   never saved). Print sets the first lines narrower beside the picture.
+  Endnotes are notes with `end: true` (marks i, ii, iii), printed under "Notes" at
+  the end. `Block::Section` sets the columns from there on (the pager keeps a
+  section's top on the page); Word keeps a section's settings at its end, so
+  `docx.rs` shifts them by one each way. The editor stays the first section's width.
+  Shapes and charts in the text are `Run::Drawing` (`figure.rs`: a paintable drawn
+  with Cairo, reusing Present's shapes and Sheets' charts); in Word they're `wps`
+  shapes and chart parts.
 - **Spelling**: GTK doesn't send commit notifications for child anchors or
   paintables, so libspelling's count of the text drifts (and later asserts) when one
   goes in. The adapter is replaced after each such insert and set aside during loads
@@ -61,6 +68,10 @@
   margins. `xlsx.rs` reads with roxmltree (styles, merges, notes and conditional
   formats included) and writes with rust_xlsxwriter. Sheets are tabs under the grid;
   Sheets has no sidebar group, so `window.rs` hides the sidebar on its document page.
+  Charts placed on the sheet (`Sheet.charts`, pixels from the cells' top left) and
+  table regions (`Sheet.tables`, styled through `Calc::look`) live in `placed.rs`;
+  in Excel they're drawing anchors and tables (the cells a chart spans get explicit
+  sizes, as Excel's defaults differ).
 - **Present** (`present/`): slides are 960 × 540 (points; PowerPoint's 16:9 page).
   `render.rs` draws a slide for the canvas, thumbnails, slideshow, presenter view and
   PDF alike. Text is edited in an overlay `TextView` styled to the slide's font at the
@@ -68,9 +79,14 @@
   time); with `presenter_view` on and a second monitor, slides go full screen there and
   the presenter view on this one. `arrange.rs` has multi-select, groups, snap guides
   and align/distribute; `data.rs` the table and chart editors and the transition and
-  build menus; `looks.rs` the shapes menu, rotation and borders. Objects turn about
+  build menus; `looks.rs` the shapes menu, rotation and borders; `media.rs` video and
+  audio (`Kind::Media`, played by `gtk::Video`/`MediaControls` laid over the slide in
+  `show.rs`, from files in the cache) and the master slide (`Deck::master`: shown
+  through `Deck::composed`, edited through `Deck::editing`/`edit` in master mode). Objects turn about
   their centre (`Object::rotation`; hit-testing goes through `to_local`). Slide charts
-  reuse `sheets::chart::draw`.
+  reuse `sheets::chart::draw`. Builds are `Object::build` (in) and `build_out`,
+  played in `Slide::steps` order; Magic Move pairs objects with `Object::same_as` and
+  is written as PowerPoint's Morph.
 - **Office files** are written by hand as XML strings (`write/docx.rs`,
   `present/pptx.rs`, `present/pptx_more.rs` for tables, charts, transitions and
   timing) and read with roxmltree.

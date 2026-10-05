@@ -224,6 +224,40 @@ mod tests {
     }
 
     #[test]
+    fn tables_style_their_rows() {
+        let mut wb = Workbook::default();
+        for r in 0..4 {
+            wb.set(r, 0, "x");
+        }
+        wb.sheet_mut().tables.push(TableRegion { name: "T".into(), range: "A1:A4".into(), look: 0, header: true, banded: true, total: true });
+        let calc = Calc::new(&wb, 0.0);
+        let look = |r| calc.look(&wb, 0, r, 0);
+        assert!(look(0).bold && look(0).fill.as_deref() == Some(TABLE_LOOKS[0].1));
+        assert_eq!(look(1).fill, None);
+        assert_eq!(look(2).fill.as_deref(), Some(TABLE_LOOKS[0].2));
+        assert!(look(3).bold && look(3).borders & TOP != 0);
+        assert_eq!(calc.look(&wb, 0, 5, 0).fill, None);
+    }
+
+    #[test]
+    fn checkboxes_tick_together() {
+        let mut wb = Workbook::default();
+        wb.format(Area::new(0, 0, 2, 0), |f| f.checkbox = true);
+        wb.set(0, 0, "TRUE");
+        wb.set(1, 0, "FALSE");
+        wb.set(2, 0, "=A1");
+        wb.set(3, 0, "=COUNTIF(A1:A2, TRUE)");
+        let calc = Calc::new(&wb, 0.0);
+        wb.toggle_checks(Area::new(0, 0, 2, 0), &calc);
+        // Not all were ticked: now they are (formulas stay formulas).
+        assert_eq!((wb.sheet().raw(0, 0), wb.sheet().raw(1, 0), wb.sheet().raw(2, 0)), ("TRUE", "TRUE", "=A1"));
+        let calc = Calc::new(&wb, 0.0);
+        assert_eq!(calc.value(&wb, 0, 3, 0), Value::Num(2.0));
+        wb.toggle_checks(Area::new(0, 0, 1, 0), &calc);
+        assert_eq!(wb.sheet().raw(1, 0), "FALSE");
+    }
+
+    #[test]
     fn merges_comments_and_rules_survive_saving() {
         let mut wb = Workbook::default();
         wb.set(0, 0, "Title");

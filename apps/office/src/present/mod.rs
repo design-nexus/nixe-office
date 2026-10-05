@@ -3,10 +3,11 @@
 pub mod model;
 mod arrange;
 mod looks;
-mod data;
+mod media;
+pub(crate) mod data;
 mod pptx;
-mod pptx_more;
-mod render;
+pub(crate) mod pptx_more;
+pub mod render;
 mod show;
 mod templates;
 
@@ -76,6 +77,7 @@ struct Controls {
     object_tools: gtk::Box,
     group: gtk::Button,
     shadow: gtk::ToggleButton,
+    master: gtk::ToggleButton,
 }
 
 pub struct Present {
@@ -86,6 +88,8 @@ pub struct Present {
     pictures: Pictures,
     current: Cell<usize>,
     selected: Cell<Option<u32>>,
+    /// Editing the master slide (objects on every slide) instead of this slide.
+    master_mode: Cell<bool>,
     /// More objects selected with Shift-click.
     also: RefCell<Vec<u32>>,
     /// Where each dragged object started.
@@ -153,6 +157,7 @@ impl Present {
             pictures: Pictures::default(),
             current: Cell::new(0),
             selected: Cell::new(None),
+            master_mode: Cell::new(false),
             also: RefCell::new(Vec::new()),
             drag_from: RefCell::new(Vec::new()),
             guides: RefCell::new(Vec::new()),
@@ -207,9 +212,9 @@ impl Present {
         self.me.borrow().upgrade().expect("the editor is alive")
     }
 
+    /// The slide being edited (in master mode, the master on this slide's background).
     fn slide(&self) -> Slide {
-        let d = self.deck.borrow();
-        d.slides.get(self.current.get()).cloned().unwrap_or_default()
+        self.deck.borrow().editing(self.current.get(), self.master_mode.get())
     }
 
     // ---------- Toolbar ----------
@@ -268,6 +273,19 @@ impl Present {
         });
         g.append(&layout);
         g.append(&self.transition_button());
+        let master = gtk::ToggleButton::new();
+        master.set_icon_name("nxo-crown-symbolic");
+        master.add_css_class("tool-toggle");
+        master.set_tooltip_text(Some("Master slide: put a logo, footer or slide number on every slide"));
+        let me = Rc::downgrade(self);
+        master.connect_toggled(move |b| {
+            if let Some(p) = me.upgrade()
+                && !p.syncing.get()
+            {
+                p.set_master_mode(b.is_active());
+            }
+        });
+        g.append(&master);
         flow.append(&g);
 
         let g = group();
@@ -354,6 +372,8 @@ impl Present {
         }));
         g.append(&button("nxo-image-symbolic", "Add a picture", |p| p.pick_picture()));
         g.append(&self.shapes_button());
+        g.append(&button("nxo-film-symbolic", "Add video or audio (it plays in the slideshow)", |p| p.pick_media()));
+        g.append(&button("nxo-book-marked-symbolic", "Add the slide number", |p| p.add_slide_number()));
         g.append(&button("nxo-table-2-symbolic", "Add a table (double-click it to fill it in)", |p| {
             p.add_object(Kind::table(3, 3), 520.0, 180.0)
         }));
@@ -429,6 +449,7 @@ impl Present {
             object_tools,
             group: group_button,
             shadow,
+            master,
         });
         bar
     }
@@ -626,11 +647,9 @@ impl Present {
     }
 
     fn change_slide(&self, f: impl FnOnce(&mut Slide)) {
-        let i = self.current.get();
+        let (i, master) = (self.current.get(), self.master_mode.get());
         self.change_deck(|d| {
-            if let Some(s) = d.slides.get_mut(i) {
-                f(s);
-            }
+            d.edit(i, master, f);
         });
     }
 
@@ -812,8 +831,8 @@ impl Present {
         area.set_draw_func(move |_, cr, w, h| {
             if let Some(p) = me.upgrade() {
                 let d = p.deck.borrow();
-                if let Some(s) = d.slides.get(i) {
-                    render::draw(cr, &ctx(), s, &p.media.borrow(), &p.pictures, (w as f64, h as f64), Hints::default());
+                if let Some(s) = d.composed(i) {
+                    render::draw(cr, &ctx(), &s, &p.media.borrow(), &p.pictures, (w as f64, h as f64), Hints::default());
                 }
             }
         });
@@ -860,6 +879,18 @@ impl Present {
             });
             list.append(&b);
         };
+        let hidden = self.deck.borrow().slides.get(i).is_some_and(|s| s.hide_master);
+        item(
+            if hidden { "Show master objects" } else { "Hide master objects" },
+            Box::new(move |p| {
+                let (cur, master) = (p.current.get(), p.master_mode.get());
+                p.master_mode.set(false);
+                p.current.set(i);
+                p.change_slide(|s| s.hide_master = !s.hide_master);
+                p.current.set(cur);
+                p.master_mode.set(master);
+            }),
+        );
         item(
             "Duplicate",
             Box::new(move |p| {
@@ -942,12 +973,25 @@ impl Present {
             skip_object: if let Some(Target::Object(id)) = editing { Some(id) } else { None },
             ..Default::default()
         };
-        render::draw(cr, &ctx(), &slide, &self.media.borrow(), &self.pictures, (W * s, H * s), hints);
+        // The slide as it shows, master included; in master mode, the master alone.
+        let shown = if self.master_mode.get() { slide.clone() } else { self.deck.borrow().composed(self.current.get()).unwrap_or_else(|| slide.clone()) };
+        render::draw(cr, &ctx(), &shown, &self.media.borrow(), &self.pictures, (W * s, H * s), hints);
         cr.restore().ok();
         cr.set_source_rgb(border.0, border.1, border.2);
         cr.set_line_width(1.0);
         cr.rectangle(ox - 0.5, oy - 0.5, W * s + 1.0, H * s + 1.0);
         cr.stroke().ok();
+        if self.master_mode.get() {
+            // Say so above the slide, in the window's own accent.
+            cr.set_source_rgb(accent.0, accent.1, accent.2);
+            cr.set_line_width(2.0);
+            cr.rectangle(ox - 2.0, oy - 2.0, W * s + 4.0, H * s + 4.0);
+            cr.stroke().ok();
+            let layout = self.canvas.create_pango_layout(Some("MASTER SLIDE · on every slide"));
+            layout.set_font_description(Some(&gtk::pango::FontDescription::from_string("Noto Sans Bold 8.5")));
+            cr.move_to(ox, oy - 20.0);
+            pangocairo::functions::show_layout(cr, &layout);
+        }
         // The selection: outlines, and a corner handle when one object is picked.
         let chosen = self.chosen();
         cr.set_source_rgb(accent.0, accent.1, accent.2);
@@ -992,11 +1036,16 @@ impl Present {
         }
         cr.stroke().ok();
         // Build order badges: which click brings each object in.
-        let steps = slide.build_steps();
-        for (n, id) in steps.iter().enumerate() {
-            let Some(o) = slide.objects.iter().find(|o| o.id == *id) else { continue };
-            let (x, y) = (ox + o.x * s, oy + o.y * s);
-            cr.set_source_rgb(accent.0, accent.1, accent.2);
+        let steps = slide.steps();
+        for (n, st) in steps.iter().enumerate() {
+            let Some(o) = slide.objects.iter().find(|o| o.id == st.id) else { continue };
+            // Coming in at the top left corner, going out at the top right (in red).
+            let (x, y) = if st.out { (ox + (o.x + o.w) * s, oy + o.y * s) } else { (ox + o.x * s, oy + o.y * s) };
+            if st.out {
+                cr.set_source_rgb(0.78, 0.24, 0.2);
+            } else {
+                cr.set_source_rgb(accent.0, accent.1, accent.2);
+            }
             cr.arc(x, y, 9.0, 0.0, std::f64::consts::TAU);
             cr.fill().ok();
             let layout = self.canvas.create_pango_layout(Some(&(n + 1).to_string()));
@@ -1107,10 +1156,13 @@ impl Present {
     /// Move or resize an object while dragging (the undo step was taken at the start).
     fn with_object(&self, id: u32, f: impl FnOnce(&mut Object)) {
         let i = self.current.get();
-        if let Some(o) = self.deck.borrow_mut().slides.get_mut(i).and_then(|s| s.objects.iter_mut().find(|o| o.id == id)) {
-            f(o);
-            o.clamp();
-        }
+        let master = self.master_mode.get();
+        self.deck.borrow_mut().edit(i, master, |s| {
+            if let Some(o) = s.objects.iter_mut().find(|o| o.id == id) {
+                f(o);
+                o.clamp();
+            }
+        });
         self.canvas.queue_draw();
     }
 
@@ -1299,8 +1351,8 @@ impl Present {
             let (a, e) = b.bounds();
             let text = b.text(&a, &e, false).to_string();
             p.begin_typing();
-            let i = p.current.get();
-            if let Some(s) = p.deck.borrow_mut().slides.get_mut(i) {
+            let (i, master) = (p.current.get(), p.master_mode.get());
+            p.deck.borrow_mut().edit(i, master, |s| {
                 match t {
                     Target::Title => s.title = text,
                     Target::Body => s.body = text,
@@ -1310,7 +1362,7 @@ impl Present {
                         }
                     }
                 }
-            }
+            });
             p.schedule_thumbs();
             doc::edited();
         });
@@ -1663,7 +1715,7 @@ pub fn write_sample(path: &Path) {
     let mut deck = templates::build("celebration").expect("a template");
     deck.slides[1].objects.push(Object::new(1, Kind::Shape { shape: Shape::Ellipse, fill: "#e47b89".into() }, (700.0, 380.0, 160.0, 100.0)));
     let s = &mut deck.slides[1];
-    s.transition = Some(Transition { kind: TransitionKind::Fade, secs: 0.75 });
+    s.transition = Some(Transition { kind: TransitionKind::MagicMove, secs: 1.0 });
     let mut chart = Object::new(10, Kind::sample_chart(), (500.0, 60.0, 420.0, 280.0));
     chart.build = Some(Build { order: 1, effect: Effect::Fade });
     s.objects.push(chart);
@@ -1682,7 +1734,11 @@ pub fn write_sample(path: &Path) {
         o.group = Some(1);
         s.objects.push(o);
     }
-    let (bytes, _) = pptx::write(&deck, &BTreeMap::new()).expect("a pptx");
+    deck.master.push(Object::new(1, Kind::Text { text: "{n}".into() }, (880.0, 500.0, 60.0, 30.0)));
+    deck.slides[0].hide_master = true;
+    deck.slides[1].objects.push(Object::new(30, Kind::Media { media: "clip-1.mp4".into(), video: true }, (560.0, 360.0, 300.0, 168.0)));
+    let media: BTreeMap<String, Vec<u8>> = [("clip-1.mp4".to_string(), b"sample".to_vec())].into();
+    let (bytes, _) = pptx::write(&deck, &media).expect("a pptx");
     std::fs::write(path, bytes).expect("written");
 }
 
@@ -1783,12 +1839,21 @@ pub mod tests {
         p.delete_chosen();
         assert!(p.slide().objects.is_empty());
 
+        // In master mode new objects go on the master, and show on every slide.
+        p.set_master_mode(true);
+        p.add_slide_number();
+        p.set_master_mode(false);
+        assert_eq!(p.deck.borrow().master.len(), 1);
+        assert!(p.slide().objects.is_empty());
+        assert!(matches!(&p.deck.borrow().composed(0).unwrap().objects[0].kind, Kind::Text { text } if text == "1"));
+        p.deck.borrow_mut().master.clear();
+
         // A table and a chart are drawn, and builds hide objects until their click.
         p.add_object(Kind::table(2, 2), 400.0, 120.0);
         p.add_object(Kind::sample_chart(), 400.0, 240.0);
         let chart = p.selected.get().unwrap();
         p.change_object(|o| o.build = Some(Build { order: 1, effect: Effect::Fade }));
-        assert_eq!(p.slide().build_steps(), [chart]);
+        assert_eq!(p.slide().steps().iter().map(|s| s.id).collect::<Vec<_>>(), [chart]);
         crate::print::export_pdf(p.pages().as_ref(), &pdf).unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }

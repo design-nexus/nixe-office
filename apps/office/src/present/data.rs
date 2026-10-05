@@ -162,39 +162,16 @@ impl Present {
                 });
             }
             Kind::Chart { chart, names, labels, series } => {
-                // As a table: series names across the top, a label and its values per row.
-                let mut rows = vec![std::iter::once(String::new()).chain(names.iter().cloned()).collect::<Vec<_>>()];
-                for (i, l) in labels.iter().enumerate() {
-                    let mut r = vec![l.clone()];
-                    r.extend(series.iter().map(|s| s.get(i).map(|v| crate::sheets::formula::general(*v)).unwrap_or_default()));
-                    rows.push(r);
-                }
-                let editor = GridEditor::new(rows);
-                let names_list: Vec<&str> = ChartKind::ALL.iter().map(|k| k.name()).collect();
-                let kind = gtk::DropDown::from_strings(&names_list);
-                kind.set_selected(ChartKind::ALL.iter().position(|k| *k == chart).unwrap_or(0) as u32);
-                let kind_row = widgets::hbox(8);
-                kind_row.append(&widgets::label("Kind", "dim"));
-                kind_row.append(&kind);
                 let me = self.weak();
-                let k = kind.clone();
-                grid_dialog(
-                    "Chart data",
-                    "Series names across the top row; a label and its numbers on each row below. Pie charts show the first series.",
-                    &editor,
-                    Some(kind_row.upcast_ref()),
-                    move |rows| {
-                        let new = chart_from_rows(&rows, ChartKind::ALL[(k.selected() as usize).min(3)])?;
-                        if let Some(p) = me.upgrade() {
-                            p.change_slide(|s| {
-                                if let Some(o) = s.objects.iter_mut().find(|o| o.id == id) {
-                                    o.kind = new;
-                                }
-                            });
-                        }
-                        Ok(())
-                    },
-                );
+                edit_chart(chart, &names, &labels, &series, move |new| {
+                    if let Some(p) = me.upgrade() {
+                        p.change_slide(|s| {
+                            if let Some(o) = s.objects.iter_mut().find(|o| o.id == id) {
+                                o.kind = new;
+                            }
+                        });
+                    }
+                });
             }
             _ => {}
         }
@@ -229,7 +206,7 @@ impl Present {
             move || {
                 let k = kind.selected() as usize;
                 (k > 0).then(|| Transition {
-                    kind: TransitionKind::ALL[(k - 1).min(3)],
+                    kind: TransitionKind::ALL[(k - 1).min(TransitionKind::ALL.len() - 1)],
                     secs: speeds[(speed.selected() as usize).min(2)].1,
                 })
             }
@@ -274,22 +251,29 @@ impl Present {
         menu
     }
 
-    /// The selected object's build: whether it comes in on a click, how, and when.
+    /// The selected object's builds: whether it comes in, or goes out, on a
+    /// click; how; and when.
     pub(super) fn build_button(self: &Rc<Self>) -> gtk::MenuButton {
         let menu = gtk::MenuButton::new();
         menu.set_icon_name("nxo-wand-sparkles-symbolic");
         menu.add_css_class("bar-button");
-        menu.set_tooltip_text(Some("Build: bring the object in on a click during the slideshow"));
+        menu.set_tooltip_text(Some("Builds: bring the object in, or take it away, on a click during the slideshow"));
         menu.set_valign(gtk::Align::Center);
         let pop = gtk::Popover::new();
         let content = widgets::vbox(10);
         content.add_css_class("prompt-box");
         content.append(&widgets::label("Build in", "popover-title"));
-        let mut names = vec!["None (always shown)"];
+        let mut names = vec!["None (shown from the start)"];
         names.extend(Effect::ALL.iter().map(|e| e.name()));
         let effect = gtk::DropDown::from_strings(&names);
         content.append(&effect);
+        content.append(&widgets::label("Build out", "popover-title"));
+        let out_names = ["None (stays to the end)", "Disappear", "Fade out", "Fly out"];
+        let effect_out = gtk::DropDown::from_strings(&out_names);
+        content.append(&effect_out);
         let when = widgets::label("", "dim");
+        when.set_wrap(true);
+        when.set_xalign(0.0);
         content.append(&when);
         let order = widgets::hbox(6);
         let earlier = gtk::Button::with_label("Earlier");
@@ -302,52 +286,64 @@ impl Present {
 
         let refresh = {
             let me = Rc::downgrade(self);
-            let (effect, when, order) = (effect.clone(), when.clone(), order.clone());
+            let (effect, effect_out, when, order) = (effect.clone(), effect_out.clone(), when.clone(), order.clone());
             move || {
                 let Some(p) = me.upgrade() else { return };
                 let s = p.slide();
                 let Some(id) = p.selected.get() else { return };
-                let b = s.objects.iter().find(|o| o.id == id).and_then(|o| o.build);
+                let o = s.objects.iter().find(|o| o.id == id);
+                let (b, bo) = (o.and_then(|o| o.build), o.and_then(|o| o.build_out));
+                let pos = |e: Option<Build>| e.map(|b| Effect::ALL.iter().position(|x| *x == b.effect).unwrap_or(0) + 1).unwrap_or(0) as u32;
                 p.syncing.set(true);
-                effect.set_selected(b.map(|b| Effect::ALL.iter().position(|e| *e == b.effect).unwrap_or(0) + 1).unwrap_or(0) as u32);
+                effect.set_selected(pos(b));
+                effect_out.set_selected(pos(bo));
                 p.syncing.set(false);
-                let steps = s.build_steps();
-                match steps.iter().position(|x| *x == id) {
-                    Some(i) => when.set_text(&format!("Comes in on click {} of {}", i + 1, steps.len())),
-                    None => when.set_text("Shown from the start of the slide."),
+                let steps = s.steps();
+                let at = |out: bool| steps.iter().position(|x| x.id == id && x.out == out).map(|i| i + 1);
+                let mut parts = Vec::new();
+                match at(false) {
+                    Some(k) => parts.push(format!("Comes in on click {k}")),
+                    None => parts.push("Shown from the start".to_string()),
                 }
+                if let Some(k) = at(true) {
+                    parts.push(format!("goes out on click {k}"));
+                }
+                when.set_text(&format!("{} of {}.", parts.join(", "), steps.len().max(1)));
                 order.set_visible(b.is_some() && steps.len() > 1);
             }
         };
         let r = refresh.clone();
         pop.connect_show(move |_| r());
-        let me = Rc::downgrade(self);
-        let r = refresh.clone();
-        effect.connect_selected_notify(move |d| {
-            let Some(p) = me.upgrade() else { return };
-            if p.syncing.get() {
-                return;
-            }
-            let chosen = p.chosen();
-            let i = d.selected() as usize;
-            p.change_slide(|s| {
-                let mut next = s.objects.iter().filter_map(|o| o.build.map(|b| b.order)).max().unwrap_or(0) + 1;
-                for o in s.objects.iter_mut().filter(|o| chosen.contains(&o.id)) {
-                    o.build = if i == 0 {
-                        None
-                    } else {
-                        let effect = Effect::ALL[(i - 1).min(2)];
-                        // A new build goes last; a changed one keeps its turn.
-                        let order = o.build.map(|b| b.order).unwrap_or_else(|| {
-                            next += 1;
-                            next - 1
-                        });
-                        Some(Build { order, effect })
-                    };
+        for (dd, out) in [(&effect, false), (&effect_out, true)] {
+            let me = Rc::downgrade(self);
+            let r = refresh.clone();
+            dd.connect_selected_notify(move |d| {
+                let Some(p) = me.upgrade() else { return };
+                if p.syncing.get() {
+                    return;
                 }
+                let chosen = p.chosen();
+                let i = d.selected() as usize;
+                p.change_slide(|s| {
+                    let mut next = s.objects.iter().flat_map(|o| [o.build, o.build_out]).flatten().map(|b| b.order).max().unwrap_or(0) + 1;
+                    for o in s.objects.iter_mut().filter(|o| chosen.contains(&o.id)) {
+                        let slot = if out { &mut o.build_out } else { &mut o.build };
+                        *slot = if i == 0 {
+                            None
+                        } else {
+                            let effect = Effect::ALL[(i - 1).min(2)];
+                            // A new build goes last; a changed one keeps its turn.
+                            let order = slot.map(|b| b.order).unwrap_or_else(|| {
+                                next += 1;
+                                next - 1
+                            });
+                            Some(Build { order, effect })
+                        };
+                    }
+                });
+                r();
             });
-            r();
-        });
+        }
         for (b, by) in [(&earlier, -1i64), (&later, 1)] {
             let me = Rc::downgrade(self);
             let r = refresh.clone();
@@ -355,18 +351,17 @@ impl Present {
                 let Some(p) = me.upgrade() else { return };
                 let Some(id) = p.selected.get() else { return };
                 p.change_slide(|s| {
-                    let steps = s.build_steps();
-                    let Some(i) = steps.iter().position(|x| *x == id) else { return };
+                    let mut steps = s.steps();
+                    let Some(i) = steps.iter().position(|x| x.id == id && !x.out) else { return };
                     let j = i as i64 + by;
                     if j < 0 || j as usize >= steps.len() {
                         return;
                     }
-                    // Number the steps afresh with the two swapped.
-                    let mut order = steps.clone();
-                    order.swap(i, j as usize);
-                    for (n, oid) in order.iter().enumerate() {
-                        if let Some(o) = s.objects.iter_mut().find(|o| o.id == *oid)
-                            && let Some(b) = &mut o.build
+                    // Number every step afresh with the two swapped.
+                    steps.swap(i, j as usize);
+                    for (n, st) in steps.iter().enumerate() {
+                        if let Some(o) = s.objects.iter_mut().find(|o| o.id == st.id)
+                            && let Some(b) = if st.out { &mut o.build_out } else { &mut o.build }
                         {
                             b.order = n as u32 + 1;
                         }
@@ -377,6 +372,35 @@ impl Present {
         }
         menu
     }
+}
+
+/// Edit a chart's kind and numbers in a table; `save` gets the new chart.
+pub(crate) fn edit_chart(chart: ChartKind, names: &[String], labels: &[String], series: &[Vec<f64>], save: impl Fn(Kind) + 'static) {
+    // As a table: series names across the top, a label and its values per row.
+    let mut rows = vec![std::iter::once(String::new()).chain(names.iter().cloned()).collect::<Vec<_>>()];
+    for (i, l) in labels.iter().enumerate() {
+        let mut r = vec![l.clone()];
+        r.extend(series.iter().map(|s| s.get(i).map(|v| crate::sheets::formula::general(*v)).unwrap_or_default()));
+        rows.push(r);
+    }
+    let editor = GridEditor::new(rows);
+    let names_list: Vec<&str> = ChartKind::ALL.iter().map(|k| k.name()).collect();
+    let kind = gtk::DropDown::from_strings(&names_list);
+    kind.set_selected(ChartKind::ALL.iter().position(|k| *k == chart).unwrap_or(0) as u32);
+    let kind_row = widgets::hbox(8);
+    kind_row.append(&widgets::label("Kind", "dim"));
+    kind_row.append(&kind);
+    let k = kind.clone();
+    grid_dialog(
+        "Chart data",
+        "Series names across the top row; a label and its numbers on each row below. Pie charts show the first series; scatter charts take the labels as x values.",
+        &editor,
+        Some(kind_row.upcast_ref()),
+        move |rows| {
+            save(chart_from_rows(&rows, ChartKind::ALL[(k.selected() as usize).min(ChartKind::ALL.len() - 1)])?);
+            Ok(())
+        },
+    );
 }
 
 /// Chart numbers from the editing table. Blank cells count as 0.

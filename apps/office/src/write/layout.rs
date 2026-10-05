@@ -26,6 +26,14 @@ enum Item {
         w: f64,
         h: f64,
     },
+    /// A shape or chart.
+    Figure {
+        figure: Figure,
+        x: f64,
+        top: f64,
+        w: f64,
+        h: f64,
+    },
     Row {
         cells: Vec<Rc<pango::Layout>>,
         x: f64,
@@ -41,7 +49,8 @@ enum Item {
 struct Page {
     items: Vec<Item>,
     /// (column, layout) per footnote, in order.
-    notes: Vec<(usize, Rc<pango::Layout>)>,
+    /// (column's x, layout) per footnote, in order.
+    notes: Vec<(f64, Rc<pango::Layout>)>,
 }
 
 pub struct Rendered {
@@ -56,7 +65,8 @@ pub struct Rendered {
 #[derive(Clone)]
 enum Piece {
     Text(TextRun),
-    Mark(usize),
+    /// A note's raised mark: its label, and its number if it's a footnote.
+    Mark(String, Option<usize>),
 }
 
 /// Split pieces at a byte offset of the text they lay out to.
@@ -66,7 +76,7 @@ fn split_pieces(pieces: &[Piece], at: usize) -> (Vec<Piece>, Vec<Piece>) {
     for p in pieces {
         let len = match p {
             Piece::Text(r) => r.text.len(),
-            Piece::Mark(n) => n.to_string().len(),
+            Piece::Mark(label, _) => label.len(),
         };
         if pos + len <= at {
             head.push(p.clone());
@@ -139,11 +149,13 @@ fn pieces_layout(
     for piece in pieces {
         let r = match piece {
             Piece::Text(r) => r,
-            Piece::Mark(n) => {
+            Piece::Mark(label, foot) => {
                 // A small raised number.
                 let start = text.len() as u32;
-                marks.push((text.len(), *n));
-                text.push_str(&n.to_string());
+                if let Some(n) = foot {
+                    marks.push((text.len(), *n));
+                }
+                text.push_str(label);
                 let end = text.len() as u32;
                 for mut a in [
                     pango::AttrSize::new((size * 0.62 * pango::SCALE as f64) as i32).into(),
@@ -234,6 +246,12 @@ struct Pager<'a> {
     col: usize,
     /// Height the current column's footnotes take at its foot.
     foot: f64,
+    /// The current section's columns: how many, and how wide.
+    cols: usize,
+    col_w: f64,
+    /// Where this section's columns start on the page, and the lowest they've reached.
+    top: f64,
+    low: f64,
 }
 
 impl Pager<'_> {
@@ -245,10 +263,11 @@ impl Pager<'_> {
     }
     /// Text runs over: into the next column, or onto a new page.
     fn next_column(&mut self) {
-        if self.col + 1 < self.setup.columns() {
+        self.low = self.low.max(self.y);
+        if self.col + 1 < self.cols {
             self.col += 1;
-            self.y = 0.0;
-            self.foot = 0.0;
+            self.y = self.top;
+            self.foot = self.foot_at(self.dx());
         } else {
             self.new_page();
         }
@@ -258,21 +277,53 @@ impl Pager<'_> {
         self.y = 0.0;
         self.col = 0;
         self.foot = 0.0;
+        self.top = 0.0;
+        self.low = 0.0;
+    }
+    /// A section break: `cols` columns from here, on a new page or below what's there.
+    fn section(&mut self, cols: usize, new_page: bool) {
+        let (gap, n) = (self.setup.column_gap.max(0.0), cols.clamp(1, 3) as f64);
+        if new_page && !self.empty() {
+            self.new_page();
+        } else if !self.empty() {
+            let below = self.low.max(self.y) + 8.0;
+            if below > self.setup.content_height() - 3.0 * DEFAULT_SIZE {
+                self.new_page();
+            } else {
+                self.top = below;
+                self.y = below;
+                self.low = below;
+            }
+        }
+        self.cols = cols.clamp(1, 3);
+        self.col = 0;
+        self.col_w = ((self.setup.content_width() - (n - 1.0) * gap) / n).max(72.0);
+        self.foot = self.foot_at(0.0);
+    }
+    fn dx(&self) -> f64 {
+        self.col as f64 * (self.col_w + self.setup.column_gap.max(0.0))
+    }
+    /// Room the footnotes already at the foot of the column at `dx` take.
+    fn foot_at(&self, dx: f64) -> f64 {
+        let notes: Vec<&Rc<pango::Layout>> =
+            self.pages.last().map(|p| p.notes.iter().filter(|(x, _)| (*x - dx).abs() < 0.5).map(|(_, l)| l).collect()).unwrap_or_default();
+        if notes.is_empty() { 0.0 } else { NOTE_RULE + notes.iter().map(|l| line_tops(l).1 + 2.0).sum::<f64>() }
     }
     /// Place an item in the current column.
     fn push(&mut self, mut item: Item) {
-        let dx = self.col as f64 * (self.setup.column_width() + self.setup.column_gap.max(0.0));
+        let dx = self.dx();
         match &mut item {
-            Item::Lines { x, .. } | Item::Picture { x, .. } | Item::Row { x, .. } => *x += dx,
+            Item::Lines { x, .. } | Item::Picture { x, .. } | Item::Row { x, .. } | Item::Figure { x, .. } => *x += dx,
         }
         self.pages.last_mut().expect("a page").items.push(item);
     }
     fn add_note(&mut self, layout: Rc<pango::Layout>, h: f64) {
+        let dx = self.dx();
         let page = self.pages.last_mut().expect("a page");
-        if !page.notes.iter().any(|(c, _)| *c == self.col) {
+        if !page.notes.iter().any(|(x, _)| (*x - dx).abs() < 0.5) {
             self.foot += NOTE_RULE;
         }
-        page.notes.push((self.col, layout));
+        page.notes.push((dx, layout));
         self.foot += h;
     }
     /// Move down by `gap`, unless at the top of a column.
@@ -301,8 +352,38 @@ pub fn paginate(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Rendered {
 fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_pages: &HashMap<usize, usize>) -> Rendered {
     let ctx = crate::print::text_context();
     let setup = &doc.page;
-    let width = setup.column_width();
-    let mut pg = Pager { setup, pages: vec![Page::default()], y: 0.0, col: 0, foot: 0.0 };
+    let mut pg = Pager {
+        setup,
+        pages: vec![Page::default()],
+        y: 0.0,
+        col: 0,
+        foot: 0.0,
+        cols: setup.columns(),
+        col_w: setup.column_width(),
+        top: 0.0,
+        low: 0.0,
+    };
+    // Endnotes, gathered at the end under their own heading.
+    let endnotes: Vec<&str> = doc
+        .blocks
+        .iter()
+        .filter_map(|b| if let Block::Paragraph(p) = b { Some(p) } else { None })
+        .flat_map(|p| p.runs.iter())
+        .filter_map(|r| if let Run::Note(n) = r { n.end.then_some(n.note.as_str()) } else { None })
+        .collect();
+    let mut extra: Vec<Block> = Vec::new();
+    if !endnotes.is_empty() {
+        // Full width, whatever the last section's columns.
+        extra.push(Block::Section(Section { columns: 1, new_page: false }));
+        extra.push(Block::Paragraph(Paragraph::text(Style::H2, "Notes")));
+        for (k, text) in endnotes.iter().enumerate() {
+            extra.push(Block::Paragraph(Paragraph {
+                runs: vec![Run::styled(&format!("{}  ", endnote_label(k + 1)), |r| r.bold = true), Run::text(text)],
+                ..Default::default()
+            }));
+        }
+    }
+    let mut end_n = 0;
     let mut found_pages = HashMap::new();
     let numbers = numbering(
         &doc.blocks
@@ -315,7 +396,8 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
     );
     let mut note_n = 0;
 
-    for (bi, block) in doc.blocks.iter().enumerate() {
+    for (bi, block) in doc.blocks.iter().chain(&extra).enumerate() {
+        let width = pg.col_w;
         match block {
             Block::Paragraph(p) => {
                 let (size, above, below, _, _) = p.style.look();
@@ -323,20 +405,25 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
                 let left = steps * INDENT_STEP;
                 pg.space(above);
                 // Text runs between pictures make one layout each; pictures stand on their own lines.
-                let mut segments: Vec<Result<Vec<Piece>, &Image>> = vec![Ok(Vec::new())];
+                // Text, and what stands on its own line: pictures, shapes and charts.
+                let mut segments: Vec<Result<Vec<Piece>, &Run>> = vec![Ok(Vec::new())];
                 let mut notes_here: Vec<(usize, &str)> = Vec::new();
                 for r in &p.runs {
                     let piece = match r {
                         Run::Text(t) => Piece::Text(t.clone()),
+                        Run::Note(n) if n.end => {
+                            end_n += 1;
+                            Piece::Mark(endnote_label(end_n), None)
+                        }
                         Run::Note(n) => {
                             note_n += 1;
                             notes_here.push((note_n, n.note.as_str()));
-                            Piece::Mark(note_n)
+                            Piece::Mark(note_n.to_string(), Some(note_n))
                         }
                         // A wrapped picture is placed beside the text, below.
                         Run::Image(i) if i.wrap.is_some() => continue,
-                        Run::Image(i) => {
-                            segments.push(Err(i));
+                        Run::Image(_) | Run::Drawing(_) => {
+                            segments.push(Err(r));
                             continue;
                         }
                     };
@@ -436,7 +523,8 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
                                     let mut end = start;
                                     let mut notes_h = 0.0;
                                     let rule = |pg: &Pager| {
-                                        let has = pg.pages.last().is_some_and(|p| p.notes.iter().any(|(c, _)| *c == pg.col));
+                                        let dx = pg.dx();
+                                    let has = pg.pages.last().is_some_and(|p| p.notes.iter().any(|(x, _)| (*x - dx).abs() < 0.5));
                                         if has { 0.0 } else { NOTE_RULE }
                                     };
                                     while end < tops.len() {
@@ -478,7 +566,23 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
                                 }
                             }
                         }
-                        Err(img) => {
+                        Err(Run::Drawing(d)) => {
+                            let w = d.width.min(width - left).max(1.0);
+                            let h = (d.height * w / d.width.max(1.0)).min(setup.content_height());
+                            if pg.room() < h && pg.y > 0.0 {
+                                pg.next_column();
+                            }
+                            let x = left
+                                + match p.align {
+                                    Align::Center => (width - left - w) / 2.0,
+                                    Align::Right => width - left - w,
+                                    _ => 0.0,
+                                };
+                            pg.push(Item::Figure { figure: d.drawing.clone(), x, top: pg.y, w, h });
+                            pg.y += h;
+                        }
+                        Err(r) => {
+                            let Run::Image(img) = r else { continue };
                             let Some(surface) = media.get(&img.image).and_then(|b| picture_surface(b)) else { continue };
                             let w = img.width.min(width - left).max(1.0);
                             let h = w * surface.height() as f64 / surface.width().max(1) as f64;
@@ -528,6 +632,7 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
                 }
                 pg.space(10.0);
             }
+            Block::Section(sec) => pg.section(sec.columns as usize, sec.new_page),
             Block::PageBreak => {
                 if !pg.empty() {
                     pg.new_page();
@@ -652,15 +757,13 @@ impl Pages for Rendered {
         let Some(page) = self.pages.get(index) else { return };
         cr.translate(ml, mt);
         // Footnotes, at the foot of their column under a short rule.
-        let col_step = self.setup.column_width() + self.setup.column_gap.max(0.0);
         let bottom = self.setup.content_height();
-        for col in 0..self.setup.columns() {
-            let notes: Vec<&Rc<pango::Layout>> = page.notes.iter().filter(|(c, _)| *c == col).map(|(_, l)| l).collect();
-            if notes.is_empty() {
-                continue;
-            }
+        let mut xs: Vec<f64> = page.notes.iter().map(|(x, _)| *x).collect();
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        xs.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+        for x in xs {
+            let notes: Vec<&Rc<pango::Layout>> = page.notes.iter().filter(|(nx, _)| (*nx - x).abs() < 0.5).map(|(_, l)| l).collect();
             let total: f64 = notes.iter().map(|l| line_tops(l).1 + 2.0).sum();
-            let x = col as f64 * col_step;
             let mut y = bottom - total;
             cr.set_source_rgb(0.6, 0.63, 0.67);
             cr.set_line_width(0.5);
@@ -696,6 +799,9 @@ impl Pages for Rendered {
                     let _ = cr.set_source_surface(surface, 0.0, 0.0);
                     let _ = cr.paint();
                     let _ = cr.restore();
+                }
+                Item::Figure { figure, x, top, w, h } => {
+                    super::figure::draw(cr, figure, (*x, *top, *w, *h));
                 }
                 Item::Row { cells, x, top, col_w, h, header } => {
                     let total = col_w * cells.len() as f64;
@@ -756,7 +862,7 @@ mod tests {
         // Footnotes go at the foot of the page their mark is on.
         let noted = Document {
             blocks: vec![Block::Paragraph(Paragraph {
-                runs: vec![Run::text("Text"), Run::Note(Note { note: "A note.".into() })],
+                runs: vec![Run::text("Text"), Run::Note(Note { note: "A note.".into(), end: false })],
                 ..Default::default()
             })],
             ..Default::default()
@@ -799,6 +905,33 @@ mod tests {
         let xs: Vec<f64> = items.iter().filter_map(|i| if let Item::Lines { x, .. } = i { Some(*x) } else { None }).collect();
         // Beside the picture, then full width below it.
         assert_eq!(xs, [100.0 + WRAP_GAP, 0.0]);
+    }
+
+    #[test]
+    fn sections_and_endnotes() {
+        let words = "word ".repeat(400);
+        let doc = Document {
+            blocks: vec![
+                Block::Paragraph(Paragraph {
+                    runs: vec![Run::text("Start"), Run::Note(Note { note: "At the end.".into(), end: true })],
+                    ..Default::default()
+                }),
+                Block::Section(Section { columns: 2, new_page: false }),
+                para(&words),
+                Block::Section(Section { columns: 1, new_page: true }),
+                para("Last page"),
+            ],
+            ..Default::default()
+        };
+        let r = paginate(&doc, &BTreeMap::new());
+        assert_eq!(r.count(), 2);
+        // Two columns after the first paragraph, on the same page.
+        let xs: Vec<f64> = r.pages[0].items.iter().filter_map(|i| if let Item::Lines { x, .. } = i { Some(*x) } else { None }).collect();
+        assert!(xs.len() >= 3 && xs[0] == 0.0 && xs.iter().any(|x| *x > 100.0), "{xs:?}");
+        // The endnote's words come last, under "Notes".
+        let texts: Vec<String> =
+            r.pages[1].items.iter().filter_map(|i| if let Item::Lines { layout, .. } = i { Some(layout.text().to_string()) } else { None }).collect();
+        assert_eq!(texts, ["Last page", "Notes", "i  At the end."]);
     }
 
     #[test]

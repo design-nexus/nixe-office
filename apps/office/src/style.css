@@ -1401,6 +1401,18 @@ window.office-window button.note-mark:hover {
   border-top: 1px solid @hairline;
 }
 
+/* The slideshow's players sit on the slide: plain and dark. */
+.slide-video {
+  background: #000000;
+}
+
+.slide-audio {
+  padding: 4px 10px;
+  border-radius: 10px;
+  background: #1b1e26;
+  color: #ffffff;
+}
+
 /* Present: the table and chart data editor. */
 .data-grid entry {
   min-height: 28px;

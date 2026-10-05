@@ -4,6 +4,7 @@ mod buffer;
 mod changes;
 mod comments;
 mod docx;
+mod figure;
 mod layout;
 mod legacy;
 mod marks;
@@ -58,6 +59,10 @@ struct Controls {
     picture_width: gtk::Scale,
     picture_wrap: gtk::DropDown,
     track: gtk::ToggleButton,
+    figure: gtk::Box,
+    figure_width: gtk::Scale,
+    figure_fill: Rc<color::ColorButton>,
+    figure_data: gtk::Button,
 }
 
 pub struct Writer {
@@ -417,10 +422,19 @@ impl Writer {
         image.connect_clicked(move |_| f());
         g.append(&image);
         g.append(&self.table_button());
+        g.append(&self.shapes_menu());
+        let chart = widgets::bar_button("nxo-chart-column-symbolic", "Insert a chart (its numbers in Chart data…)");
+        let f = act(|w| w.insert_chart());
+        chart.connect_clicked(move |_| f());
+        g.append(&chart);
         let note = widgets::bar_button("nxo-superscript-symbolic", "Insert a footnote (Ctrl+Alt+F)");
-        let f = act(|w| w.insert_note());
+        let f = act(|w| w.insert_note(false));
         note.connect_clicked(move |_| f());
         g.append(&note);
+        let endnote = widgets::bar_button("nxo-notebook-pen-symbolic", "Insert an endnote: its words go at the end of the document (Ctrl+Alt+D)");
+        let f = act(|w| w.insert_note(true));
+        endnote.connect_clicked(move |_| f());
+        g.append(&endnote);
         let comment = widgets::bar_button("nxo-message-square-plus-symbolic", "Comment on the selection (Ctrl+Alt+M)");
         let f = act(|w| w.add_comment());
         comment.connect_clicked(move |_| f());
@@ -430,13 +444,17 @@ impl Writer {
         review_group.append(&track);
         review_group.append(&review);
         let toc = widgets::bar_button("nxo-list-tree-symbolic", "Insert a table of contents");
-        let f = act(|w| w.insert_mark_block(true));
+        let f = act(|w| w.insert_mark_block(marks::MarkKind::Contents));
         toc.connect_clicked(move |_| f());
         g.append(&toc);
         let brk = widgets::bar_button("nxo-separator-horizontal-symbolic", "Insert a page break (Ctrl+Enter)");
-        let f = act(|w| w.insert_mark_block(false));
+        let f = act(|w| w.insert_mark_block(marks::MarkKind::PageBreak));
         brk.connect_clicked(move |_| f());
         g.append(&brk);
+        let section = widgets::bar_button("nxo-between-horizontal-start-symbolic", "Insert a section break: change the columns from here on");
+        let f = act(|w| w.insert_mark_block(marks::MarkKind::Section(Section { columns: 2, new_page: false })));
+        section.connect_clicked(move |_| f());
+        g.append(&section);
         flow.append(&g);
         flow.append(&review_group);
 
@@ -472,6 +490,8 @@ impl Writer {
         picture.append(&wrap);
         picture.set_visible(false);
         flow.append(&picture);
+        let (figure, figure_width, figure_fill, figure_data) = self.figure_tools();
+        flow.append(&figure);
 
         let me = Rc::downgrade(self);
         let setup: Rc<dyn Fn()> = Rc::new(move || {
@@ -500,6 +520,10 @@ impl Writer {
             picture_width,
             picture_wrap: wrap,
             track,
+            figure,
+            figure_width,
+            figure_fill,
+            figure_data,
         });
         bar
     }
@@ -574,6 +598,7 @@ impl Writer {
             c.number.set_active(p.list == Some(List::Number));
             let pic = self.picture_at_cursor();
             c.picture.set_visible(pic.is_some());
+            self.sync_figure_tools();
             if let Some(pic) = pic {
                 c.picture_width.set_value((pic.width_pt() / self.setup.borrow().content_width() * 100.0).round());
                 c.picture_wrap.set_selected(match pic.wrap() {
@@ -1715,7 +1740,7 @@ impl doc::Editor for Writer {
             (&["Ctrl", "Shift", "L"], "Align left (E center, R right, J justify)"),
             (&["Ctrl", "Space"], "Clear character formatting"),
             (&["Ctrl", "Enter"], "Page break"),
-            (&["Ctrl", "Alt", "F"], "Footnote"),
+            (&["Ctrl", "Alt", "F"], "Footnote (Ctrl+Alt+D: endnote)"),
             (&["Ctrl", "Alt", "M"], "Comment on the selection"),
             (&["Ctrl", "Shift", "T"], "Track changes on or off"),
         ]
@@ -1737,7 +1762,8 @@ impl doc::Editor for Writer {
         }
         if ctrl && mods.contains(gdk::ModifierType::ALT_MASK) {
             match k {
-                gdk::Key::f => self.insert_note(),
+                gdk::Key::f => self.insert_note(false),
+                gdk::Key::d => self.insert_note(true),
                 gdk::Key::m => self.add_comment(),
                 _ => return false,
             }
@@ -1768,7 +1794,7 @@ impl doc::Editor for Writer {
                 gdk::Key::space => self.apply_char(|r| {
                     *r = TextRun { comment: r.comment, inserted: r.inserted, deleted: r.deleted, ..Default::default() }
                 }),
-                gdk::Key::Return | gdk::Key::KP_Enter => self.insert_mark_block(false),
+                gdk::Key::Return | gdk::Key::KP_Enter => self.insert_mark_block(marks::MarkKind::PageBreak),
                 _ => return false,
             }
             return true;
@@ -1822,7 +1848,7 @@ pub fn write_sample(path: &Path) {
     d.page.header = "My recipes".into();
     d.blocks.insert(1, Block::Contents);
     if let Some(Block::Paragraph(p)) = d.blocks.get_mut(2) {
-        p.runs.push(Run::Note(Note { note: "Serves four hungry people.".into() }));
+        p.runs.push(Run::Note(Note { note: "Serves four hungry people.".into(), end: false }));
     }
     d.blocks.push(Block::PageBreak);
     d.blocks.push(Block::Paragraph(Paragraph::text(Style::H2, "Variations")));
@@ -1842,6 +1868,26 @@ pub fn write_sample(path: &Path) {
         ..Default::default()
     }));
     d.revisions.push(Revision { id: 1, author: "Ken".into(), date: "2026-10-05T10:00:00Z".into() });
+    d.blocks.push(Block::Paragraph(Paragraph {
+        runs: vec![
+            Run::text("Oven times by dish: "),
+            Run::Drawing(Drawing { drawing: Figure::sample_chart(), width: 300.0, height: 170.0 }),
+            Run::Drawing(Drawing {
+                drawing: Figure::Shape { shape: crate::present::model::Shape::Star, fill: "#e0a43a".into() },
+                width: 60.0,
+                height: 60.0,
+            }),
+        ],
+        ..Default::default()
+    }));
+    d.blocks.push(Block::Section(Section { columns: 2, new_page: false }));
+    d.blocks.push(Block::Paragraph(Paragraph {
+        runs: vec![
+            Run::text(&"Two columns from here on, after a section break that carries on down the same page. ".repeat(6)),
+            Run::Note(Note { note: "Endnotes gather at the end of the document.".into(), end: true }),
+        ],
+        ..Default::default()
+    }));
     let dot = crate::present::model::base64(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
     )
@@ -1999,7 +2045,7 @@ pub mod tests {
                 Block::Paragraph(Paragraph {
                     runs: vec![
                         Run::styled("Said", |r| r.comment = Some(1)),
-                        Run::Note(Note { note: "Source.".into() }),
+                        Run::Note(Note { note: "Source.".into(), end: false }),
                         Run::text(" so."),
                     ],
                     ..Default::default()
@@ -2018,7 +2064,7 @@ pub mod tests {
         w.end_group();
         let at = line_end(&w, 4);
         w.tb().place_cursor(&at);
-        w.insert_note();
+        w.insert_note(false);
         let d = w.document();
         assert!(matches!(para(&d, 4).runs.last(), Some(Run::Note(_))));
         let numbers: Vec<String> = w
@@ -2036,7 +2082,7 @@ pub mod tests {
         // A page break inserted mid-text stands on its own line.
         let at = line_end(&w, 1);
         w.tb().place_cursor(&at);
-        w.insert_mark_block(false);
+        w.insert_mark_block(marks::MarkKind::PageBreak);
         assert!(matches!(w.document().blocks[2], Block::PageBreak));
         // Tracked changes: typing is marked as added, deleting marks old text.
         w.load_fresh(&Document { blocks: vec![Block::Paragraph(Paragraph::text(Style::Normal, "one two"))], ..Default::default() }, &BTreeMap::new());
@@ -2094,6 +2140,55 @@ pub mod tests {
         w.tb().place_cursor(&w.tb().start_iter());
         w.set_picture_wrap(None);
         assert!(matches!(para(&w.document(), 0).runs[0], Run::Image(Image { wrap: None, .. })));
+
+        // A shape and a chart in the text survive the buffer, and print.
+        let drawn = Document {
+            blocks: vec![Block::Paragraph(Paragraph {
+                runs: vec![
+                    Run::text("x"),
+                    Run::Drawing(Drawing { drawing: Figure::Shape { shape: crate::present::model::Shape::Hexagon, fill: "#5273cf".into() }, width: 60.0, height: 60.0 }),
+                ],
+                ..Default::default()
+            })],
+            ..Default::default()
+        };
+        w.load_fresh(&drawn, &BTreeMap::new());
+        assert_eq!(w.document().blocks, drawn.blocks);
+        w.tb().place_cursor(&line_end(&w, 0));
+        assert!(w.figure_at_cursor().is_some());
+        w.change_figure(|d| d.width = 120.0);
+        assert!(matches!(para(&w.document(), 0).runs[1], Run::Drawing(Drawing { width: 120.0, .. })));
+        w.insert_chart();
+        crate::print::export_pdf(w.pages().as_ref(), &dir.join("drawn.pdf")).unwrap();
+
+        // Sections and endnotes survive the buffer; endnotes count i, ii.
+        let sectioned = Document {
+            blocks: vec![
+                Block::Paragraph(Paragraph {
+                    runs: vec![
+                        Run::text("A"),
+                        Run::Note(Note { note: "Foot.".into(), end: false }),
+                        Run::Note(Note { note: "End one.".into(), end: true }),
+                        Run::Note(Note { note: "End two.".into(), end: true }),
+                    ],
+                    ..Default::default()
+                }),
+                Block::Section(Section { columns: 3, new_page: false }),
+                Block::Paragraph(Paragraph::text(Style::Normal, "B")),
+            ],
+            ..Default::default()
+        };
+        w.load_fresh(&sectioned, &BTreeMap::new());
+        assert_eq!(w.document().blocks, sectioned.blocks);
+        let labels: Vec<String> = w
+            .marks
+            .borrow()
+            .iter()
+            .filter_map(|(_, m, wd)| {
+                if let marks::Mark::Note(_) = m { wd.downcast_ref::<gtk::Button>()?.child()?.downcast::<gtk::Label>().ok().map(|l| l.text().to_string()) } else { None }
+            })
+            .collect();
+        assert_eq!(labels, ["1", "i", "ii"]);
 
         // Deleting the commented text drops its comment.
         w.load_fresh(&rich, &BTreeMap::new());

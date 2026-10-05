@@ -16,6 +16,8 @@ const PKG: &str = "http://schemas.openxmlformats.org/package/2006/relationships"
 /// Twentieths of a point.
 const TWIP: f64 = 20.0;
 const EMU: f64 = 12700.0;
+const WPS_NS: &str = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape";
+const CHART_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/chart";
 
 fn esc(s: &str) -> String {
     let mut o = String::with_capacity(s.len());
@@ -167,6 +169,13 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
     let mut lost = Vec::new();
     // Footnotes, numbered from 1 in Word's file.
     let mut footnotes: Vec<String> = Vec::new();
+    let mut endnotes: Vec<String> = Vec::new();
+    // Charts in the text, each a part of its own.
+    let mut charts: Vec<String> = Vec::new();
+    // Word keeps a section's settings at its end: each break writes the
+    // section before it (filled in below), the body's last sectPr the last one.
+    let mut breaks: Vec<(usize, &str)> = Vec::new();
+    let (mut sec_cols, mut sec_type) = (doc.page.columns(), "nextPage");
     // The comment whose range is open: Word marks where each starts and ends.
     let mut open: Option<u32> = None;
     let close = |open: &mut Option<u32>, out: &mut String| {
@@ -254,6 +263,14 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
                             }
                             body.push_str(&tracked_run(t, &doc.revisions));
                         }
+                        Run::Note(n) if n.end => {
+                            endnotes.push(n.note.clone());
+                            let _ = write!(
+                                body,
+                                r#"<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:endnoteReference w:id="{}"/></w:r>"#,
+                                endnotes.len()
+                            );
+                        }
                         Run::Note(n) => {
                             footnotes.push(n.note.clone());
                             let _ = write!(
@@ -273,6 +290,27 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
                             images.push((file, bytes.clone()));
                             body.push_str(&picture_run(&rid, pic_id, &img.image, (img.width, h), img.wrap));
                         }
+                        Run::Drawing(d) => {
+                            pic_id += 1;
+                            let (cx, cy) = ((d.width * EMU).round() as i64, (d.height * EMU).round() as i64);
+                            let data = match &d.drawing {
+                                Figure::Shape { shape, fill } => format!(
+                                    r#"<a:graphicData uri="{WPS_NS}"><wps:wsp><wps:cNvSpPr/><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm><a:prstGeom prst="{}"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="{}"/></a:solidFill><a:ln><a:noFill/></a:ln></wps:spPr><wps:bodyPr/></wps:wsp></a:graphicData>"#,
+                                    shape.preset(),
+                                    fill.trim_start_matches('#').to_uppercase()
+                                ),
+                                Figure::Chart { chart, names, labels, series } => {
+                                    charts.push(crate::present::pptx_more::chart_part(*chart, names, labels, series));
+                                    let rid = format!("rId{}", rels.len() + 1);
+                                    rels.push((rid.clone(), "chart".into(), format!("charts/chart{}.xml", charts.len())));
+                                    format!(r#"<a:graphicData uri="{CHART_NS}"><c:chart xmlns:c="{CHART_NS}" r:id="{rid}"/></a:graphicData>"#)
+                                }
+                            };
+                            let _ = write!(
+                                body,
+                                r#"<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="{cx}" cy="{cy}"/><wp:docPr id="{pic_id}" name="Drawing {pic_id}"/><wp:cNvGraphicFramePr/><a:graphic>{data}</a:graphic></wp:inline></w:drawing></w:r>"#
+                            );
+                        }
                     }
                 }
                 // A comment running on into the next paragraph stays open.
@@ -284,6 +322,13 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
             Block::PageBreak => {
                 list_num = None;
                 body.push_str(r#"<w:p><w:r><w:br w:type="page"/></w:r></w:p>"#);
+            }
+            Block::Section(sec) => {
+                list_num = None;
+                let _ = write!(body, "<w:p><w:pPr><!--SECT{}--></w:pPr></w:p>", breaks.len());
+                breaks.push((sec_cols, sec_type));
+                sec_cols = sec.columns.clamp(1, 3) as usize;
+                sec_type = if sec.new_page { "nextPage" } else { "continuous" };
             }
             Block::Contents => {
                 list_num = None;
@@ -360,22 +405,23 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
         extra_parts.push(("word/footer1.xml".into(), header_footer("ftr", &doc.page.footer, doc.page.page_numbers)));
         let _ = write!(sect, r#"<w:footerReference w:type="default" r:id="{rid}"/>"#);
     }
-    let _ = write!(
-        sect,
+    let refs = std::mem::take(&mut sect);
+    let page = format!(
         r#"<w:pgSz w:w="{}" w:h="{}"/><w:pgMar w:top="{t}" w:right="{r}" w:bottom="{b}" w:left="{l}" w:header="{}" w:footer="{}" w:gutter="0"/>"#,
         (paper.width * TWIP).round() as i64,
         (paper.height * TWIP).round() as i64,
         t / 2,
         b / 2
     );
-    if doc.page.columns() > 1 {
-        let _ = write!(
-            sect,
-            r#"<w:cols w:num="{}" w:space="{}"/>"#,
-            doc.page.columns(),
-            (doc.page.column_gap * TWIP).round() as i64
-        );
+    let gap = (doc.page.column_gap * TWIP).round() as i64;
+    let section = |cols: usize, kind: &str| {
+        let cols = if cols > 1 { format!(r#"<w:cols w:num="{cols}" w:space="{gap}"/>"#) } else { String::new() };
+        format!(r#"{refs}<w:type w:val="{kind}"/>{page}{cols}"#)
+    };
+    for (k, (cols, kind)) in breaks.iter().enumerate() {
+        body = body.replace(&format!("<!--SECT{k}-->"), &format!("<w:sectPr>{}</w:sectPr>", section(*cols, kind)));
     }
+    sect = section(sec_cols, sec_type);
     if doc.tracking {
         let rid = format!("rId{}", rels.len() + 1);
         rels.push((rid, "settings".into(), "settings.xml".into()));
@@ -402,6 +448,23 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
         x.push_str("</w:footnotes>");
         extra_parts.push(("word/footnotes.xml".into(), x));
     }
+    if !endnotes.is_empty() {
+        let rid = format!("rId{}", rels.len() + 1);
+        rels.push((rid, "endnotes".into(), "endnotes.xml".into()));
+        let mut x = format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:endnotes xmlns:w="{W_NS}"><w:endnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:endnote><w:endnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:endnote>"#
+        );
+        for (i, text) in endnotes.iter().enumerate() {
+            let _ = write!(
+                x,
+                r#"<w:endnote w:id="{}"><w:p><w:pPr><w:pStyle w:val="FootnoteText"/></w:pPr><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:endnoteRef/></w:r><w:r><w:t xml:space="preserve"> {}</w:t></w:r></w:p></w:endnote>"#,
+                i + 1,
+                esc(text)
+            );
+        }
+        x.push_str("</w:endnotes>");
+        extra_parts.push(("word/endnotes.xml".into(), x));
+    }
     let used: Vec<u32> = doc
         .blocks
         .iter()
@@ -410,6 +473,9 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
         .filter_map(|r| if let Run::Text(t) = r { t.comment } else { None })
         .collect();
     let comments: Vec<&Comment> = doc.comments.iter().filter(|c| used.contains(&c.id)).collect();
+    for (k, chart) in charts.iter().enumerate() {
+        extra_parts.push((format!("word/charts/chart{}.xml", k + 1), chart.clone()));
+    }
     if !comments.is_empty() {
         let rid = format!("rId{}", rels.len() + 1);
         rels.push((rid, "comments".into(), "comments.xml".into()));
@@ -430,7 +496,7 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
         }
     }
     let document = format!(
-        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="{W_NS}" xmlns:r="{R_NS}" xmlns:wp="{WP_NS}" xmlns:a="{A_NS}" xmlns:pic="{PIC_NS}"><w:body>{body}<w:sectPr>{sect}</w:sectPr></w:body></w:document>"#
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="{W_NS}" xmlns:r="{R_NS}" xmlns:wp="{WP_NS}" xmlns:a="{A_NS}" xmlns:pic="{PIC_NS}" xmlns:wps="{WPS_NS}"><w:body>{body}<w:sectPr>{sect}</w:sectPr></w:body></w:document>"#
     );
 
     // Styles: the defaults, and each paragraph style's look.
@@ -523,11 +589,13 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>"#,
     );
     for (name, _) in &extra_parts {
-        let kind = ["header", "footer", "footnotes", "comments", "settings"].into_iter().find(|k| name.contains(k)).unwrap_or("footer");
-        let _ = write!(
-            types,
-            r#"<Override PartName="/{name}" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.{kind}+xml"/>"#
-        );
+        let kind = ["header", "footer", "footnotes", "endnotes", "comments", "settings"].into_iter().find(|k| name.contains(k)).unwrap_or("footer");
+        let content = if name.contains("charts/") {
+            crate::present::pptx_more::CHART_TYPE.to_string()
+        } else {
+            format!("application/vnd.openxmlformats-officedocument.wordprocessingml.{kind}+xml")
+        };
+        let _ = write!(types, r#"<Override PartName="/{name}" ContentType="{content}"/>"#);
     }
     types.push_str("</Types>");
 
@@ -645,8 +713,11 @@ fn run_format(rpr: Option<roxmltree::Node>) -> TextRun {
 
 struct Reader<'z, 'b> {
     zip: &'z mut zip::ZipArchive<Cursor<&'b [u8]>>,
-    /// Footnote words by Word's id.
+    /// Footnote and endnote words by Word's id.
     footnotes: HashMap<String, String>,
+    endnotes: HashMap<String, String>,
+    /// Section ends met so far: the break's block, and the section it ends.
+    sections: Vec<(usize, SectInfo)>,
     /// Word's comment id → ours, for those seen so far.
     comment_ids: HashMap<String, u32>,
     /// Comments from comments.xml by Word's id: (author, date, text).
@@ -702,19 +773,46 @@ fn skip_field(reader: &mut Reader, p: &roxmltree::Node, doc: &mut Document) {
     reader.in_field = !field_ends(p);
 }
 
-/// A paragraph, with page breaks before or after it as Word had them.
+/// A section's columns, and whether it carries on from the one before.
+#[derive(Clone, Copy)]
+struct SectInfo {
+    cols: u8,
+    continuous: bool,
+}
+
+impl Default for SectInfo {
+    fn default() -> Self {
+        SectInfo { cols: 1, continuous: false }
+    }
+}
+
+fn sect_info(sect: &roxmltree::Node) -> SectInfo {
+    SectInfo {
+        cols: child(sect, "cols").and_then(|c| wattr(&c, "num")).and_then(|v| v.parse::<u8>().ok()).unwrap_or(1).clamp(1, 3),
+        continuous: child(sect, "type").and_then(|t| wattr(&t, "val")) == Some("continuous"),
+    }
+}
+
+/// A paragraph, with page breaks before or after it as Word had them, and a
+/// section break after it if it ends a section.
 fn push_paragraph(reader: &mut Reader, n: &roxmltree::Node, doc: &mut Document) {
     let para = reader.paragraph(n);
     if reader.break_before && !matches!(doc.blocks.last(), Some(Block::PageBreak) | None) {
         doc.blocks.push(Block::PageBreak);
     }
-    // A paragraph that only held the break isn't kept.
+    let ends_section = child(n, "pPr").and_then(|p| child(&p, "sectPr"));
+    // A paragraph that only held a break isn't kept.
     let empty = para.runs.is_empty() && para.list.is_none();
-    if !(empty && (reader.break_before || reader.break_after)) {
+    if !(empty && (reader.break_before || reader.break_after || ends_section.is_some())) {
         doc.blocks.push(Block::Paragraph(para));
     }
     if reader.break_after {
         doc.blocks.push(Block::PageBreak);
+    }
+    if let Some(sect) = ends_section {
+        // Filled in once the next section's settings are known.
+        doc.blocks.push(Block::Section(Section { columns: 1, new_page: true }));
+        reader.sections.push((doc.blocks.len() - 1, sect_info(&sect)));
     }
 }
 
@@ -801,7 +899,13 @@ impl Reader<'_, '_> {
                 }
                 if c.has_tag_name((W_NS, "footnoteReference")) {
                     if let Some(text) = wattr(&c, "id").and_then(|id| self.footnotes.get(id)) {
-                        para.runs.push(Run::Note(Note { note: text.clone() }));
+                        para.runs.push(Run::Note(Note { note: text.clone(), end: false }));
+                    }
+                    continue;
+                }
+                if c.has_tag_name((W_NS, "endnoteReference")) {
+                    if let Some(text) = wattr(&c, "id").and_then(|id| self.endnotes.get(id)) {
+                        para.runs.push(Run::Note(Note { note: text.clone(), end: true }));
                     }
                     continue;
                 }
@@ -811,6 +915,10 @@ impl Reader<'_, '_> {
                     para.runs.push(Run::Text(TextRun { text: "\t".into(), ..fmt.clone() }));
                 } else if c.has_tag_name((W_NS, "br")) || c.has_tag_name((W_NS, "cr")) {
                     para.runs.push(Run::Text(TextRun { text: " ".into(), ..fmt.clone() }));
+                } else if c.has_tag_name((W_NS, "drawing"))
+                    && let Some(d) = self.figure(&c)
+                {
+                    para.runs.push(Run::Drawing(d));
                 } else if c.has_tag_name((W_NS, "drawing"))
                     && let Some(img) = self.picture(&c)
                 {
@@ -856,6 +964,38 @@ impl Reader<'_, '_> {
         let (author, date, text) = self.comment_text.get(wid).cloned().unwrap_or_default();
         self.comments.push(Comment { id, author, date, text, resolved: false });
         id
+    }
+
+    /// A shape or chart drawn in the text.
+    fn figure(&mut self, drawing: &roxmltree::Node) -> Option<Drawing> {
+        let data = drawing.descendants().find(|n| n.has_tag_name((A_NS, "graphicData")))?;
+        let extent = drawing.descendants().find(|n| n.has_tag_name((WP_NS, "extent")))?;
+        let size = |k: &str| extent.attribute(k).and_then(|v| v.parse::<f64>().ok()).map(|v| v / EMU);
+        let (width, height) = (size("cx")?.min(self.max_width).max(16.0), size("cy")?.max(16.0));
+        let figure = match data.attribute("uri")? {
+            WPS_NS => {
+                let prst = data.descendants().find(|n| n.has_tag_name((A_NS, "prstGeom"))).and_then(|g| g.attribute("prst"))?;
+                let fill = data
+                    .descendants()
+                    .find(|n| n.has_tag_name((A_NS, "solidFill")))
+                    .and_then(|f| f.children().find(|c| c.has_tag_name((A_NS, "srgbClr"))))
+                    .and_then(|c| c.attribute("val"))
+                    .map(|v| format!("#{}", v.to_lowercase()))
+                    .unwrap_or_else(|| "#5273cf".into());
+                Figure::Shape { shape: crate::present::model::Shape::from_preset(prst), fill }
+            }
+            CHART_NS => {
+                let rid = data.children().find(|n| n.tag_name().name() == "chart")?.attributes().find(|a| a.name() == "id")?.value();
+                let target = self.rels.get(rid)?.clone();
+                let xml = text_part(self.zip, &target)?;
+                match crate::present::pptx_more::read_chart(&xml)? {
+                    crate::present::model::Kind::Chart { chart, names, labels, series } => Figure::Chart { chart, names, labels, series },
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        };
+        Some(Drawing { drawing: figure, width, height })
     }
 
     fn picture(&mut self, drawing: &roxmltree::Node) -> Option<Image> {
@@ -1008,16 +1148,21 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
     // Footnotes and comments, from their own parts.
     let part_of = |kind: &str| rels.values().find(|t| t.ends_with(&format!("{kind}.xml"))).cloned();
     let part_of_settings = part_of("settings");
-    let mut footnotes = HashMap::new();
-    if let Some(path) = part_of("footnotes")
-        && let Some(x) = text_part(&mut zip, &path)
-        && let Ok(d) = roxmltree::Document::parse(&x)
-    {
-        for f in d.descendants().filter(|n| n.has_tag_name((W_NS, "footnote")) && wattr(n, "type").is_none()) {
-            let Some(id) = wattr(&f, "id") else { continue };
-            footnotes.insert(id.to_string(), block_text(&f));
+    let mut notes = |part: &str, tag: &str| {
+        let mut out = HashMap::new();
+        if let Some(path) = part_of(part)
+            && let Some(x) = text_part(&mut zip, &path)
+            && let Ok(d) = roxmltree::Document::parse(&x)
+        {
+            for f in d.descendants().filter(|n| n.has_tag_name((W_NS, tag)) && wattr(n, "type").is_none()) {
+                let Some(id) = wattr(&f, "id") else { continue };
+                out.insert(id.to_string(), block_text(&f));
+            }
         }
-    }
+        out
+    };
+    let footnotes = notes("footnotes", "footnote");
+    let endnotes = notes("endnotes", "endnote");
     let mut comment_text = HashMap::new();
     if let Some(path) = part_of("comments")
         && let Some(x) = text_part(&mut zip, &path)
@@ -1051,6 +1196,8 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
     let mut reader = Reader {
         zip: &mut zip,
         footnotes,
+        endnotes,
+        sections: Vec::new(),
         comment_ids: HashMap::new(),
         comment_text,
         comments: Vec::new(),
@@ -1120,6 +1267,20 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
             // Other content controls hold ordinary paragraphs.
             for p in n.descendants().filter(|c| c.has_tag_name((W_NS, "p"))) {
                 push_paragraph(&mut reader, &p, &mut doc);
+            }
+        }
+    }
+    // Each break takes the settings of the section after it; the first
+    // section's columns are the page's.
+    if !reader.sections.is_empty() {
+        let last = body.children().rfind(|n| n.has_tag_name((W_NS, "sectPr"))).map(|s| sect_info(&s)).unwrap_or_default();
+        let mut infos: Vec<SectInfo> = reader.sections.iter().map(|(_, s)| *s).collect();
+        infos.push(last);
+        doc.page.columns = infos[0].cols;
+        for (k, (at, _)) in reader.sections.iter().enumerate() {
+            let next = infos[k + 1];
+            if let Some(b) = doc.blocks.get_mut(*at) {
+                *b = Block::Section(Section { columns: next.cols, new_page: !next.continuous });
             }
         }
     }
@@ -1229,13 +1390,13 @@ mod tests {
             para(vec![
                 Run::text("Plain, then "),
                 Run::styled("commented", |r| r.comment = Some(7)),
-                Run::Note(Note { note: "See the source.".into() }),
+                Run::Note(Note { note: "See the source.".into(), end: false }),
                 Run::text(" after."),
             ]),
             para(vec![Run::styled("still commented", |r| r.comment = Some(7))]),
             Block::PageBreak,
             Block::Paragraph(Paragraph::text(Style::H2, "Second")),
-            para(vec![Run::text("x"), Run::Note(Note { note: "Two.".into() })]),
+            para(vec![Run::text("x"), Run::Note(Note { note: "Two.".into(), end: false })]),
         ];
         doc.comments =
             vec![Comment { id: 7, author: "Ken Doe".into(), date: "2026-10-05T10:00:00Z".into(), text: "Check this".into(), resolved: true }];
@@ -1248,6 +1409,7 @@ mod tests {
             .map(|b| match b {
                 Block::Contents => "toc",
                 Block::PageBreak => "break",
+                Block::Section(_) => "section",
                 Block::Table(_) => "table",
                 Block::Paragraph(_) => "p",
             })
@@ -1289,6 +1451,39 @@ mod tests {
             .collect();
         assert_eq!(marks, [("Keep ".into(), false, false), ("new".into(), true, false), ("old".into(), false, true)]);
         assert_eq!(back.revisions[0].author, "Ann");
+
+        // Shapes and charts in the text.
+        let drawn = Document {
+            blocks: vec![para(vec![
+                Run::text("A star "),
+                Run::Drawing(Drawing {
+                    drawing: Figure::Shape { shape: crate::present::model::Shape::Star, fill: "#e0a43a".into() },
+                    width: 80.0,
+                    height: 80.0,
+                }),
+                Run::Drawing(Drawing { drawing: Figure::sample_chart(), width: 300.0, height: 180.0 }),
+            ])],
+            ..Default::default()
+        };
+        let (bytes, _) = write(&drawn, &BTreeMap::new()).unwrap();
+        let (back, _) = read(&bytes).unwrap();
+        assert_eq!(back.blocks, drawn.blocks);
+
+        // Endnotes, and sections with their own columns.
+        let sectioned = Document {
+            blocks: vec![
+                para(vec![Run::text("One"), Run::Note(Note { note: "Later.".into(), end: true })]),
+                Block::Section(Section { columns: 2, new_page: false }),
+                para(vec![Run::text("Two")]),
+                Block::Section(Section { columns: 3, new_page: true }),
+                para(vec![Run::text("Three")]),
+            ],
+            ..Default::default()
+        };
+        let (bytes, _) = write(&sectioned, &BTreeMap::new()).unwrap();
+        let (back, _) = read(&bytes).unwrap();
+        assert_eq!(back.blocks, sectioned.blocks);
+        assert_eq!(back.page.columns, 1);
 
         // The cached contents had page numbers: the second heading is on page 2.
         let pages = super::super::layout::paginate(&doc, &BTreeMap::new());

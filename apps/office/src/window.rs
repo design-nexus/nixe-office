@@ -97,6 +97,12 @@ fn install_icons() {
         };
     }
     const ICONS: &[(&str, &str)] = icons![
+        "square-check",
+        "film",
+        "music",
+        "crown",
+        "book-marked",
+        "between-horizontal-start",
         "grid-2x2",
         "wrap-text",
         "sigma",

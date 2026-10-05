@@ -135,20 +135,23 @@ pub fn draw(
             text_box(cr, ctx, slide, hint, f, Look { size, title: false, faint: true, top });
         }
     }
-    let steps = slide.build_steps();
-    let (hidden, moving): (&[u32], Option<u32>) = match hints.built {
-        Some(n) => (&steps[n.min(steps.len())..], n.checked_sub(1).and_then(|i| steps.get(i)).copied()),
-        None => (&[], None),
+    let steps = slide.steps();
+    let (hidden, moving): (Vec<u32>, Option<Step>) = match hints.built {
+        Some(n) => (slide.hidden_after(n), n.checked_sub(1).and_then(|i| steps.get(i)).copied()),
+        None => (Vec::new(), None),
     };
     for o in &slide.objects {
-        if hidden.contains(&o.id) {
-            continue;
-        }
-        // The build step coming in: faded or flown in part way.
-        let anim = match (hints.anim, moving == Some(o.id), o.build) {
-            (Some(t), true, Some(b)) if t < 1.0 && b.effect != Effect::Appear => Some((t, b.effect)),
+        // The step playing: an object coming in part way, or going out.
+        let anim = match (hints.anim, moving) {
+            (Some(t), Some(m)) if m.id == o.id && t < 1.0 && m.effect != Effect::Appear => {
+                Some((if m.out { 1.0 - t } else { t }, m.effect))
+            }
             _ => None,
         };
+        let leaving = anim.is_some() && moving.is_some_and(|m| m.out);
+        if hidden.contains(&o.id) && !leaving {
+            continue;
+        }
         if let Some((t, effect)) = anim {
             cr.save().ok();
             if effect == Effect::Fly {
@@ -166,6 +169,31 @@ pub fn draw(
             }
             cr.restore().ok();
         }
+    }
+    cr.restore().ok();
+}
+
+/// One object on its own, at the slide's scale (for Magic Move), at `alpha`.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_alone(
+    cr: &cairo::Context,
+    ctx: &pango::Context,
+    slide: &Slide,
+    o: &Object,
+    media: &BTreeMap<String, Vec<u8>>,
+    pictures: &Pictures,
+    (w, h): (f64, f64),
+    alpha: f64,
+) {
+    cr.save().ok();
+    cr.scale(w / W, h / H);
+    if alpha < 1.0 {
+        cr.push_group();
+    }
+    draw_object(cr, ctx, slide, o, media, pictures, Hints::default());
+    if alpha < 1.0 {
+        cr.pop_group_to_source().ok();
+        cr.paint_with_alpha(alpha.max(0.0)).ok();
     }
     cr.restore().ok();
 }
@@ -337,6 +365,7 @@ fn draw_content(
                 }
             }
             Kind::Table { rows, header } => draw_table(cr, ctx, slide, o, rows, *header),
+            Kind::Media { media, video } => media_card(cr, ctx, *video, media, (o.x, o.y, o.w, o.h)),
             Kind::Chart { chart, names, labels, series } => {
                 // Charts keep their own colours, on a white card.
                 cr.set_source_rgb(1.0, 1.0, 1.0);
@@ -352,6 +381,63 @@ fn draw_content(
             }
         }
     }
+}
+
+/// How video or audio shows when it isn't playing: a dark frame with a play
+/// button, or a strip with a note and the file's name.
+pub fn media_card(cr: &cairo::Context, ctx: &pango::Context, video: bool, name: &str, (x, y, w, h): (f64, f64, f64, f64)) {
+    cr.save().ok();
+    rounded(cr, x, y, w, h, 8.0_f64.min(h / 4.0));
+    cr.set_source_rgb(0.11, 0.12, 0.15);
+    cr.fill().ok();
+    let r = (w.min(h) * 0.18).clamp(10.0, 36.0);
+    let (cx, cy) = if video { (x + w / 2.0, y + h / 2.0) } else { (x + r + 12.0, y + h / 2.0) };
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.92);
+    cr.arc(cx, cy, r, 0.0, std::f64::consts::TAU);
+    cr.fill().ok();
+    cr.set_source_rgb(0.11, 0.12, 0.15);
+    if video {
+        cr.move_to(cx - r * 0.3, cy - r * 0.45);
+        cr.line_to(cx + r * 0.5, cy);
+        cr.line_to(cx - r * 0.3, cy + r * 0.45);
+        cr.close_path();
+        cr.fill().ok();
+    } else {
+        // A note: stem and head.
+        cr.rectangle(cx + r * 0.08, cy - r * 0.5, r * 0.12, r * 0.75);
+        cr.fill().ok();
+        cr.arc(cx - r * 0.08, cy + r * 0.28, r * 0.22, 0.0, std::f64::consts::TAU);
+        cr.fill().ok();
+    }
+    let layout = pango::Layout::new(ctx);
+    let mut font = pango::FontDescription::from_string("Noto Sans");
+    font.set_size(((r * 0.5).clamp(8.0, 14.0) * pango::SCALE as f64) as i32);
+    layout.set_font_description(Some(&font));
+    layout.set_ellipsize(pango::EllipsizeMode::Middle);
+    let (tx, tw) = if video { (x + 10.0, w - 20.0) } else { (cx + r + 10.0, x + w - cx - r - 20.0) };
+    layout.set_width((tw.max(1.0) * pango::SCALE as f64) as i32);
+    layout.set_alignment(if video { pango::Alignment::Center } else { pango::Alignment::Left });
+    layout.set_text(name);
+    let th = layout.pixel_size().1 as f64;
+    let ty = if video { (cy + r + 8.0).min(y + h - th - 6.0) } else { cy - th / 2.0 };
+    if ty > y && th < h {
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.8);
+        cr.move_to(tx, ty);
+        pangocairo::functions::show_layout(cr, &layout);
+    }
+    cr.restore().ok();
+}
+
+/// A poster frame for video or audio, as PNG (PowerPoint files need one).
+pub fn media_poster(video: bool, name: &str, (w, h): (f64, f64)) -> Vec<u8> {
+    let (pw, ph) = ((w * 1.5).clamp(32.0, 1280.0) as i32, (h * 1.5).clamp(16.0, 720.0) as i32);
+    let Ok(surface) = cairo::ImageSurface::create(cairo::Format::ARgb32, pw, ph) else { return Vec::new() };
+    if let Ok(cr) = cairo::Context::new(&surface) {
+        media_card(&cr, &crate::print::text_context(), video, name, (0.0, 0.0, pw as f64, ph as f64));
+    }
+    let mut out = Vec::new();
+    let _ = surface.write_to_png(&mut out);
+    out
 }
 
 fn rounded(cr: &cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
@@ -434,8 +520,8 @@ impl crate::print::Pages for DeckPages {
         (W, H)
     }
     fn draw(&self, cr: &cairo::Context, index: usize) {
-        if let Some(s) = self.deck.slides.get(index) {
-            draw(cr, &self.ctx, s, &self.media, &self.pictures, (W, H), Hints::default());
+        if let Some(s) = self.deck.composed(index) {
+            draw(cr, &self.ctx, &s, &self.media, &self.pictures, (W, H), Hints::default());
         }
     }
 }

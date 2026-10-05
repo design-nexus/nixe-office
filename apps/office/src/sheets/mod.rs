@@ -7,6 +7,7 @@ mod functions;
 mod grid;
 pub mod model;
 mod pages;
+mod placed;
 mod rules;
 mod summary;
 mod templates;
@@ -52,6 +53,17 @@ enum Drag {
     /// Selecting whole columns or rows from the headers.
     Cols,
     Rows,
+    /// Moving or resizing a chart placed on the sheet: where it was.
+    MoveChart {
+        i: usize,
+        x0: f64,
+        y0: f64,
+    },
+    SizeChart {
+        i: usize,
+        w0: f64,
+        h0: f64,
+    },
 }
 
 struct Controls {
@@ -66,6 +78,7 @@ struct Controls {
     fill: Rc<color::ColorButton>,
     filter: gtk::MenuButton,
     wrap: gtk::ToggleButton,
+    checkbox: gtk::ToggleButton,
 }
 
 struct ChartPane {
@@ -112,6 +125,8 @@ pub struct Sheets {
     found: RefCell<Vec<(u32, u32)>>,
     /// The sheet names the tabs were last built for.
     tab_names: RefCell<Vec<String>>,
+    /// The placed chart picked on the sheet, if any.
+    chart_sel: Cell<Option<usize>>,
 }
 
 thread_local! {
@@ -192,6 +207,7 @@ impl Sheets {
             syncing: Cell::new(false),
             found: RefCell::new(Vec::new()),
             tab_names: RefCell::new(Vec::new()),
+            chart_sel: Cell::new(None),
         });
         *s.me.borrow_mut() = Rc::downgrade(&s);
         s.root.add_css_class("sheets-editor");
@@ -314,6 +330,22 @@ impl Sheets {
         g.append(&self.borders_button());
         let wrap = toggle("nxo-wrap-text-symbolic", "Wrap text in the cell", |s, on| s.set_wrap(on));
         g.append(&wrap);
+        let checkbox = toggle("nxo-square-check-symbolic", "Checkboxes: click one or press Space to tick it", |s, on| {
+            let a = s.selection_src();
+            s.change(|wb| {
+                wb.format(a, |f| f.checkbox = on);
+                // A new checkbox starts unticked.
+                if on {
+                    for (r, c) in a.iter() {
+                        if wb.sheet().raw(r, c).is_empty() {
+                            wb.set(r, c, "FALSE");
+                        }
+                    }
+                }
+            });
+            s.area.grab_focus();
+        });
+        g.append(&checkbox);
         flow.append(&g);
 
         let g = group();
@@ -347,6 +379,8 @@ impl Sheets {
         g.append(&button("nxo-message-square-text-symbolic", "Comment on this cell (Ctrl+Alt+M)", |s| s.edit_comment()));
         g.append(&button("nxo-highlighter-symbolic", "Highlight cells that meet a rule", |s| s.highlight_dialog()));
         g.append(&button("nxo-sigma-symbolic", "Summarize: totals by group, on a new sheet", |s| s.summarize_dialog()));
+        g.append(&button("nxo-table-2-symbolic", "Format as a table: heading row, banded rows, a colour", |s| s.rc().table_dialog()));
+        g.append(&button("nxo-chart-area-symbolic", "Put a chart of the selection on the sheet (drag it anywhere)", |s| s.place_chart()));
         flow.append(&g);
 
         let g = group();
@@ -371,7 +405,7 @@ impl Sheets {
         flow.append(&g);
 
         bar.append(&doc::file_menu(Vec::new()));
-        *self.controls.borrow_mut() = Some(Controls { bold, italic, numbers, align, header, freeze, chart, color, fill, filter, wrap });
+        *self.controls.borrow_mut() = Some(Controls { bold, italic, numbers, align, header, freeze, chart, color, fill, filter, wrap, checkbox });
         bar
     }
 
@@ -568,7 +602,7 @@ impl Sheets {
             if let Some(s) = me.upgrade()
                 && !s.syncing.get()
             {
-                let kind = ChartKind::ALL[d.selected() as usize % 4];
+                let kind = ChartKind::ALL[d.selected() as usize % ChartKind::ALL.len()];
                 let range = s.wb.borrow().sheet().chart.as_ref().map(|c| c.range.clone());
                 if let Some(range) = range {
                     s.change(|wb| wb.sheet_mut().chart = Some(Chart { range: range.clone(), kind }));
@@ -1150,6 +1184,7 @@ impl Sheets {
         if let Some(ctl) = self.controls.borrow().as_ref() {
             ctl.bold.set_active(f.bold);
             ctl.wrap.set_active(f.wrap);
+            ctl.checkbox.set_active(f.checkbox);
             ctl.italic.set_active(f.italic);
             for (n, b) in &ctl.numbers {
                 b.set_active(*n == f.number);
@@ -1584,6 +1619,16 @@ pub mod tests {
         assert_eq!(tabs(&s), [true, false]);
         Editor::undo(&*s);
         assert_eq!(tabs(&s).len(), 1);
+
+        // A chart placed on the sheet: beside the selection, picked, removable.
+        s.anchor.set((0, 0));
+        s.cursor.set((3, 0));
+        s.place_chart();
+        assert_eq!(s.wb.borrow().sheet().charts.len(), 1);
+        let (x, y, _, _) = s.chart_rect(&s.wb.borrow().sheet().charts[0].clone());
+        assert_eq!(s.chart_hit(x + 10.0, y + 10.0), Some((0, false)));
+        s.delete_chart();
+        assert!(s.wb.borrow().sheet().charts.is_empty());
 
         // Merging: the block acts as one cell for the cursor and the selection.
         s.anchor.set((5, 0));

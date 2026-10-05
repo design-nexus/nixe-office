@@ -3,7 +3,7 @@
 
 use super::Writer;
 use super::buffer::{self, ParaProps};
-use super::marks::{self, ContentsWidget, Mark, MarkKind, NoteWidget};
+use super::marks::{self, ContentsWidget, Mark, MarkKind, NoteWidget, SectionWidget};
 use super::model::*;
 use crate::{doc, widgets, window};
 use gtk::glib;
@@ -29,10 +29,27 @@ impl Writer {
                 let widget = c.root.clone().upcast();
                 (Mark::Contents(c), widget)
             }
-            MarkKind::Note(text) => {
+            MarkKind::Section(section) => {
+                let m = me.clone();
+                let w = SectionWidget::new(
+                    section,
+                    Rc::new(move || {
+                        if let Some(w) = m.upgrade()
+                            && !w.loading.get()
+                        {
+                            w.checkpoint();
+                            w.edited();
+                        }
+                    }),
+                );
+                let widget = w.button.clone().upcast();
+                (Mark::Section(w), widget)
+            }
+            MarkKind::Note(text, end) => {
                 let (m1, m2) = (me.clone(), me.clone());
                 let n = NoteWidget::new(
                     text,
+                    end,
                     Rc::new(move || {
                         if let Some(w) = m1.upgrade()
                             && !w.loading.get()
@@ -74,13 +91,17 @@ impl Writer {
             .filter_map(|(a, m, _)| if let Mark::Note(n) = m { Some((b.iter_at_child_anchor(a).offset(), n.clone())) } else { None })
             .collect();
         notes.sort_by_key(|(o, _)| *o);
-        for (k, (_, n)) in notes.iter().enumerate() {
-            n.set_number(k + 1);
+        // Footnotes and endnotes are counted apart (1, 2, 3 and i, ii, iii).
+        let (mut foot, mut end) = (0, 0);
+        for (_, n) in &notes {
+            let k = if n.end { &mut end } else { &mut foot };
+            *k += 1;
+            n.set_number(*k);
         }
     }
 
-    /// Put a footnote mark at the cursor and open it for writing.
-    pub(super) fn insert_note(&self) {
+    /// Put a footnote (or, `end`, an endnote) mark at the cursor and open it for writing.
+    pub(super) fn insert_note(&self, end: bool) {
         let mut at = self.cursor_iter();
         if at.child_anchor().is_some() && at.starts_line() && at.ends_line() {
             return;
@@ -93,7 +114,7 @@ impl Writer {
         }
         self.loading.set(true);
         let anchor = b.create_child_anchor(&mut at);
-        let (mark, widget) = (self.make_mark())(MarkKind::Note(""));
+        let (mark, widget) = (self.make_mark())(MarkKind::Note("", end));
         self.view.add_child_at_anchor(&widget, &anchor);
         self.marks.borrow_mut().push((anchor, mark, widget.clone()));
         self.loading.set(false);
@@ -126,7 +147,10 @@ impl Writer {
     // ---------- Page breaks and contents ----------
 
     /// A page break or a table of contents, on a line of its own at the cursor.
-    pub(super) fn insert_mark_block(&self, contents: bool) {
+    /// A page break, table of contents or section break, on a line of its own at the cursor.
+    pub(super) fn insert_mark_block(&self, kind: MarkKind<'static>) {
+        let contents = matches!(kind, MarkKind::Contents);
+        let section = matches!(kind, MarkKind::Section(_));
         if contents && self.marks.borrow().iter().any(|(a, m, _)| matches!(m, Mark::Contents(_)) && !a.is_deleted()) {
             window::toast("The document already has a table of contents.");
             return;
@@ -145,7 +169,7 @@ impl Writer {
         let line = at.line();
         buffer::set_para(b, line, line, ParaProps::default());
         let anchor = b.create_child_anchor(&mut at);
-        let (mark, widget) = (self.make_mark())(if contents { MarkKind::Contents } else { MarkKind::PageBreak });
+        let (mark, widget) = (self.make_mark())(kind);
         widget.set_size_request(self.view.width_request() - 4, -1);
         self.view.add_child_at_anchor(&widget, &anchor);
         self.marks.borrow_mut().push((anchor, mark, widget));
@@ -159,6 +183,10 @@ impl Writer {
         self.edited();
         self.refresh_contents();
         self.view.grab_focus();
+        // A new section break opens to choose its columns.
+        if section && let Some(btn) = self.marks.borrow().last().and_then(|(_, _, w)| w.clone().downcast::<gtk::Button>().ok()) {
+            glib::idle_add_local_once(move || btn.emit_clicked());
+        }
     }
 
     /// Show the current headings in every table of contents.

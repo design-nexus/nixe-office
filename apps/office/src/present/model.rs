@@ -88,6 +88,9 @@ pub struct Slide {
     /// How this slide comes in during the slideshow.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transition: Option<Transition>,
+    /// Leave out the master slide's objects here (a title slide, say).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hide_master: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,16 +100,20 @@ pub enum TransitionKind {
     Push,
     Wipe,
     Dissolve,
+    /// Objects on both slides move to their new place; the rest fade.
+    MagicMove,
 }
 
 impl TransitionKind {
-    pub const ALL: [TransitionKind; 4] = [TransitionKind::Fade, TransitionKind::Push, TransitionKind::Wipe, TransitionKind::Dissolve];
+    pub const ALL: [TransitionKind; 5] =
+        [TransitionKind::Fade, TransitionKind::Push, TransitionKind::Wipe, TransitionKind::Dissolve, TransitionKind::MagicMove];
     pub fn name(self) -> &'static str {
         match self {
             TransitionKind::Fade => "Fade",
             TransitionKind::Push => "Push",
             TransitionKind::Wipe => "Wipe",
             TransitionKind::Dissolve => "Dissolve",
+            TransitionKind::MagicMove => "Magic Move",
         }
     }
 }
@@ -138,7 +145,16 @@ impl Effect {
     }
 }
 
-/// An object that comes in on a click during the slideshow.
+/// One click of a slide's builds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Step {
+    pub id: u32,
+    /// Going away rather than coming in.
+    pub out: bool,
+    pub effect: Effect,
+}
+
+/// An object that comes in (or goes out) on a click during the slideshow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Build {
     /// Lower comes first.
@@ -162,6 +178,7 @@ impl Default for Slide {
             body_size: None,
             objects: Vec::new(),
             transition: None,
+            hide_master: false,
         }
     }
 }
@@ -241,6 +258,11 @@ pub enum Kind {
         #[serde(default)]
         header: bool,
     },
+    /// Video or audio, by its file name under `media/`; it plays in the slideshow.
+    Media {
+        media: String,
+        video: bool,
+    },
     /// A chart from its own small table: one label per point, one list of
     /// values per series.
     Chart {
@@ -285,6 +307,9 @@ pub struct Object {
     pub group: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<Build>,
+    /// Goes away on a click during the slideshow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_out: Option<Build>,
     /// Degrees clockwise, about the object's centre.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub rotation: f64,
@@ -299,8 +324,16 @@ fn is_zero(v: &f64) -> bool {
 }
 
 impl Object {
+    /// The same thing on two slides, for Magic Move: same kind and content.
+    pub fn same_as(&self, o: &Object) -> bool {
+        match (&self.kind, &o.kind) {
+            (Kind::Shape { shape: a, fill: f }, Kind::Shape { shape: b, fill: g }) => a == b && f == g,
+            (a, b) => a == b,
+        }
+    }
+
     pub fn new(id: u32, kind: Kind, (x, y, w, h): (f64, f64, f64, f64)) -> Object {
-        Object { id, kind, x, y, w, h, group: None, build: None, rotation: 0.0, outline: None, shadow: false }
+        Object { id, kind, x, y, w, h, group: None, build: None, build_out: None, rotation: 0.0, outline: None, shadow: false }
     }
 
     /// Keep it on the slide and at least a little visible size.
@@ -338,11 +371,20 @@ impl Object {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Deck {
     pub slides: Vec<Slide>,
+    /// The master slide: objects drawn on every slide, under its own. A text
+    /// object's `{n}` shows the slide's number.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub master: Vec<Object>,
 }
+
+/// A text object's `{n}`: the slide number.
+pub const SLIDE_NUMBER: &str = "{n}";
+/// Set on master objects' ids when they're drawn on a slide.
+pub const MASTER_ID: u32 = 1 << 31;
 
 impl Default for Deck {
     fn default() -> Self {
-        Deck { slides: vec![Slide { layout: Layout::Title, ..Default::default() }] }
+        Deck { slides: vec![Slide { layout: Layout::Title, ..Default::default() }], master: Vec::new() }
     }
 }
 
@@ -351,12 +393,35 @@ impl Slide {
         self.objects.iter().map(|o| o.id).max().unwrap_or(0) + 1
     }
 
-    /// Built objects in the order they come in, one click each.
-    pub fn build_steps(&self) -> Vec<u32> {
-        let mut v: Vec<(u32, usize, u32)> =
-            self.objects.iter().enumerate().filter_map(|(i, o)| o.build.map(|b| (b.order, i, o.id))).collect();
-        v.sort();
-        v.into_iter().map(|(_, _, id)| id).collect()
+    /// Every build, in click order: objects coming in, and going out.
+    pub fn steps(&self) -> Vec<Step> {
+        let mut v: Vec<(u32, bool, usize, Step)> = Vec::new();
+        for (i, o) in self.objects.iter().enumerate() {
+            if let Some(b) = o.build {
+                v.push((b.order, false, i, Step { id: o.id, out: false, effect: b.effect }));
+            }
+            if let Some(b) = o.build_out {
+                v.push((b.order, true, i, Step { id: o.id, out: true, effect: b.effect }));
+            }
+        }
+        v.sort_by_key(|(order, out, i, _)| (*order, *out, *i));
+        v.into_iter().map(|(_, _, _, s)| s).collect()
+    }
+
+    /// What isn't showing once `shown` steps have played: objects still to
+    /// come in, and those already gone out.
+    pub fn hidden_after(&self, shown: usize) -> Vec<u32> {
+        let steps = self.steps();
+        let done = &steps[..shown.min(steps.len())];
+        self.objects
+            .iter()
+            .filter(|o| {
+                let came = o.build.is_none() || done.iter().any(|s| s.id == o.id && !s.out);
+                let gone = done.iter().any(|s| s.id == o.id && s.out);
+                !came || gone
+            })
+            .map(|o| o.id)
+            .collect()
     }
 
     /// The objects grouped with `id`, itself included.
@@ -387,11 +452,77 @@ impl Slide {
 }
 
 impl Deck {
+    /// Slide `i` as shown: the master's objects under its own (unless it hides
+    /// them), and `{n}` in text as the slide's number.
+    pub fn composed(&self, i: usize) -> Option<Slide> {
+        let mut s = self.slides.get(i)?.clone();
+        if !s.hide_master && !self.master.is_empty() {
+            let mut objects: Vec<Object> = self
+                .master
+                .iter()
+                .cloned()
+                .map(|mut o| {
+                    // Kept apart from the slide's own ids; never built in.
+                    o.id |= MASTER_ID;
+                    o.build = None;
+                    o.build_out = None;
+                    o
+                })
+                .collect();
+            objects.append(&mut s.objects);
+            s.objects = objects;
+        }
+        let n = (i + 1).to_string();
+        for o in &mut s.objects {
+            if let Kind::Text { text } = &mut o.kind
+                && text.contains(SLIDE_NUMBER)
+            {
+                *text = text.replace(SLIDE_NUMBER, &n);
+            }
+        }
+        Some(s)
+    }
+
+    /// What the editor works on: slide `i`, or (`master`) the master's objects
+    /// set on slide `i`'s background.
+    pub fn editing(&self, i: usize, master: bool) -> Slide {
+        let base = self.slides.get(i).cloned().unwrap_or_default();
+        if !master {
+            return base;
+        }
+        Slide {
+            layout: Layout::Blank,
+            title: String::new(),
+            body: String::new(),
+            objects: self.master.clone(),
+            transition: None,
+            hide_master: false,
+            ..base
+        }
+    }
+
+    /// Change what the editor works on (see `editing`).
+    pub fn edit<R>(&mut self, i: usize, master: bool, f: impl FnOnce(&mut Slide) -> R) -> Option<R> {
+        if master {
+            let mut s = self.editing(i, true);
+            let r = f(&mut s);
+            self.master = s.objects;
+            return Some(r);
+        }
+        self.slides.get_mut(i).map(f)
+    }
+
+    /// The files under `media/` the deck uses: pictures, video and audio.
     pub fn image_names(&self) -> Vec<String> {
         self.slides
             .iter()
             .flat_map(|s| s.objects.iter())
-            .filter_map(|o| if let Kind::Image { image } = &o.kind { Some(image.clone()) } else { None })
+            .chain(&self.master)
+            .filter_map(|o| match &o.kind {
+                Kind::Image { image } => Some(image.clone()),
+                Kind::Media { media, .. } => Some(media.clone()),
+                _ => None,
+            })
             .collect()
     }
 
@@ -489,6 +620,7 @@ impl Deck {
                 body_size: size("bodySize"),
                 objects: Vec::new(),
                 transition: None,
+                hide_master: false,
             };
             for (n, o) in item.get("elements").and_then(|e| e.as_array()).into_iter().flatten().enumerate() {
                 let os = |k: &str| o.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
@@ -520,7 +652,7 @@ impl Deck {
         if slides.is_empty() {
             anyhow::bail!("the presentation has no slides");
         }
-        Ok((Deck { slides }, media))
+        Ok((Deck { slides, master: Vec::new() }, media))
     }
 }
 
@@ -594,6 +726,48 @@ mod tests {
         assert!(!o.contains(290.0, 110.0));
         assert!(o.contains(200.0, 190.0));
         assert_eq!(Shape::from_preset("star5"), Shape::Star);
+    }
+
+    #[test]
+    fn master_objects_show_on_every_slide() {
+        let mut d = Deck::default();
+        d.add_after(0);
+        d.add_after(1);
+        d.edit(0, true, |s| s.objects.push(Object::new(1, Kind::Text { text: "Page {n}".into() }, (800.0, 500.0, 120.0, 30.0))));
+        assert_eq!(d.master.len(), 1);
+        let text = |s: &Slide| match &s.objects[0].kind {
+            Kind::Text { text } => text.clone(),
+            _ => String::new(),
+        };
+        assert_eq!(text(&d.composed(2).unwrap()), "Page 3");
+        assert!(d.composed(2).unwrap().objects[0].id & MASTER_ID != 0);
+        d.slides[1].hide_master = true;
+        assert!(d.composed(1).unwrap().objects.is_empty());
+        // The slide itself never holds the master's objects.
+        assert!(d.slides[2].objects.is_empty());
+        d.slides[0].objects.push(Object::new(1, Kind::Media { media: "clip-1.mp4".into(), video: true }, (0.0, 0.0, 10.0, 10.0)));
+        assert_eq!(d.image_names(), ["clip-1.mp4"]);
+    }
+
+    #[test]
+    fn builds_in_and_out() {
+        let mut s = Slide::default();
+        let shape = |id| Object::new(id, Kind::Shape { shape: Shape::Rectangle, fill: "#000000".into() }, (0.0, 0.0, 50.0, 50.0));
+        let (mut a, mut b, c) = (shape(1), shape(2), shape(3));
+        a.build = Some(Build { order: 1, effect: Effect::Fade });
+        a.build_out = Some(Build { order: 3, effect: Effect::Fly });
+        b.build = Some(Build { order: 2, effect: Effect::Appear });
+        s.objects = vec![a, b, c];
+        assert_eq!(s.steps().len(), 3);
+        assert_eq!(s.hidden_after(0), [1, 2]);
+        assert_eq!(s.hidden_after(1), [2]);
+        assert!(s.hidden_after(2).is_empty());
+        assert_eq!(s.hidden_after(3), [1]);
+        // Magic Move matches on content, not place.
+        let mut moved = s.objects[2].clone();
+        moved.x = 300.0;
+        assert!(moved.same_as(&s.objects[2]));
+        assert!(!moved.same_as(&Object::new(9, Kind::Text { text: "x".into() }, (0.0, 0.0, 1.0, 1.0))));
     }
 
     #[test]

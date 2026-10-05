@@ -109,26 +109,45 @@ pub fn chart_part(chart: ChartKind, names: &[String], labels: &[String], series:
     let mut sers = String::new();
     let take = if chart == ChartKind::Pie { 1 } else { series.len() };
     for (i, values) in series.iter().enumerate().take(take) {
-        let mut cat = format!(r#"<c:cat><c:strLit><c:ptCount val="{}"/>"#, labels.len());
+        let scatter = chart == ChartKind::Scatter;
+        // A scatter chart's x values are numbers; other charts' labels are text.
+        let mut cat = if scatter {
+            format!(r#"<c:xVal><c:numLit><c:formatCode>General</c:formatCode><c:ptCount val="{}"/>"#, labels.len())
+        } else {
+            format!(r#"<c:cat><c:strLit><c:ptCount val="{}"/>"#, labels.len())
+        };
         for (k, l) in labels.iter().enumerate() {
-            let _ = write!(cat, r#"<c:pt idx="{k}"><c:v>{}</c:v></c:pt>"#, esc(l));
+            let v = if scatter {
+                crate::sheets::formula::parse_number(l).unwrap_or(k as f64 + 1.0).to_string()
+            } else {
+                esc(l)
+            };
+            let _ = write!(cat, r#"<c:pt idx="{k}"><c:v>{v}</c:v></c:pt>"#);
         }
-        cat.push_str("</c:strLit></c:cat>");
-        let mut val = format!(r#"<c:val><c:numLit><c:formatCode>General</c:formatCode><c:ptCount val="{}"/>"#, values.len());
+        cat.push_str(if scatter { "</c:numLit></c:xVal>" } else { "</c:strLit></c:cat>" });
+        let (vo, vc) = if scatter { ("yVal", "yVal") } else { ("val", "val") };
+        let mut val = format!(r#"<c:{vo}><c:numLit><c:formatCode>General</c:formatCode><c:ptCount val="{}"/>"#, values.len());
         for (k, v) in values.iter().enumerate() {
             let _ = write!(val, r#"<c:pt idx="{k}"><c:v>{v}</c:v></c:pt>"#);
         }
-        val.push_str("</c:numLit></c:val>");
+        let _ = write!(val, "</c:numLit></c:{vc}>");
         let colour = COLOURS[i % COLOURS.len()];
         let sp = match chart {
             ChartKind::Line => {
                 format!(r#"<c:spPr><a:ln w="28575"><a:solidFill><a:srgbClr val="{colour}"/></a:solidFill></a:ln></c:spPr>"#)
             }
             ChartKind::Pie => String::new(),
+            ChartKind::Scatter => r#"<c:spPr><a:ln w="19050"><a:noFill/></a:ln></c:spPr>"#.to_string(),
             _ => format!(r#"<c:spPr><a:solidFill><a:srgbClr val="{colour}"/></a:solidFill></c:spPr>"#),
         };
         let name = names.get(i).cloned().unwrap_or_else(|| format!("Series {}", i + 1));
-        let marker = if chart == ChartKind::Line { r#"<c:marker><c:symbol val="circle"/></c:marker>"# } else { "" };
+        let marker = match chart {
+            ChartKind::Line => r#"<c:marker><c:symbol val="circle"/></c:marker>"#.to_string(),
+            ChartKind::Scatter => format!(
+                r#"<c:marker><c:symbol val="circle"/><c:size val="7"/><c:spPr><a:solidFill><a:srgbClr val="{colour}"/></a:solidFill></c:spPr></c:marker>"#
+            ),
+            _ => String::new(),
+        };
         let _ = write!(
             sers,
             r#"<c:ser><c:idx val="{i}"/><c:order val="{i}"/><c:tx><c:v>{}</c:v></c:tx>{sp}{marker}{cat}{val}</c:ser>"#,
@@ -145,9 +164,21 @@ pub fn chart_part(chart: ChartKind, names: &[String], labels: &[String], series:
         }
         ChartKind::Area => format!(r#"<c:areaChart><c:grouping val="standard"/><c:varyColors val="0"/>{sers}{axes_ids}</c:areaChart>"#),
         ChartKind::Pie => format!(r#"<c:pieChart><c:varyColors val="1"/>{sers}<c:firstSliceAng val="0"/></c:pieChart>"#),
+        ChartKind::StackedBar => format!(
+            r#"<c:barChart><c:barDir val="col"/><c:grouping val="stacked"/><c:varyColors val="0"/>{sers}<c:gapWidth val="80"/><c:overlap val="100"/>{axes_ids}</c:barChart>"#
+        ),
+        ChartKind::StackedArea => {
+            format!(r#"<c:areaChart><c:grouping val="stacked"/><c:varyColors val="0"/>{sers}{axes_ids}</c:areaChart>"#)
+        }
+        ChartKind::Scatter => {
+            format!(r#"<c:scatterChart><c:scatterStyle val="lineMarker"/><c:varyColors val="0"/>{sers}{axes_ids}</c:scatterChart>"#)
+        }
     };
     let axes = if chart == ChartKind::Pie {
         String::new()
+    } else if chart == ChartKind::Scatter {
+        // Two value axes: x along the bottom, y up the side.
+        r#"<c:valAx><c:axId val="111"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:numFmt formatCode="General" sourceLinked="0"/><c:tickLblPos val="nextTo"/><c:crossAx val="222"/><c:crosses val="autoZero"/></c:valAx><c:valAx><c:axId val="222"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:majorGridlines/><c:numFmt formatCode="General" sourceLinked="0"/><c:tickLblPos val="nextTo"/><c:crossAx val="111"/><c:crosses val="autoZero"/></c:valAx>"#.to_string()
     } else {
         r#"<c:catAx><c:axId val="111"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:numFmt formatCode="General" sourceLinked="0"/><c:tickLblPos val="nextTo"/><c:crossAx val="222"/><c:crosses val="autoZero"/></c:catAx><c:valAx><c:axId val="222"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:majorGridlines/><c:numFmt formatCode="General" sourceLinked="0"/><c:tickLblPos val="nextTo"/><c:crossAx val="111"/><c:crosses val="autoZero"/></c:valAx>"#.to_string()
     };
@@ -161,11 +192,19 @@ pub fn read_chart(xml: &str) -> Option<Kind> {
     let doc = roxmltree::Document::parse(xml).ok()?;
     let plot = doc.descendants().find(|n| n.has_tag_name((C, "plotArea")))?;
     let (chart, node) = plot.children().find_map(|n| {
+        let stacked = n
+            .children()
+            .find(|c| c.has_tag_name((C, "grouping")))
+            .and_then(|g| g.attribute("val"))
+            .is_some_and(|v| v.contains("tacked"));
         let kind = match n.tag_name().name() {
+            "barChart" | "bar3DChart" if stacked => ChartKind::StackedBar,
             "barChart" | "bar3DChart" => ChartKind::Bar,
             "lineChart" | "line3DChart" => ChartKind::Line,
+            "areaChart" | "area3DChart" if stacked => ChartKind::StackedArea,
             "areaChart" | "area3DChart" => ChartKind::Area,
             "pieChart" | "pie3DChart" | "doughnutChart" => ChartKind::Pie,
+            "scatterChart" | "bubbleChart" => ChartKind::Scatter,
             _ => return None,
         };
         Some((kind, n))
@@ -192,14 +231,14 @@ pub fn read_chart(xml: &str) -> Option<Kind> {
             .and_then(|v| v.text())
             .unwrap_or("")
             .to_string();
-        let vals = points(ser.children().find(|n| n.has_tag_name((C, "val"))));
+        let vals = points(ser.children().find(|n| n.has_tag_name((C, "val")) || n.has_tag_name((C, "yVal"))));
         let len = vals.iter().map(|(i, _)| i + 1).max().unwrap_or(0);
         let mut values = vec![0.0; len];
         for (i, v) in vals {
             values[i] = v.trim().parse().unwrap_or(0.0);
         }
         if labels.is_empty() {
-            let cats = points(ser.children().find(|n| n.has_tag_name((C, "cat"))));
+            let cats = points(ser.children().find(|n| n.has_tag_name((C, "cat")) || n.has_tag_name((C, "xVal"))));
             labels = (0..len).map(|i| cats.iter().find(|(k, _)| *k == i).map(|(_, v)| v.clone()).unwrap_or_default()).collect();
         }
         names.push(name);
@@ -221,7 +260,14 @@ pub fn transition(t: &Transition) -> String {
     } else {
         "slow"
     };
+    if t.kind == TransitionKind::MagicMove {
+        // PowerPoint's Morph, with a fade for older versions.
+        return format!(
+            r#"<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><mc:Choice xmlns:p159="http://schemas.microsoft.com/office/powerpoint/2015/09/main" Requires="p159"><p:transition spd="slow"><p159:morph option="byObject"/></p:transition></mc:Choice><mc:Fallback><p:transition spd="{spd}"><p:fade/></p:transition></mc:Fallback></mc:AlternateContent>"#
+        );
+    }
     let effect = match t.kind {
+        TransitionKind::MagicMove => "<p:fade/>",
         TransitionKind::Fade => "<p:fade/>",
         TransitionKind::Push => r#"<p:push dir="l"/>"#,
         TransitionKind::Wipe => r#"<p:wipe dir="r"/>"#,
@@ -242,6 +288,7 @@ pub fn read_transition(doc: &roxmltree::Document) -> Option<Transition> {
         },
     };
     let kind = t.children().filter(|c| c.is_element()).find_map(|c| match c.tag_name().name() {
+        "morph" => Some(TransitionKind::MagicMove),
         "fade" => Some(TransitionKind::Fade),
         "push" | "cover" | "pull" => Some(TransitionKind::Push),
         "wipe" | "split" | "strips" => Some(TransitionKind::Wipe),
@@ -257,17 +304,16 @@ pub fn read_transition(doc: &roxmltree::Document) -> Option<Transition> {
 /// The slide's click sequence: one entrance per built object, in order.
 /// `shape_id` maps our object ids to the shape ids written.
 pub fn timing(s: &Slide, shape_id: &HashMap<u32, usize>) -> String {
-    let steps = s.build_steps();
+    let steps = s.steps();
     if steps.is_empty() {
         return String::new();
     }
     let mut n = 3;
     let mut clicks = String::new();
-    for oid in steps {
-        let (Some(spid), Some(build)) = (shape_id.get(&oid), s.objects.iter().find(|o| o.id == oid).and_then(|o| o.build))
-        else {
-            continue;
-        };
+    for step in steps {
+        let Some(spid) = shape_id.get(&step.id) else { continue };
+        let build = Build { order: 0, effect: step.effect };
+        let out = step.out;
         let target = format!(r#"<p:tgtEl><p:spTgt spid="{spid}"/></p:tgtEl>"#);
         let (preset, subtype) = match build.effect {
             Effect::Appear => (1, 0),
@@ -276,23 +322,29 @@ pub fn timing(s: &Slide, shape_id: &HashMap<u32, usize>) -> String {
         };
         let (a, b, c, d) = (n, n + 1, n + 2, n + 3);
         n += 5;
+        // Coming in: shown at once, then faded or flown in. Going out: faded or
+        // flown away, then hidden at the end.
+        let (visibility, delay) = if out { ("hidden", if build.effect == Effect::Appear { 0 } else { 499 }) } else { ("visible", 0) };
         let show = format!(
-            r#"<p:set><p:cBhvr><p:cTn id="{d}" dur="1" fill="hold"><p:stCondLst><p:cond delay="0"/></p:stCondLst></p:cTn>{target}<p:attrNameLst><p:attrName>style.visibility</p:attrName></p:attrNameLst></p:cBhvr><p:to><p:strVal val="visible"/></p:to></p:set>"#
+            r#"<p:set><p:cBhvr><p:cTn id="{d}" dur="1" fill="hold"><p:stCondLst><p:cond delay="{delay}"/></p:stCondLst></p:cTn>{target}<p:attrNameLst><p:attrName>style.visibility</p:attrName></p:attrNameLst></p:cBhvr><p:to><p:strVal val="{visibility}"/></p:to></p:set>"#
         );
+        let (from, to) = if out { ("#ppt_y", "1+#ppt_h/2") } else { ("1+#ppt_h/2", "#ppt_y") };
         let motion = match build.effect {
             Effect::Appear => String::new(),
             Effect::Fade => format!(
-                r#"<p:animEffect transition="in" filter="fade"><p:cBhvr><p:cTn id="{}" dur="500"/>{target}</p:cBhvr></p:animEffect>"#,
+                r#"<p:animEffect transition="{}" filter="fade"><p:cBhvr><p:cTn id="{}" dur="500"/>{target}</p:cBhvr></p:animEffect>"#,
+                if out { "out" } else { "in" },
                 d + 1
             ),
             Effect::Fly => format!(
-                r##"<p:anim calcmode="lin" valueType="num"><p:cBhvr additive="base"><p:cTn id="{}" dur="500" fill="hold"/>{target}<p:attrNameLst><p:attrName>ppt_y</p:attrName></p:attrNameLst></p:cBhvr><p:tavLst><p:tav tm="0"><p:val><p:strVal val="1+#ppt_h/2"/></p:val></p:tav><p:tav tm="100000"><p:val><p:strVal val="#ppt_y"/></p:val></p:tav></p:tavLst></p:anim>"##,
+                r##"<p:anim calcmode="lin" valueType="num"><p:cBhvr additive="base"><p:cTn id="{}" dur="500" fill="hold"/>{target}<p:attrNameLst><p:attrName>ppt_y</p:attrName></p:attrNameLst></p:cBhvr><p:tavLst><p:tav tm="0"><p:val><p:strVal val="{from}"/></p:val></p:tav><p:tav tm="100000"><p:val><p:strVal val="{to}"/></p:val></p:tav></p:tavLst></p:anim>"##,
                 d + 1
             ),
         };
+        let class = if out { "exit" } else { "entr" };
         let _ = write!(
             clicks,
-            r#"<p:par><p:cTn id="{a}" fill="hold"><p:stCondLst><p:cond delay="indefinite"/></p:stCondLst><p:childTnLst><p:par><p:cTn id="{b}" fill="hold"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst><p:par><p:cTn id="{c}" presetID="{preset}" presetClass="entr" presetSubtype="{subtype}" fill="hold" nodeType="clickEffect"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst>{show}{motion}</p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:par>"#
+            r#"<p:par><p:cTn id="{a}" fill="hold"><p:stCondLst><p:cond delay="indefinite"/></p:stCondLst><p:childTnLst><p:par><p:cTn id="{b}" fill="hold"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst><p:par><p:cTn id="{c}" presetID="{preset}" presetClass="{class}" presetSubtype="{subtype}" fill="hold" nodeType="clickEffect"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst>{motion}{show}</p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:par>"#
         );
     }
     format!(
@@ -300,12 +352,16 @@ pub fn timing(s: &Slide, shape_id: &HashMap<u32, usize>) -> String {
     )
 }
 
-/// Entrance effects in click order: (shape id, effect). Effects that start
-/// with or after the previous one share its click.
-pub fn read_builds(doc: &roxmltree::Document) -> Vec<(String, u32, Effect)> {
-    let mut out = Vec::new();
+/// Entrance and exit effects in click order: (shape id, order, effect, exit).
+/// Effects that start with or after the previous one share its click.
+pub fn read_builds(doc: &roxmltree::Document) -> Vec<(String, u32, Effect, bool)> {
+    let mut out: Vec<(String, u32, Effect, bool)> = Vec::new();
     let mut order = 0;
-    for ctn in doc.descendants().filter(|n| n.has_tag_name((P, "cTn")) && n.attribute("presetClass") == Some("entr")) {
+    for ctn in doc
+        .descendants()
+        .filter(|n| n.has_tag_name((P, "cTn")) && matches!(n.attribute("presetClass"), Some("entr") | Some("exit")))
+    {
+        let exit = ctn.attribute("presetClass") == Some("exit");
         let Some(spid) =
             ctn.descendants().find(|n| n.has_tag_name((P, "spTgt"))).and_then(|t| t.attribute("spid")).map(String::from)
         else {
@@ -319,8 +375,8 @@ pub fn read_builds(doc: &roxmltree::Document) -> Vec<(String, u32, Effect)> {
             Some("2") | Some("47") => Effect::Fly,
             _ => Effect::Fade,
         };
-        if !out.iter().any(|(s, _, _)| *s == spid) {
-            out.push((spid, order, effect));
+        if !out.iter().any(|(s, _, _, x)| *s == spid && *x == exit) {
+            out.push((spid, order, effect, exit));
         }
     }
     out

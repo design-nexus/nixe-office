@@ -385,7 +385,11 @@ impl Loader<'_> {
                                 }
                             }
                             Run::Note(n) => {
-                                self.mark(MarkKind::Note(&n.note));
+                                self.mark(MarkKind::Note(&n.note, n.end));
+                            }
+                            Run::Drawing(d) => {
+                                let mut end = b.end_iter();
+                                b.insert_paintable(&mut end, &super::figure::FigureView::new(d));
                             }
                         }
                     }
@@ -403,8 +407,12 @@ impl Loader<'_> {
                     let mut end = b.end_iter();
                     b.insert(&mut end, "\n");
                 }
-                Block::PageBreak | Block::Contents => {
-                    let w = self.mark(if matches!(block, Block::PageBreak) { MarkKind::PageBreak } else { MarkKind::Contents });
+                Block::PageBreak | Block::Contents | Block::Section(_) => {
+                    let w = self.mark(match block {
+                        Block::PageBreak => MarkKind::PageBreak,
+                        Block::Section(s) => MarkKind::Section(*s),
+                        _ => MarkKind::Contents,
+                    });
                     w.set_size_request(self.width_px, -1);
                     let mut end = b.end_iter();
                     b.insert(&mut end, "\n");
@@ -446,6 +454,10 @@ pub fn read(buffer: &gtk::TextBuffer, tables: &Tables, marks: &Marks) -> Vec<Blo
                     blocks.push(Block::Contents);
                     continue;
                 }
+                Some(Mark::Section(w)) => {
+                    blocks.push(Block::Section(w.section.get()));
+                    continue;
+                }
                 _ => {}
             }
         }
@@ -474,13 +486,18 @@ pub fn read(buffer: &gtk::TextBuffer, tables: &Tables, marks: &Marks) -> Vec<Blo
                             p.runs.push(Run::Text(TextRun { text: std::mem::take(&mut chunk), ..format.clone() }));
                         }
                         p.runs.push(Run::Image(Image { image: pic.name(), width: pic.width_pt(), wrap: pic.wrap() }));
+                    } else if let Some(fig) = at.paintable().and_then(|p| p.downcast::<super::figure::FigureView>().ok()) {
+                        if !chunk.is_empty() {
+                            p.runs.push(Run::Text(TextRun { text: std::mem::take(&mut chunk), ..format.clone() }));
+                        }
+                        p.runs.push(Run::Drawing(fig.drawing()));
                     } else if let Some(anchor) = at.child_anchor()
                         && let Some(Mark::Note(n)) = marks.borrow().iter().find(|(a, _, _)| *a == anchor).map(|(_, m, _)| m)
                     {
                         if !chunk.is_empty() {
                             p.runs.push(Run::Text(TextRun { text: std::mem::take(&mut chunk), ..format.clone() }));
                         }
-                        p.runs.push(Run::Note(super::model::Note { note: n.text.borrow().clone() }));
+                        p.runs.push(Run::Note(super::model::Note { note: n.text.borrow().clone(), end: n.end }));
                     }
                 } else {
                     chunk.push(ch);

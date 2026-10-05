@@ -118,6 +118,11 @@ impl SheetPages {
                     pages.push(Page::Cells { title, cells });
                 }
             }
+            for c in &s.charts {
+                if let Some((names, labels, series)) = wb.chart_data_for(si, &c.range, calc) {
+                    pages.push(Page::Chart { title: format!("{} · chart of {}", s.name, c.range), kind: c.kind, names, labels, series });
+                }
+            }
             if let Some(chart) = &s.chart
                 && let Some((names, labels, series)) = wb.chart_data(si, calc)
             {
@@ -213,6 +218,12 @@ impl Pages for SheetPages {
                             }
                         }
                         cr.stroke().ok();
+                    }
+                    if item.format.checkbox {
+                        let size = 9.0f64.min(item.h - 4.0);
+                        let on = matches!(item.text.as_str(), "TRUE");
+                        super::grid::draw_checkbox(cr, (x + (item.w - size) / 2.0, y + (item.h - size) / 2.0, size), on);
+                        continue;
                     }
                     if item.text.is_empty() {
                         continue;

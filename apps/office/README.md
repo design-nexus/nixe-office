@@ -16,15 +16,19 @@ Then:
     underline, strikethrough, text color and highlight, alignment.
   - Bulleted and numbered lists with nested levels (<kbd>Tab</kbd> /
     <kbd>Shift</kbd>+<kbd>Tab</kbd>), and indents.
+  - Shapes and charts in the text (a chart's numbers are edited in a small table).
   - Pictures, sized with a slider, in the line or at the left or right of a paragraph
     with the text wrapping beside them; tables (right-click a cell to add or remove rows
     and columns).
   - Footnotes (<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd>): a number in the text, the
-    note at the foot of the page when printed.
+    note at the foot of the page when printed. Endnotes
+    (<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>D</kbd>), numbered i, ii, iii, gather under
+    "Notes" at the end.
   - Comments on selected text (<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>M</kbd>), shown as
     cards beside the page; edit, resolve or delete them there.
   - A table of contents built from the headings, with page numbers in print and PDF.
-  - Page breaks (<kbd>Ctrl</kbd>+<kbd>Enter</kbd>), and two or three text columns.
+  - Page breaks (<kbd>Ctrl</kbd>+<kbd>Enter</kbd>), two or three text columns, and
+    section breaks to change the columns partway, on a new page or straight on.
   - Track changes (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd>): added text is
     underlined in green, deleted text stays struck through in red; go through them and
     accept or reject each one, or all at once.
@@ -66,7 +70,13 @@ Then:
     <kbd>Ctrl</kbd>+<kbd>D</kbd> / <kbd>Ctrl</kbd>+<kbd>R</kbd> to fill down or right.
   - Sort by a column, filter rows by what a column contains, keep the first row as a
     header and in view while scrolling.
-  - Bar, line, area and pie charts of up to six series.
+  - Bar, stacked bar, line, area, stacked area, pie and scatter charts of up to six
+    series, beside the sheet or placed anywhere on it (drag to move, drag the corner
+    to resize, double-click to change).
+  - Tables: blocks of cells with a coloured heading row, banded rows and a total row,
+    as many as you like on a sheet; they open and save as Excel tables.
+  - Checkboxes in cells: click one or press <kbd>Space</kbd> to tick it; formulas see
+    TRUE or FALSE.
   - The status bar shows the sum, average and count of the selected cells.
   - Starter templates: a monthly budget, a home inventory and a trip budget.
 - **Present**
@@ -78,12 +88,16 @@ Then:
     diamond, hexagon, star, arrow): drag them, resize them by their corner, turn them by
     the round handle above, nudge them with the arrow keys; give them a border and a
     drop shadow.
+  - Video and audio on slides, played in the slideshow with their own controls.
+  - A master slide for what goes on every slide (a logo, a footer, the slide number);
+    any slide can leave it out.
   - <kbd>Shift</kbd>-click to select several; group them (<kbd>Ctrl</kbd>+<kbd>G</kbd>)
     to move them as one; line them up, space them evenly or change which is in front.
     Guides snap what you drag to the slide's middle and edges and to other objects
     (hold <kbd>Alt</kbd> to move freely).
-  - Transitions between slides (fade, push, wipe, dissolve), and builds that bring
-    objects in one click at a time (appear, fade in, fly in).
+  - Transitions between slides (fade, push, wipe, dissolve, and Magic Move, where
+    what both slides share glides to its new place), and builds that bring objects in,
+    or take them away, one click at a time (appear, fade, fly).
   - Thumbnails of every slide in the sidebar; right-click one to copy, move or delete it.
   - **Present** with <kbd>F5</kbd> (or <kbd>Shift</kbd>+<kbd>F5</kbd> from the current
     slide); the slideshow plays the transitions and builds. With a second screen connected, the slides go there and this screen shows
