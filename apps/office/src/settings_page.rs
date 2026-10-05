@@ -75,6 +75,13 @@ pub fn build(page: &Page) {
         |on| prefs::update(|p| p.recovery = on),
     );
     g.add(&r);
+    let (r, _) = widgets::switch_row(
+        "Save automatically",
+        "Save the file a few seconds after each change, and when closing it, without asking. A new file is saved this way once it has a name.",
+        p.autosave,
+        |on| prefs::update(|p| p.autosave = on),
+    );
+    g.add(&r);
 
     // ----- This window -----
     let g = page.group(&format!("{} window", kind.name()));

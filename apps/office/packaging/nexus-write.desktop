@@ -8,6 +8,6 @@ Icon=x-office-document
 Terminal=false
 Categories=Office;WordProcessor;GTK;
 Keywords=document;letter;word;docx;write;text;
-MimeType=application/x-nexus-write;application/vnd.openxmlformats-officedocument.wordprocessingml.document;
+MimeType=application/x-nexus-write;application/vnd.openxmlformats-officedocument.wordprocessingml.document;text/markdown;text/plain;
 StartupNotify=true
 StartupWMClass=io.github.design_nexus.Write

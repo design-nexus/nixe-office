@@ -33,6 +33,8 @@ pub struct Prefs {
     pub autocorrect: bool,
     /// Save a copy of unsaved work every few seconds, offered back after a crash.
     pub recovery: bool,
+    /// Save named files by themselves a moment after each change, and on closing.
+    pub autosave: bool,
     /// Present: open the presenter view on a second screen when one is connected.
     pub presenter_view: bool,
 }
@@ -50,6 +52,7 @@ impl Default for Prefs {
             spelling_language: String::new(),
             autocorrect: true,
             recovery: true,
+            autosave: false,
             presenter_view: true,
         }
     }

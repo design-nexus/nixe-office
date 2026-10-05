@@ -219,6 +219,39 @@ pub fn edited() {
         emit(Change::Dirty);
     }
     emit(Change::Status);
+    schedule_autosave();
+}
+
+// ---------- Saving by itself ----------
+
+/// How long after the last change a named file saves itself.
+const AUTOSAVE_AFTER: std::time::Duration = std::time::Duration::from_secs(3);
+
+thread_local! {
+    static AUTOSAVE: RefCell<Option<glib::SourceId>> = const { RefCell::new(None) };
+}
+
+fn autosaving() -> bool {
+    prefs::get().autosave && path().is_some()
+}
+
+/// With autosave on, save a moment after the changes stop.
+fn schedule_autosave() {
+    if !autosaving() {
+        return;
+    }
+    if let Some(id) = AUTOSAVE.with(|a| a.borrow_mut().take()) {
+        id.remove();
+    }
+    let id = glib::timeout_add_local_once(AUTOSAVE_AFTER, || {
+        AUTOSAVE.with(|a| a.borrow_mut().take());
+        if dirty() && autosaving()
+            && let Some(p) = path()
+        {
+            write_quietly(&p);
+        }
+    });
+    AUTOSAVE.with(|a| *a.borrow_mut() = Some(id));
 }
 
 /// The editor calls this when its status readout may have changed.
@@ -250,6 +283,14 @@ fn opened(path: Option<PathBuf>, untitled: &str, dirty: bool) {
 /// Run `then` once unsaved changes are saved or let go; nothing if the user cancels.
 pub fn guard(then: impl FnOnce() + 'static) {
     if !dirty() {
+        then();
+        return;
+    }
+    // Saving by itself: save now rather than ask (and ask after all if that fails).
+    if autosaving()
+        && let Some(p) = path()
+        && write_quietly(&p)
+    {
         then();
         return;
     }
@@ -485,6 +526,19 @@ fn save_as_then(then: impl FnOnce() + 'static) {
 
 /// Save to `path` now. True when it worked.
 fn write_to(path: &Path) -> bool {
+    save_file(path, false)
+}
+
+/// Save without a "Saved" note (still telling of failures, and once of what a
+/// format can't keep).
+fn write_quietly(path: &Path) -> bool {
+    save_file(path, true)
+}
+
+fn save_file(path: &Path, quiet: bool) -> bool {
+    if let Some(id) = AUTOSAVE.with(|a| a.borrow_mut().take()) {
+        id.remove();
+    }
     let Some(ed) = editor() else { return false };
     match ed.save(path) {
         Ok(lost) => {
@@ -510,7 +564,7 @@ fn write_to(path: &Path) -> bool {
                     join_and(&lost),
                     app::kind().native_ext()
                 ));
-            } else {
+            } else if !quiet {
                 window::toast(&format!("Saved {}.", file_name(path)));
             }
             true

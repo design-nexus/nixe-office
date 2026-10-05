@@ -87,7 +87,7 @@ impl Kind {
     /// Every extension this app opens.
     pub fn opens(self) -> &'static [&'static str] {
         match self {
-            Kind::Write => &["nwrite", "docx"],
+            Kind::Write => &["nwrite", "docx", "md", "markdown", "txt"],
             Kind::Sheets => &["nsheets", "xlsx", "csv"],
             Kind::Present => &["npresent", "pptx"],
         }
@@ -105,7 +105,12 @@ impl Kind {
     /// (name, extension) for each format the Save As dialog offers, native first.
     pub fn save_formats(self) -> &'static [(&'static str, &'static str)] {
         match self {
-            Kind::Write => &[("Nexus Write document", "nwrite"), ("Word document", "docx")],
+            Kind::Write => &[
+                ("Nexus Write document", "nwrite"),
+                ("Word document", "docx"),
+                ("Markdown", "md"),
+                ("Plain text", "txt"),
+            ],
             Kind::Sheets => {
                 &[("Nexus Sheets workbook", "nsheets"), ("Excel workbook", "xlsx"), ("CSV (one sheet, values only)", "csv")]
             }

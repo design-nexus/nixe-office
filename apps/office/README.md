@@ -136,7 +136,9 @@ All three:
 - **Files:** their own formats (`.nwrite`, `.nsheets`, `.npresent`) keep everything.
   Word (`.docx`), Excel (`.xlsx`) and PowerPoint (`.pptx`) files open and save in
   place; the first time a file can't hold something (speaker notes in a PowerPoint
-  file, for instance), a note says what. Sheets also opens and saves CSV.
+  file, for instance), a note says what. Sheets also opens and saves CSV; Write also
+  opens and saves Markdown (`.md`, with its pictures in a folder beside it) and plain
+  text (`.txt`).
 - **Find and replace** (<kbd>Ctrl</kbd>+<kbd>F</kbd>, <kbd>Ctrl</kbd>+<kbd>H</kbd>).
 - **Export as PDF** (<kbd>Ctrl</kbd>+<kbd>E</kbd>) and **print** (<kbd>Ctrl</kbd>+<kbd>P</kbd>),
   on the document's paper (Write) or the one chosen in Settings.
@@ -145,6 +147,8 @@ All three:
   for 100%). Each app remembers its own.
 - **Undo and redo**, and a copy of unsaved work every few seconds: if an app closes
   unexpectedly, Home offers to bring the work back.
+- **Save automatically** (in Settings, off at first): a file that has a name saves itself
+  a few seconds after each change, and on closing, without asking.
 
 Files made by the first release of Nexus Office open as before.
 

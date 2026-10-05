@@ -29,6 +29,8 @@
   `packaging/nexus-office.xml`), `manifest.json` (version 3), `content.json`, `media/`.
   Qt-era files: `.nwrite` ZIP with `document.html` (`write/legacy.rs`), `.nsheets` and
   `.npresent` plain JSON (`from_legacy_json`).
+- **Autosave** (`prefs.autosave`): `doc::edited` schedules `write_quietly` a few seconds
+  after the last change when the file has a path; `guard` saves instead of asking.
 - **Printing and PDF** share one renderer per app (`print::Pages`), laid out in points
   with `print::text_context()` (72 dpi, no hinting).
 - **Write** (`write/`): a `TextView` subclass (`view.rs`, draws list markers in the
@@ -56,6 +58,10 @@
   Paragraph spacing is `Paragraph.line_spacing` (a multiple, Word's `w:line`/240) and
   `space_before`/`space_after` (points; None is the style's), as `ls:`/`sb:`/`sa:` tags;
   print uses Pango's line-height attribute, the same one the `ls:` tag sets.
+  Markdown and plain text (`markdown.rs`, pulldown-cmark): code is runs in the
+  `monospace` font; pictures are read relative to the file and written to a
+  "<name> images" folder beside it. Write is offered for text/markdown and text/plain,
+  but `install.sh --default` leaves those types alone.
   Links are `link:<address>` tags (`links.rs`: the Ctrl+K dialog, Ctrl+click, the
   hover tooltip); in Word they're `w:hyperlink` with an external relationship, in a
   PDF a cairo `Link` tag per line. Superscript and subscript are the `sup`/`sub` flags.

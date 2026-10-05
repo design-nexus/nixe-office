@@ -9,6 +9,7 @@ mod figure;
 mod layout;
 mod legacy;
 mod links;
+mod markdown;
 mod marks;
 pub mod model;
 mod picture;
@@ -1688,7 +1689,9 @@ impl doc::Editor for Writer {
         let (d, media) = match ext.as_str() {
             "nwrite" => Writer::read_native(&std::fs::read(path)?)?,
             "docx" => docx::read(&std::fs::read(path)?)?,
-            _ => bail!("Nexus Write opens .nwrite and .docx files"),
+            "md" | "markdown" => markdown::read(&String::from_utf8_lossy(&std::fs::read(path)?), path.parent()),
+            "txt" | "text" => (markdown::read_text(&String::from_utf8_lossy(&std::fs::read(path)?)), BTreeMap::new()),
+            _ => bail!("Nexus Write opens .nwrite, .docx, .md and .txt files"),
         };
         self.load_fresh(&d, &media);
         Ok(())
@@ -1707,7 +1710,28 @@ impl doc::Editor for Writer {
                 crate::cmd::atomic_write(path, bytes)?;
                 Ok(lost)
             }
-            _ => bail!("Nexus Write saves .nwrite and .docx files"),
+            "md" | "markdown" => {
+                let d = self.document();
+                let folder = markdown::pictures_dir(path);
+                let (text, pictures, lost) = markdown::write(&d, &folder);
+                // Pictures go in a folder beside the file.
+                if !pictures.is_empty() {
+                    let dir = path.with_file_name(&folder);
+                    let media = self.media.borrow();
+                    for name in &pictures {
+                        if let Some(bytes) = media.get(name) {
+                            crate::cmd::atomic_write(&dir.join(name), bytes)?;
+                        }
+                    }
+                }
+                crate::cmd::atomic_write(path, text)?;
+                Ok(lost)
+            }
+            "txt" | "text" => {
+                crate::cmd::atomic_write(path, markdown::write_text(&self.document()))?;
+                Ok(vec!["formatting, pictures and tables' layout".into()])
+            }
+            _ => bail!("Nexus Write saves .nwrite, .docx, .md and .txt files"),
         }
     }
 
