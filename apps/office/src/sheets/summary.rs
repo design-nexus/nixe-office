@@ -175,7 +175,7 @@ pub fn summarize(wb: &mut Workbook, req: &Request) -> Option<usize> {
     wb.set_col_w(0, 160);
     let s = wb.sheet_mut();
     s.header = true;
-    s.freeze = true;
+    s.freeze_rows = 1;
     Some(at)
 }
 

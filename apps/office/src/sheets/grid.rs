@@ -128,61 +128,61 @@ impl Sheets {
         self.update_adjustments();
     }
 
-    fn frozen(&self) -> bool {
-        self.wb.borrow().sheet().freeze && self.row_y.borrow().len() > 2
+    /// How many on-screen rows stay put (some must be left to scroll).
+    pub(super) fn frozen_rows(&self) -> u32 {
+        let n = self.wb.borrow().sheet().freeze_rows as usize;
+        if self.row_y.borrow().len() > n + 1 { n as u32 } else { 0 }
     }
 
-    fn frozen_h(&self) -> f64 {
-        if self.frozen() {
-            let ys = self.row_y.borrow();
-            ys[1] - ys[0]
-        } else {
-            0.0
-        }
+    pub(super) fn frozen_cols(&self) -> u32 {
+        let n = self.wb.borrow().sheet().freeze_cols as usize;
+        if self.col_x.borrow().len() > n + 1 { n as u32 } else { 0 }
     }
 
-    /// Content y where the scrolling rows start.
-    fn base(&self) -> f64 {
-        if self.frozen() { self.row_y.borrow()[1] } else { 0.0 }
+    /// The height of the rows that stay put (also where the scrolling rows start).
+    pub(super) fn frozen_h(&self) -> f64 {
+        self.row_y.borrow()[self.frozen_rows() as usize]
     }
 
-    fn update_adjustments(&self) {
+    pub(super) fn frozen_w(&self) -> f64 {
+        self.col_x.borrow()[self.frozen_cols() as usize]
+    }
+
+    pub(super) fn update_adjustments(&self) {
         let (w, h) = (self.area.width() as f64, self.area.height() as f64);
         let (rows_h, cols_w) = (*self.row_y.borrow().last().unwrap_or(&0.0), *self.col_x.borrow().last().unwrap_or(&0.0));
-        let vpage = (h - HEAD_H - self.frozen_h()).max(1.0);
-        let hpage = (w - HEAD_W).max(1.0);
-        self.vadj.configure(
-            self.vadj.value().min((rows_h - self.base() - vpage).max(0.0)),
-            0.0,
-            (rows_h - self.base()).max(vpage),
-            30.0,
-            vpage * 0.9,
-            vpage,
-        );
-        self.hadj.configure(self.hadj.value().min((cols_w - hpage).max(0.0)), 0.0, cols_w.max(hpage), 40.0, hpage * 0.9, hpage);
+        let (fh, fw) = (self.frozen_h(), self.frozen_w());
+        let vpage = (h - HEAD_H - fh).max(1.0);
+        let hpage = (w - HEAD_W - fw).max(1.0);
+        self.vadj.configure(self.vadj.value().min((rows_h - fh - vpage).max(0.0)), 0.0, (rows_h - fh).max(vpage), 30.0, vpage * 0.9, vpage);
+        self.hadj.configure(self.hadj.value().min((cols_w - fw - hpage).max(0.0)), 0.0, (cols_w - fw).max(hpage), 40.0, hpage * 0.9, hpage);
     }
 
     /// Top and height of on-screen row `vi`, in widget pixels.
-    fn row_rect(&self, vi: u32) -> (f64, f64) {
+    pub(super) fn row_rect(&self, vi: u32) -> (f64, f64) {
         let ys = self.row_y.borrow();
         let i = vi as usize;
         if i + 1 >= ys.len() {
             return (-1000.0, 0.0);
         }
         let h = ys[i + 1] - ys[i];
-        if self.frozen() && i == 0 {
-            return (HEAD_H, h);
+        if vi < self.frozen_rows() {
+            return (HEAD_H + ys[i], h);
         }
-        (HEAD_H + self.frozen_h() + ys[i] - self.base() - self.vadj.value(), h)
+        (HEAD_H + ys[i] - self.vadj.value(), h)
     }
 
-    fn col_rect(&self, c: u32) -> (f64, f64) {
+    pub(super) fn col_rect(&self, c: u32) -> (f64, f64) {
         let xs = self.col_x.borrow();
         let i = c as usize;
         if i + 1 >= xs.len() {
             return (-1000.0, 0.0);
         }
-        (HEAD_W + xs[i] - self.hadj.value(), xs[i + 1] - xs[i])
+        let cw = xs[i + 1] - xs[i];
+        if c < self.frozen_cols() {
+            return (HEAD_W + xs[i], cw);
+        }
+        (HEAD_W + xs[i] - self.hadj.value(), cw)
     }
 
     /// Where a block of on-screen cells is drawn: x, y, width, height.
@@ -203,10 +203,8 @@ impl Sheets {
         if y < HEAD_H {
             return None;
         }
-        if self.frozen() && y < HEAD_H + self.frozen_h() {
-            return Some(0);
-        }
-        let content = y - HEAD_H - self.frozen_h() + self.base() + self.vadj.value();
+        // Over the rows that stay put, nothing scrolls.
+        let content = if y < HEAD_H + self.frozen_h() { y - HEAD_H } else { y - HEAD_H + self.vadj.value() };
         let ys = self.row_y.borrow();
         let i = ys.partition_point(|v| *v <= content);
         (i >= 1 && i < ys.len()).then(|| i as u32 - 1)
@@ -216,7 +214,7 @@ impl Sheets {
         if x < HEAD_W {
             return None;
         }
-        let content = x - HEAD_W + self.hadj.value();
+        let content = if x < HEAD_W + self.frozen_w() { x - HEAD_W } else { x - HEAD_W + self.hadj.value() };
         let xs = self.col_x.borrow();
         let i = xs.partition_point(|v| *v <= content);
         (i >= 1 && i < xs.len()).then(|| i as u32 - 1)
@@ -285,7 +283,7 @@ impl Sheets {
         let (y, h) = self.row_rect(r);
         let top = HEAD_H + self.frozen_h();
         let bottom = self.area.height() as f64;
-        if !(self.frozen() && r == 0) {
+        if r >= self.frozen_rows() {
             if y < top {
                 self.vadj.set_value(self.vadj.value() - (top - y));
             } else if y + h > bottom {
@@ -293,11 +291,14 @@ impl Sheets {
             }
         }
         let (x, w) = self.col_rect(c);
+        let left = HEAD_W + self.frozen_w();
         let right = self.area.width() as f64;
-        if x < HEAD_W {
-            self.hadj.set_value(self.hadj.value() - (HEAD_W - x));
-        } else if x + w > right {
-            self.hadj.set_value(self.hadj.value() + (x + w - right));
+        if c >= self.frozen_cols() {
+            if x < left {
+                self.hadj.set_value(self.hadj.value() - (left - x));
+            } else if x + w > right {
+                self.hadj.set_value(self.hadj.value() + (x + w - right));
+            }
         }
     }
 
@@ -429,29 +430,37 @@ impl Sheets {
         cr.set_source_rgb(1.0, 1.0, 1.0);
         cr.paint().ok();
 
-        // Rows and columns in view.
-        let first_col = self.col_at(HEAD_W + 0.5).unwrap_or(0);
-        let last_col = self.col_at(w - 1.0).unwrap_or(COLS - 1);
+        // Rows and columns in view: those that stay put, then the scrolled ones.
+        let (fr, fc) = (self.frozen_rows(), self.frozen_cols());
         let top = HEAD_H + self.frozen_h();
-        let first_row = self.row_at(top + 0.5).unwrap_or(0);
+        let left = HEAD_W + self.frozen_w();
+        let first_col = self.col_at(left + 0.5).unwrap_or(fc).max(fc);
+        let last_col = self.col_at(w - 1.0).unwrap_or(COLS - 1);
+        let first_row = self.row_at(top + 0.5).unwrap_or(fr).max(fr);
         let last_row = self.row_at(h - 1.0).unwrap_or(rows.saturating_sub(1));
-        let mut visible: Vec<u32> = (first_row..=last_row.min(rows.saturating_sub(1))).collect();
-        if self.frozen() {
-            visible.retain(|r| *r != 0);
-            visible.insert(0, 0);
-        }
+        let mut visible: Vec<u32> = (0..fr).collect();
+        visible.extend(first_row..=last_row.min(rows.saturating_sub(1)));
         // Hidden rows and columns take no room and draw nothing.
         let row_hidden = |vi: u32| self.view.borrow().get(vi as usize).is_some_and(|r| s.hidden_rows.contains(r));
         let hidden_here: Vec<u32> = visible.iter().copied().filter(|vi| row_hidden(*vi)).collect();
         visible.retain(|vi| !row_hidden(*vi));
-        let shown_cols: Vec<u32> = (first_col..=last_col).filter(|c| !s.hidden_cols.contains(c)).collect();
+        let shown_cols: Vec<u32> = (0..fc).chain(first_col..=last_col).filter(|c| !s.hidden_cols.contains(c)).collect();
+        // The scrolled columns are drawn first, then those that stay put over them.
+        let panes: [(Vec<u32>, f64); 2] = [
+            (shown_cols.iter().copied().filter(|c| *c >= fc).collect(), left),
+            (shown_cols.iter().copied().filter(|c| *c < fc).collect(), HEAD_W),
+        ];
 
         let layout = a.create_pango_layout(None);
         let base_font = pango::FontDescription::from_string("Noto Sans 10");
         let found = self.found.borrow();
         let view = self.view.borrow();
         let merges: Vec<Area> = if self.merges_shown() {
-            s.merges.iter().filter(|m| (m.bottom >= first_row || m.top == 0) && m.top <= last_row && m.right >= first_col && m.left <= last_col).copied().collect()
+            s.merges
+                .iter()
+                .filter(|m| (m.bottom >= first_row || m.top < fr) && m.top <= last_row && (m.right >= first_col || m.left < fc) && m.left <= last_col)
+                .copied()
+                .collect()
         } else {
             Vec::new()
         };
@@ -460,113 +469,118 @@ impl Sheets {
         for &vi in &visible {
             let (y, rh) = self.row_rect(vi);
             let src = view[vi as usize];
-            cr.save().ok();
-            // The frozen row draws over everything; others are clipped below it.
-            let clip_top = if self.frozen() && vi == 0 { HEAD_H } else { top };
-            cr.rectangle(HEAD_W, clip_top, w - HEAD_W, h - clip_top);
-            cr.clip();
-            // Fills, highlights and gridlines.
-            for &c in &shown_cols {
-                let (x, cw) = self.col_rect(c);
-                let f = calc.look(&wb, wb.active, src, c);
-                if let Some(fill) = &f.fill {
-                    let (r, g, b) = rgb(fill);
-                    cr.set_source_rgb(r, g, b);
-                    cr.rectangle(x, y, cw, rh);
-                    cr.fill().ok();
+            // Rows that stay put draw over the scrolled ones; columns likewise.
+            let clip_top = if vi < fr { HEAD_H } else { top };
+            for (cols, clip_left) in &panes {
+                if cols.is_empty() {
+                    continue;
                 }
-                if found.contains(&(src, c)) {
-                    cr.set_source_rgb(1.0, 0.94, 0.55);
-                    cr.rectangle(x, y, cw, rh);
-                    cr.fill().ok();
-                }
-            }
-            cr.set_source_rgb(LINES.0, LINES.1, LINES.2);
-            cr.set_line_width(1.0);
-            for &c in &shown_cols {
-                let (x, cw) = self.col_rect(c);
-                cr.move_to((x + cw).floor() - 0.5, y);
-                cr.line_to((x + cw).floor() - 0.5, y + rh);
-            }
-            cr.move_to(HEAD_W, (y + rh).floor() - 0.5);
-            cr.line_to(w, (y + rh).floor() - 0.5);
-            cr.stroke().ok();
-            // Cell borders, darker than the gridlines.
-            for &c in &shown_cols {
-                let b = calc.look(&wb, wb.active, src, c).borders;
-                if b != 0 && !in_merge(src, c) {
+                cr.save().ok();
+                cr.rectangle(*clip_left, clip_top, w - clip_left, h - clip_top);
+                cr.clip();
+                // Fills, highlights and gridlines.
+                for &c in cols {
                     let (x, cw) = self.col_rect(c);
-                    stroke_borders(cr, b, (x, y, cw, rh));
-                }
-            }
-
-            // Text. Words that don't fit run on into empty cells to their right.
-            for &c in &shown_cols {
-                let raw = s.raw(src, c);
-                if self.editing.get() && (vi, c) == self.cursor.get() || in_merge(src, c) {
-                    continue;
-                }
-                if s.cells.get(&(src, c)).is_some_and(|cell| cell.format.checkbox) {
-                    let on = calc.value(&wb, wb.active, src, c).truthy().unwrap_or(false);
-                    let (x, cw) = self.col_rect(c);
-                    draw_checkbox(cr, check_box((x, y, cw, rh)), on);
-                    continue;
-                }
-                if raw.is_empty() {
-                    continue;
-                }
-                let f = calc.look(&wb, wb.active, src, c);
-                let v = calc.value(&wb, wb.active, src, c);
-                let (shown, right) = display(&v, raw, &f);
-                let mut font = base_font.clone();
-                if f.bold {
-                    font.set_weight(pango::Weight::Bold);
-                }
-                if f.italic {
-                    font.set_style(pango::Style::Italic);
-                }
-                layout.set_font_description(Some(&font));
-                let (x, cw) = self.col_rect(c);
-                let pad = 6.0;
-                set_wrap(&layout, f.wrap, cw - 2.0 * pad);
-                layout.set_text(&shown);
-                let (tw, th) = layout.pixel_size();
-                let align = f.align.unwrap_or(if right { HAlign::Right } else { HAlign::Left });
-                let mut room = cw;
-                if align == HAlign::Left && !f.wrap && tw as f64 > cw - 2.0 * pad && !matches!(v, formula::Value::Num(_)) {
-                    let mut n = c + 1;
-                    while n < COLS && s.raw(src, n).is_empty() && n <= last_col + 1 {
-                        room += self.col_rect(n).1;
-                        n += 1;
+                    let f = calc.look(&wb, wb.active, src, c);
+                    if let Some(fill) = &f.fill {
+                        let (r, g, b) = rgb(fill);
+                        cr.set_source_rgb(r, g, b);
+                        cr.rectangle(x, y, cw, rh);
+                        cr.fill().ok();
+                    }
+                    if found.contains(&(src, c)) {
+                        cr.set_source_rgb(1.0, 0.94, 0.55);
+                        cr.rectangle(x, y, cw, rh);
+                        cr.fill().ok();
                     }
                 }
-                let tx = match align {
-                    HAlign::Left => x + pad,
-                    HAlign::Center => x + (cw - tw as f64) / 2.0,
-                    HAlign::Right => x + cw - pad - tw as f64,
-                };
-                cr.save().ok();
-                cr.rectangle(x + 1.0, y, room - 2.0, rh);
-                cr.clip();
-                let (r, g, b) = match (&v, &f.color) {
-                    (formula::Value::Err(_), _) => (0.776, 0.157, 0.157),
-                    (_, Some(c)) => rgb(c),
-                    _ => INK,
-                };
-                cr.set_source_rgb(r, g, b);
-                // Wrapped text that doesn't fit starts at the top of the cell.
-                let ty = if f.wrap && th as f64 > rh - 4.0 { y + 3.0 } else { y + (rh - th as f64) / 2.0 };
-                let tx = if f.wrap {
-                    align_lines(&layout, align);
-                    x + pad
-                } else {
-                    tx
-                };
-                cr.move_to(tx, ty);
-                pangocairo::functions::show_layout(cr, &layout);
+                cr.set_source_rgb(LINES.0, LINES.1, LINES.2);
+                cr.set_line_width(1.0);
+                for &c in cols {
+                    let (x, cw) = self.col_rect(c);
+                    cr.move_to((x + cw).floor() - 0.5, y);
+                    cr.line_to((x + cw).floor() - 0.5, y + rh);
+                }
+                cr.move_to(HEAD_W, (y + rh).floor() - 0.5);
+                cr.line_to(w, (y + rh).floor() - 0.5);
+                cr.stroke().ok();
+                // Cell borders, darker than the gridlines.
+                for &c in cols {
+                    let b = calc.look(&wb, wb.active, src, c).borders;
+                    if b != 0 && !in_merge(src, c) {
+                        let (x, cw) = self.col_rect(c);
+                        stroke_borders(cr, b, (x, y, cw, rh));
+                    }
+                }
+
+                // Text. Words that don't fit run on into empty cells to their right.
+                for &c in cols {
+                    let raw = s.raw(src, c);
+                    if self.editing.get() && (vi, c) == self.cursor.get() || in_merge(src, c) {
+                        continue;
+                    }
+                    if s.cells.get(&(src, c)).is_some_and(|cell| cell.format.checkbox) {
+                        let on = calc.value(&wb, wb.active, src, c).truthy().unwrap_or(false);
+                        let (x, cw) = self.col_rect(c);
+                        draw_checkbox(cr, check_box((x, y, cw, rh)), on);
+                        continue;
+                    }
+                    if raw.is_empty() {
+                        continue;
+                    }
+                    let f = calc.look(&wb, wb.active, src, c);
+                    let v = calc.value(&wb, wb.active, src, c);
+                    let (shown, right) = display(&v, raw, &f);
+                    let mut font = base_font.clone();
+                    if f.bold {
+                        font.set_weight(pango::Weight::Bold);
+                    }
+                    if f.italic {
+                        font.set_style(pango::Style::Italic);
+                    }
+                    layout.set_font_description(Some(&font));
+                    let (x, cw) = self.col_rect(c);
+                    let pad = 6.0;
+                    set_wrap(&layout, f.wrap, cw - 2.0 * pad);
+                    layout.set_text(&shown);
+                    let (tw, th) = layout.pixel_size();
+                    let align = f.align.unwrap_or(if right { HAlign::Right } else { HAlign::Left });
+                    let mut room = cw;
+                    if align == HAlign::Left && !f.wrap && tw as f64 > cw - 2.0 * pad && !matches!(v, formula::Value::Num(_)) {
+                        let mut n = c + 1;
+                        while n < COLS && s.raw(src, n).is_empty() && n <= last_col + 1 {
+                            room += self.col_rect(n).1;
+                            n += 1;
+                        }
+                    }
+                    let tx = match align {
+                        HAlign::Left => x + pad,
+                        HAlign::Center => x + (cw - tw as f64) / 2.0,
+                        HAlign::Right => x + cw - pad - tw as f64,
+                    };
+                    cr.save().ok();
+                    cr.rectangle(x + 1.0, y, room - 2.0, rh);
+                    cr.clip();
+                    let (r, g, b) = match (&v, &f.color) {
+                        (formula::Value::Err(_), _) => (0.776, 0.157, 0.157),
+                        (_, Some(c)) => rgb(c),
+                        _ => INK,
+                    };
+                    cr.set_source_rgb(r, g, b);
+                    // Wrapped text that doesn't fit starts at the top of the cell.
+                    let ty = if f.wrap && th as f64 > rh - 4.0 { y + 3.0 } else { y + (rh - th as f64) / 2.0 };
+                    let tx = if f.wrap {
+                        align_lines(&layout, align);
+                        x + pad
+                    } else {
+                        tx
+                    };
+                    cr.move_to(tx, ty);
+                    pangocairo::functions::show_layout(cr, &layout);
+                    cr.restore().ok();
+                }
                 cr.restore().ok();
             }
-            cr.restore().ok();
         }
         set_wrap(&layout, false, 0.0);
 
@@ -574,8 +588,9 @@ impl Sheets {
         for m in &merges {
             let (x, y, mw, mh) = self.area_rect(*m);
             cr.save().ok();
-            let clip_top = if self.frozen() && m.top == 0 { HEAD_H } else { top };
-            cr.rectangle(HEAD_W, clip_top, w - HEAD_W, h - clip_top);
+            let clip_top = if m.top < fr { HEAD_H } else { top };
+            let clip_left = if m.left < fc { HEAD_W } else { left };
+            cr.rectangle(clip_left, clip_top, w - clip_left, h - clip_top);
             cr.clip();
             let f = calc.look(&wb, wb.active, m.top, m.left);
             let (r, g, b) = f.fill.as_deref().map(rgb).unwrap_or((1.0, 1.0, 1.0));
@@ -625,7 +640,7 @@ impl Sheets {
             }
             if f.borders != 0 {
                 cr.reset_clip();
-                cr.rectangle(HEAD_W, clip_top, w - HEAD_W, h - clip_top);
+                cr.rectangle(clip_left, clip_top, w - clip_left, h - clip_top);
                 cr.clip();
                 stroke_borders(cr, f.borders, (x, y, mw, mh));
             }
@@ -743,26 +758,38 @@ impl Sheets {
         let small = pango::FontDescription::from_string("JetBrains Mono 8.5");
         layout.set_font_description(Some(&small));
         let active_head = mix(bg, accent, 0.18);
-        for &c in &shown_cols {
-            let (x, cw) = self.col_rect(c);
-            if c >= sel.left && c <= sel.right {
-                cr.set_source_rgb(active_head.0, active_head.1, active_head.2);
-                cr.rectangle(x.max(HEAD_W), 0.0, cw, HEAD_H);
+        for (cols, clip_left) in &panes {
+            cr.save().ok();
+            cr.rectangle(*clip_left, 0.0, w - clip_left, HEAD_H);
+            cr.clip();
+            // Labels that stay put cover those scrolled under them.
+            cr.set_source_rgb(head_bg.0, head_bg.1, head_bg.2);
+            if *clip_left == HEAD_W && !cols.is_empty() {
+                cr.rectangle(HEAD_W, 0.0, left - HEAD_W, HEAD_H);
                 cr.fill().ok();
             }
-            layout.set_text(&formula::col_name(c));
-            let (tw, th) = layout.pixel_size();
-            let on = c >= sel.left && c <= sel.right;
-            let col = if on { text } else { dim };
-            cr.set_source_rgb(col.0, col.1, col.2);
-            cr.move_to(x + (cw - tw as f64) / 2.0, (HEAD_H - th as f64) / 2.0);
-            if x + cw > HEAD_W {
-                pangocairo::functions::show_layout(cr, &layout);
+            for &c in cols {
+                let (x, cw) = self.col_rect(c);
+                if c >= sel.left && c <= sel.right {
+                    cr.set_source_rgb(active_head.0, active_head.1, active_head.2);
+                    cr.rectangle(x.max(HEAD_W), 0.0, cw, HEAD_H);
+                    cr.fill().ok();
+                }
+                layout.set_text(&formula::col_name(c));
+                let (tw, th) = layout.pixel_size();
+                let on = c >= sel.left && c <= sel.right;
+                let col = if on { text } else { dim };
+                cr.set_source_rgb(col.0, col.1, col.2);
+                cr.move_to(x + (cw - tw as f64) / 2.0, (HEAD_H - th as f64) / 2.0);
+                if x + cw > HEAD_W {
+                    pangocairo::functions::show_layout(cr, &layout);
+                }
+                cr.set_source_rgb(hairline.0, hairline.1, hairline.2);
+                cr.move_to((x + cw).floor() - 0.5, 4.0);
+                cr.line_to((x + cw).floor() - 0.5, HEAD_H - 4.0);
+                cr.stroke().ok();
             }
-            cr.set_source_rgb(hairline.0, hairline.1, hairline.2);
-            cr.move_to((x + cw).floor() - 0.5, 4.0);
-            cr.line_to((x + cw).floor() - 0.5, HEAD_H - 4.0);
-            cr.stroke().ok();
+            cr.restore().ok();
         }
         // Repaint the corner over column labels that scrolled under it.
         cr.set_source_rgb(head_bg.0, head_bg.1, head_bg.2);
@@ -770,9 +797,13 @@ impl Sheets {
         cr.fill().ok();
         for &vi in &visible {
             let (y, rh) = self.row_rect(vi);
-            if y + rh <= HEAD_H {
+            let clip_top = if vi < fr { HEAD_H } else { top };
+            if y + rh <= clip_top {
                 continue;
             }
+            cr.save().ok();
+            cr.rectangle(0.0, clip_top, HEAD_W, h - clip_top);
+            cr.clip();
             let on = vi >= sel.top && vi <= sel.bottom;
             if on {
                 cr.set_source_rgb(active_head.0, active_head.1, active_head.2);
@@ -785,11 +816,12 @@ impl Sheets {
             cr.set_source_rgb(col.0, col.1, col.2);
             cr.move_to(HEAD_W - 8.0 - tw as f64, y + (rh - th as f64) / 2.0);
             pangocairo::functions::show_layout(cr, &layout);
+            cr.restore().ok();
         }
         // Where rows or columns are hidden: a mark across the heading's edge.
         cr.set_source_rgb(accent.0, accent.1, accent.2);
         cr.set_line_width(2.0);
-        for c in (first_col..=last_col).filter(|c| s.hidden_cols.contains(c)) {
+        for c in (0..fc).chain(first_col..=last_col).filter(|c| s.hidden_cols.contains(c)) {
             let (x, _) = self.col_rect(c);
             if x > HEAD_W {
                 cr.move_to(x, 5.0);
@@ -814,14 +846,18 @@ impl Sheets {
         cr.move_to(HEAD_W - 0.5, 0.0);
         cr.line_to(HEAD_W - 0.5, h);
         cr.stroke().ok();
-        if self.frozen() {
-            let y = HEAD_H + self.frozen_h();
-            cr.set_source_rgb(border.0, border.1, border.2);
-            cr.set_line_width(2.0);
-            cr.move_to(0.0, y);
-            cr.line_to(w, y);
-            cr.stroke().ok();
+        // The edges of what stays put.
+        cr.set_source_rgb(border.0, border.1, border.2);
+        cr.set_line_width(2.0);
+        if fr > 0 {
+            cr.move_to(0.0, top);
+            cr.line_to(w, top);
         }
+        if fc > 0 {
+            cr.move_to(left, 0.0);
+            cr.line_to(left, h);
+        }
+        cr.stroke().ok();
     }
 
     // ---------- Mouse ----------

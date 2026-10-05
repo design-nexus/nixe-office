@@ -57,7 +57,7 @@ pub fn build(page: &Page) {
     g.add(&widgets::segmented_row(
         "Paper size",
         "For new files, PDF export and printing.",
-        widgets::opts(&[("letter", "Letter"), ("a4", "A4")]),
+        widgets::opts(&crate::print::PAPERS.map(|p| (p.0, p.1))),
         &p.paper,
         |v| prefs::update(|p| p.paper = v),
     ));

@@ -36,7 +36,9 @@ impl Sheets {
         }
         let ctx = crate::print::text_context();
         cr.save().ok();
-        cr.rectangle(HEAD_W, HEAD_H, w - HEAD_W, h - HEAD_H);
+        // Charts scroll with the cells, under any rows or columns kept in view.
+        let (left, top) = (HEAD_W + self.frozen_w(), HEAD_H + self.frozen_h());
+        cr.rectangle(left, top, w - left, h - top);
         cr.clip();
         for (i, c) in s.charts.iter().enumerate() {
             let (x, y, cw, ch) = self.chart_rect(c);

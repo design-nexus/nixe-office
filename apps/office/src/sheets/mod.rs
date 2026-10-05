@@ -7,6 +7,7 @@ pub mod formula;
 mod functions;
 pub(super) mod grid;
 pub mod model;
+mod numfmt;
 mod pages;
 mod menu;
 mod placed;
@@ -78,9 +79,10 @@ struct Controls {
     bold: gtk::ToggleButton,
     italic: gtk::ToggleButton,
     numbers: Vec<(NumFmt, gtk::ToggleButton)>,
+    formats: gtk::MenuButton,
     align: Vec<(Option<HAlign>, gtk::ToggleButton)>,
     header: gtk::ToggleButton,
-    freeze: gtk::ToggleButton,
+    freeze: gtk::MenuButton,
     chart: gtk::ToggleButton,
     color: Rc<color::ColorButton>,
     fill: Rc<color::ColorButton>,
@@ -316,12 +318,17 @@ impl Sheets {
                 if let Some(s) = me.upgrade()
                     && !s.syncing.get()
                 {
-                    s.format_selection(move |f| f.number = fmt);
+                    s.format_selection(move |f| {
+                        f.number = fmt;
+                        f.pattern = None;
+                    });
                 }
             });
             g.append(&b);
             numbers.push((fmt, b));
         }
+        let formats = self.formats_button();
+        g.append(&formats);
         flow.append(&g);
 
         let g = group();
@@ -408,9 +415,7 @@ impl Sheets {
             toggle("nxo-table-rows-split-symbolic", "First row is a header (sorting and filtering leave it on top)", |s, on| {
                 s.change(|wb| wb.sheet_mut().header = on);
             });
-        let freeze = toggle("nxo-snowflake-symbolic", "Keep the first row in view while scrolling", |s, on| {
-            s.change(|wb| wb.sheet_mut().freeze = on);
-        });
+        let freeze = self.freeze_button();
         g.append(&header);
         g.append(&freeze);
         flow.append(&g);
@@ -421,8 +426,150 @@ impl Sheets {
         flow.append(&g);
 
         bar.append(&doc::file_menu(Vec::new()));
-        *self.controls.borrow_mut() = Some(Controls { bold, italic, numbers, align, header, freeze, chart, color, fill, filter, wrap, checkbox });
+        *self.controls.borrow_mut() = Some(Controls { bold, italic, numbers, formats, align, header, freeze, chart, color, fill, filter, wrap, checkbox });
         bar
+    }
+
+    /// Number formats beyond the toolbar's: thousands, currencies, date styles, times,
+    /// and a format code of one's own.
+    fn formats_button(self: &Rc<Self>) -> gtk::MenuButton {
+        let menu = gtk::MenuButton::new();
+        menu.set_icon_name("nxo-chevron-down-symbolic");
+        menu.add_css_class("bar-button");
+        menu.set_tooltip_text(Some("More number formats"));
+        menu.set_valign(gtk::Align::Center);
+        let pop = gtk::Popover::new();
+        pop.add_css_class("menu-popover");
+        let content = widgets::vbox(0);
+        let scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_height(true)
+            .max_content_height(420)
+            .build();
+        let list = widgets::vbox(0);
+        // Each shown with an example, so the choice is easy to see.
+        let sample = |code: &str| {
+            let n = if code.contains(['d', 'y', 'h']) { formula::date_serial(2026, 10, 5) + 14.5 / 24.0 } else { 1234.5 };
+            numfmt::render(code, n).unwrap_or_default()
+        };
+        let apply = |s: &Sheets, code: Option<String>| {
+            s.format_selection(move |f| {
+                f.number = NumFmt::General;
+                f.pattern = code.clone();
+            });
+        };
+        for (name, code) in numfmt::PRESETS {
+            let b = gtk::Button::new();
+            b.add_css_class("menu-item");
+            let row = widgets::hbox(16);
+            let l = widgets::label(name, "");
+            l.set_xalign(0.0);
+            l.set_hexpand(true);
+            row.append(&l);
+            row.append(&widgets::label(&sample(code), "dim"));
+            b.set_child(Some(&row));
+            let (me, p, code) = (self.weak(), pop.clone(), code.to_string());
+            b.connect_clicked(move |_| {
+                p.popdown();
+                if let Some(s) = me.upgrade() {
+                    apply(&s, Some(code.clone()));
+                }
+            });
+            list.append(&b);
+        }
+        scroll.set_child(Some(&list));
+        content.append(&scroll);
+
+        // A code of one's own, with a preview as it's typed.
+        let custom = widgets::vbox(6);
+        custom.add_css_class("prompt-box");
+        custom.append(&widgets::label("Format code", "dim"));
+        let entry = gtk::Entry::new();
+        entry.set_placeholder_text(Some("#,##0.00 \"kg\""));
+        custom.append(&entry);
+        let preview = widgets::label("", "dim");
+        preview.set_xalign(0.0);
+        custom.append(&preview);
+        let p = preview.clone();
+        entry.connect_changed(move |e| {
+            let code = e.text();
+            p.set_text(&match numfmt::render(&code, 1234.5) {
+                _ if code.is_empty() => String::new(),
+                Some(t) => format!("1234.5 shows as {t}"),
+                None => "That code isn't understood here.".into(),
+            });
+        });
+        let (me, p) = (self.weak(), pop.clone());
+        entry.connect_activate(move |e| {
+            let code = e.text().trim().to_string();
+            if numfmt::render(&code, 1.0).is_none() {
+                return;
+            }
+            p.popdown();
+            if let Some(s) = me.upgrade() {
+                apply(&s, (!code.is_empty()).then_some(code));
+            }
+        });
+        content.append(&custom);
+        // Opening the menu shows the selection's own code.
+        let (me, e) = (self.weak(), entry.clone());
+        pop.connect_show(move |_| {
+            let Some(s) = me.upgrade() else { return };
+            let (r, c) = s.cursor.get();
+            let code = s.wb.borrow().sheet().format(s.src_row(r), c).pattern.unwrap_or_default();
+            e.set_text(&code);
+        });
+        pop.set_child(Some(&content));
+        menu.set_popover(Some(&pop));
+        menu
+    }
+
+    /// Keep rows and columns in view while the rest scrolls.
+    fn freeze_button(self: &Rc<Self>) -> gtk::MenuButton {
+        let menu = gtk::MenuButton::new();
+        menu.set_icon_name("nxo-snowflake-symbolic");
+        menu.add_css_class("bar-button");
+        menu.set_tooltip_text(Some("Keep rows or columns in view while scrolling"));
+        menu.set_valign(gtk::Align::Center);
+        let pop = gtk::Popover::new();
+        pop.add_css_class("menu-popover");
+        let list = widgets::vbox(0);
+        // Each item: its label, and how many rows and columns it keeps in view.
+        type Freeze = (&'static str, fn(&Sheets) -> (u32, u32));
+        let items: [Freeze; 4] = [
+            ("Keep the top row in view", |_| (1, 0)),
+            ("Keep the first column in view", |_| (0, 1)),
+            ("Keep the rows above and columns left of the cursor", |s| {
+                let (r, c) = s.cursor.get();
+                (r.min(MAX_FROZEN), c.min(MAX_FROZEN))
+            }),
+            ("Let everything scroll", |_| (0, 0)),
+        ];
+        for (label, f) in items {
+            let b = gtk::Button::with_label(label);
+            b.add_css_class("menu-item");
+            if let Some(l) = b.child().and_downcast::<gtk::Label>() {
+                l.set_xalign(0.0);
+            }
+            let (me, p) = (self.weak(), pop.clone());
+            b.connect_clicked(move |_| {
+                p.popdown();
+                let Some(s) = me.upgrade() else { return };
+                let (rows, cols) = f(&s);
+                s.vadj.set_value(0.0);
+                s.hadj.set_value(0.0);
+                s.change(|wb| {
+                    let sh = wb.sheet_mut();
+                    sh.freeze_rows = rows;
+                    sh.freeze_cols = cols;
+                });
+                s.area.grab_focus();
+            });
+            list.append(&b);
+        }
+        pop.set_child(Some(&list));
+        menu.set_popover(Some(&pop));
+        menu
     }
 
     fn filter_button(self: &Rc<Self>) -> gtk::MenuButton {
@@ -1203,7 +1350,14 @@ impl Sheets {
             ctl.checkbox.set_active(f.checkbox);
             ctl.italic.set_active(f.italic);
             for (n, b) in &ctl.numbers {
-                b.set_active(*n == f.number);
+                b.set_active(*n == f.number && f.pattern.is_none());
+            }
+            if f.pattern.is_some() {
+                ctl.formats.add_css_class("active-filter");
+                ctl.formats.set_tooltip_text(Some(&format!("Number format: {}", f.pattern.as_deref().unwrap_or(""))));
+            } else {
+                ctl.formats.remove_css_class("active-filter");
+                ctl.formats.set_tooltip_text(Some("More number formats"));
             }
             for (al, b) in &ctl.align {
                 b.set_active(*al == f.align);
@@ -1211,7 +1365,11 @@ impl Sheets {
             ctl.color.set_current(f.color.as_deref().or(Some("#202329")));
             ctl.fill.set_current(f.fill.as_deref());
             ctl.header.set_active(sheet.header);
-            ctl.freeze.set_active(sheet.freeze);
+            if sheet.freeze_rows + sheet.freeze_cols > 0 {
+                ctl.freeze.add_css_class("active-filter");
+            } else {
+                ctl.freeze.remove_css_class("active-filter");
+            }
             ctl.chart.set_active(self.chart.pane.is_visible());
             if sheet.filter.is_some() {
                 ctl.filter.add_css_class("active-filter");
@@ -1655,6 +1813,29 @@ pub mod tests {
         assert_eq!(s.wb.borrow().sheet().raw(1, 1), "=B1*2");
         Editor::undo(&*s);
         assert_eq!(s.wb.borrow().sheet().raw(1, 0), "=A1*2");
+
+        // Frozen panes: the first row and column stay put while the rest scrolls.
+        s.area.set_size_request(800, 600);
+        s.change(|wb| {
+            wb.sheet_mut().freeze_rows = 1;
+            wb.sheet_mut().freeze_cols = 1;
+        });
+        s.update_adjustments();
+        s.vadj.set_value(300.0);
+        s.hadj.set_value(500.0);
+        let (y0, _) = s.row_rect(0);
+        let (x0, _) = s.col_rect(0);
+        assert_eq!((y0, x0), (grid::HEAD_H, grid::HEAD_W));
+        assert_eq!(s.cell_at(grid::HEAD_W + 5.0, grid::HEAD_H + 5.0), Some((0, 0)));
+        // Just past the kept row and column: what's scrolled into view there.
+        let (r, c) = s.cell_at(grid::HEAD_W + s.frozen_w() + 1.0, grid::HEAD_H + s.frozen_h() + 1.0).unwrap();
+        assert!(r > 5 && c > 2, "{r} {c}");
+        s.change(|wb| {
+            wb.sheet_mut().freeze_rows = 0;
+            wb.sheet_mut().freeze_cols = 0;
+        });
+        s.vadj.set_value(0.0);
+        s.hadj.set_value(0.0);
 
         // Hide row 2: stepping down from row 1 lands on row 3; showing it again.
         s.anchor.set((1, 0));

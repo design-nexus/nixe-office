@@ -16,18 +16,42 @@ pub struct Paper {
 
 pub const LETTER: Paper = Paper { width: 612.0, height: 792.0 };
 pub const A4: Paper = Paper { width: 595.28, height: 841.89 };
+pub const LEGAL: Paper = Paper { width: 612.0, height: 1008.0 };
+pub const A5: Paper = Paper { width: 419.53, height: 595.28 };
+
+/// The papers offered: (id, name, size), portrait.
+pub const PAPERS: [(&str, &str, Paper); 4] =
+    [("letter", "Letter", LETTER), ("a4", "A4", A4), ("legal", "Legal", LEGAL), ("a5", "A5", A5)];
 
 impl Paper {
     pub fn from_id(id: &str) -> Paper {
-        if id == "a4" { A4 } else { LETTER }
+        PAPERS.iter().find(|p| p.0 == id).map_or(LETTER, |p| p.2)
     }
 
+    /// The paper this size is, either way round; Letter when it's none of them.
     pub fn id(self) -> &'static str {
-        if (self.width - A4.width).abs() < 1.0 { "a4" } else { "letter" }
+        Paper::closest(self.width, self.height).unwrap_or("letter")
+    }
+
+    /// The paper within a few points of `w` × `h`, either way round.
+    pub fn closest(w: f64, h: f64) -> Option<&'static str> {
+        let (short, long) = (w.min(h), w.max(h));
+        PAPERS.iter().find(|p| (p.2.width - short).abs() < 6.0 && (p.2.height - long).abs() < 6.0).map(|p| p.0)
     }
 
     pub fn name(self) -> &'static str {
-        if self.id() == "a4" { "A4" } else { "Letter" }
+        let id = self.id();
+        PAPERS.iter().find(|p| p.0 == id).map_or("Letter", |p| p.1)
+    }
+
+    /// Turned on its side.
+    pub fn landscape(self) -> Paper {
+        Paper { width: self.width.max(self.height), height: self.width.min(self.height) }
+    }
+
+    /// Paper measured in centimetres rather than inches.
+    pub fn metric(id: &str) -> bool {
+        id.starts_with('a')
     }
 
     /// The paper chosen in Settings, for new documents.
@@ -143,5 +167,9 @@ mod tests {
         assert_eq!(Paper::from_id("a4").id(), "a4");
         assert_eq!(Paper::from_id("letter").id(), "letter");
         assert_eq!(Paper::from_id("anything").name(), "Letter");
+        for (id, name, _) in PAPERS {
+            assert_eq!(Paper::from_id(id).id(), id);
+            assert_eq!(Paper::from_id(id).landscape().name(), name);
+        }
     }
 }

@@ -1054,12 +1054,21 @@ impl Writer {
         list.append(&widgets::segmented_row(
             "Paper",
             "",
-            widgets::opts(&[("letter", "Letter"), ("a4", "A4")]),
+            widgets::opts(&crate::print::PAPERS.map(|p| (p.0, p.1))),
             &s.paper,
             move |v| *pp.borrow_mut() = v,
         ));
-        // Margins in inches on letter paper, centimetres on A4.
-        let metric = s.paper == "a4";
+        let landscape = Rc::new(Cell::new(s.landscape));
+        let ll = landscape.clone();
+        list.append(&widgets::segmented_row(
+            "Orientation",
+            "",
+            widgets::opts(&[("portrait", "Portrait"), ("landscape", "Landscape")]),
+            if s.landscape { "landscape" } else { "portrait" },
+            move |v| ll.set(v == "landscape"),
+        ));
+        // Margins in inches on US paper, centimetres on A4 and A5.
+        let metric = crate::print::Paper::metric(&s.paper);
         let (unit, per) = if metric { ("cm", 72.0 / 2.54) } else { ("in", 72.0) };
         let spins: Vec<gtk::SpinButton> = s
             .margins
@@ -1122,6 +1131,7 @@ impl Writer {
             }
             let new = PageSetup {
                 paper: paper.borrow().clone(),
+                landscape: landscape.get(),
                 margins,
                 header: header.text().to_string(),
                 footer: footer.text().to_string(),

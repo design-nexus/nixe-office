@@ -317,6 +317,16 @@ impl Workbook {
         let sizes = |m: &mut BTreeMap<u32, u32>| {
             *m = std::mem::take(m).into_iter().filter_map(|(k, v)| Some((edit.map(k, End::Single)?, v))).collect();
         };
+        // Rows or columns put in or taken out among those that stay put change their number.
+        let frozen = |n: &mut u32| {
+            if edit.at < *n {
+                *n = if edit.insert { (*n + edit.n).min(MAX_FROZEN) } else { *n - (edit.at + edit.n).min(*n) + edit.at };
+            }
+        };
+        match edit.axis {
+            Axis::Rows => frozen(&mut s.freeze_rows),
+            Axis::Cols => frozen(&mut s.freeze_cols),
+        }
         let hidden = |set: &mut BTreeSet<u32>| {
             *set = std::mem::take(set).into_iter().filter_map(|k| edit.map(k, End::Single)).collect();
         };
@@ -431,6 +441,7 @@ mod tests {
         wb.sheets[0].merges.push(Area::new(3, 0, 6, 1));
         wb.sheets[0].row_heights.insert(4, 50);
         wb.sheets[0].hidden_rows.extend([2, 6]);
+        wb.sheets[0].freeze_rows = 3;
         wb.add_sheet();
         wb.active = 1;
         wb.set(0, 0, "='Sheet 1'!A5");
@@ -441,6 +452,8 @@ mod tests {
         assert_eq!(s.row_heights.get(&1), Some(&50));
         // Row 3 (hidden) went; row 7 (hidden) is now row 4.
         assert_eq!(s.hidden_rows.iter().copied().collect::<Vec<_>>(), [3]);
+        // Rows 2 and 3 of the 3 kept in view went.
+        assert_eq!(s.freeze_rows, 1);
         assert_eq!(s.merges, vec![Area::new(1, 0, 3, 1)]);
         assert_eq!(wb.sheets[1].raw(0, 0), "='Sheet 1'!A2");
         // Inserting refuses to push cells off the sheet.

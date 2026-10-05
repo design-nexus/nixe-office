@@ -64,16 +64,57 @@ fn argb(v: &str) -> Option<String> {
     (hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit())).then(|| format!("#{}", hex.to_lowercase()))
 }
 
-fn num_fmt(id: u32, code: Option<&str>) -> NumFmt {
-    match id {
-        0 | 1 | 3 | 49 => return NumFmt::General,
-        2 | 4 => return NumFmt::Decimal,
-        5..=8 => return NumFmt::Currency,
-        9 | 10 => return NumFmt::Percent,
-        14..=17 | 22 => return NumFmt::Date,
+/// A cell's number format: one of ours when it matches, else Excel's code kept as is.
+fn num_fmt(id: u32, code: Option<&str>) -> (NumFmt, Option<String>) {
+    // Excel's built-in formats, by number.
+    let builtin = match id {
+        0 | 49 => return (NumFmt::General, None),
+        4 => return (NumFmt::Decimal, None),
+        5..=8 => return (NumFmt::Currency, None),
+        14 => return (NumFmt::Date, None),
+        1 => "0",
+        2 => "0.00",
+        3 => "#,##0",
+        9 => "0%",
+        10 => "0.00%",
+        15 => "d-mmm-yy",
+        16 => "d-mmm",
+        17 => "mmm-yy",
+        18 => "h:mm AM/PM",
+        19 => "h:mm:ss AM/PM",
+        20 => "h:mm",
+        21 => "h:mm:ss",
+        22 => "m/d/yyyy h:mm",
+        37 => "#,##0;(#,##0)",
+        38 => "#,##0;[Red](#,##0)",
+        39 => "#,##0.00;(#,##0.00)",
+        40 => "#,##0.00;[Red](#,##0.00)",
+        45 => "mm:ss",
+        46 => "[h]:mm:ss",
+        47 => "mm:ss.0",
+        _ => "",
+    };
+    if !builtin.is_empty() {
+        return (NumFmt::General, Some(builtin.to_string()));
+    }
+    let Some(code) = code else { return (NumFmt::General, None) };
+    // The codes this app writes for its own formats.
+    match code {
+        "General" => return (NumFmt::General, None),
+        "#,##0.00" => return (NumFmt::Decimal, None),
+        "$#,##0.00" | "\"$\"#,##0.00" => return (NumFmt::Currency, None),
+        "0.0%" => return (NumFmt::Percent, None),
+        "yyyy-mm-dd" => return (NumFmt::Date, None),
         _ => {}
     }
-    let Some(code) = code else { return NumFmt::General };
+    if super::numfmt::render(code, 1.0).is_some() {
+        return (NumFmt::General, Some(code.to_string()));
+    }
+    (num_kind(code), None)
+}
+
+/// The nearest of our formats to a code we can't show.
+fn num_kind(code: &str) -> NumFmt {
     let lower = code.to_lowercase();
     // Strip quoted text and colour codes before looking at the pattern.
     let bare: String = lower.split('"').step_by(2).collect::<String>().split(['[', ']']).step_by(2).collect();
@@ -249,8 +290,10 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
                             _ => None,
                         }
                     });
+                let (number, pattern) = num_fmt(id, codes.get(&id).map(String::as_str));
                 xfs.push(Format {
-                    number: num_fmt(id, codes.get(&id).map(String::as_str)),
+                    number,
+                    pattern,
                     bold,
                     italic,
                     align,
@@ -303,13 +346,16 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
                 }
             }
         }
-        if doc.descendants().any(|n| {
-            n.has_tag_name("pane")
-                && n.attribute("ySplit").is_some_and(|y| y == "1")
-                && n.attribute("state").is_some_and(|s| s.starts_with("frozen"))
-        }) {
-            sheet.freeze = true;
-            sheet.header = true;
+        if let Some(pane) = doc
+            .descendants()
+            .find(|n| n.has_tag_name("pane") && n.attribute("state").is_some_and(|s| s.starts_with("frozen")))
+        {
+            let split = |k: &str| pane.attribute(k).and_then(|v| v.parse::<f64>().ok()).map_or(0, |v| v as u32);
+            sheet.freeze_rows = split("ySplit").min(MAX_FROZEN);
+            sheet.freeze_cols = split("xSplit").min(MAX_FROZEN);
+            if sheet.freeze_rows == 1 {
+                sheet.header = true;
+            }
         }
         // Shared formulas: the first cell holds the text, the others say which one.
         let mut shared_f: HashMap<String, (String, u32, u32)> = HashMap::new();
@@ -613,6 +659,9 @@ fn xlsx_format(f: &Format) -> rust_xlsxwriter::Format {
         Some(HAlign::Right) => x.set_align(FormatAlign::Right),
         None => x,
     };
+    if let Some(p) = &f.pattern {
+        return x.set_num_format(p);
+    }
     match f.number {
         NumFmt::General => x,
         NumFmt::Decimal => x.set_num_format("#,##0.00"),
@@ -765,8 +814,8 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
         for (r, h) in &s.row_heights {
             ws.set_row_height_pixels(*r, *h)?;
         }
-        if s.freeze {
-            ws.set_freeze_panes(1, 0)?;
+        if s.freeze_rows > 0 || s.freeze_cols > 0 {
+            ws.set_freeze_panes(s.freeze_rows, s.freeze_cols as u16)?;
         }
         // Tables first: they write their heading row, which the cells below then fill in.
         for t in &s.tables {
@@ -891,7 +940,8 @@ mod tests {
         });
         wb.set_col_w(0, 180);
         wb.set_row_h(0, 40);
-        wb.sheet_mut().freeze = true;
+        wb.sheet_mut().freeze_rows = 1;
+        wb.sheet_mut().freeze_cols = 2;
         wb.sheet_mut().chart = Some(Chart { range: "A1:B3".into(), kind: ChartKind::Bar });
         wb.set(8, 0, "Merged");
         wb.merge(Area::new(8, 0, 9, 2));
@@ -929,6 +979,7 @@ mod tests {
         wb.set(0, 0, "='Sheet 1'!B4");
         wb.active = 0;
         wb.hide_rows(6, 7, true);
+        wb.format(Area::cell(2, 1), |f| f.pattern = Some("#,##0.0 \"kg\"".into()));
         wb.hide_cols(3, 3, true);
 
         let calc = Calc::new(&wb, 0.0);
@@ -957,8 +1008,9 @@ mod tests {
         assert_eq!(s.row_h(0), 40);
         assert_eq!(s.hidden_rows.iter().copied().collect::<Vec<_>>(), [6, 7]);
         assert_eq!(s.hidden_cols.iter().copied().collect::<Vec<_>>(), [3]);
+        assert_eq!(s.format(2, 1).pattern.as_deref(), Some("#,##0.0 \"kg\""));
         assert_eq!((s.row_h(6), s.size_of_row(6)), (0, ROW_H));
-        assert!(s.freeze);
+        assert_eq!((s.freeze_rows, s.freeze_cols), (1, 2));
         assert_eq!(s.merges, [Area::new(8, 0, 9, 2)]);
         assert_eq!(s.raw(8, 0), "Merged");
         assert_eq!(s.comment(1, 1), Some("Due on the 1st"));
@@ -1029,10 +1081,15 @@ mod tests {
 
     #[test]
     fn number_formats_map() {
-        assert_eq!(num_fmt(164, Some("\"$\"#,##0.00")), NumFmt::Currency);
-        assert_eq!(num_fmt(165, Some("dd/mm/yyyy")), NumFmt::Date);
-        assert_eq!(num_fmt(166, Some("0.0%")), NumFmt::Percent);
-        assert_eq!(num_fmt(167, Some("[Red]0.00")), NumFmt::Decimal);
-        assert_eq!(num_fmt(14, None), NumFmt::Date);
+        let ours = |n| (n, None);
+        let code = |c: &str| (NumFmt::General, Some(c.to_string()));
+        assert_eq!(num_fmt(164, Some("\"$\"#,##0.00")), ours(NumFmt::Currency));
+        assert_eq!(num_fmt(166, Some("0.0%")), ours(NumFmt::Percent));
+        assert_eq!(num_fmt(14, None), ours(NumFmt::Date));
+        assert_eq!(num_fmt(3, None), code("#,##0"));
+        assert_eq!(num_fmt(165, Some("dd/mm/yyyy")), code("dd/mm/yyyy"));
+        assert_eq!(num_fmt(167, Some("[Red]0.00")), code("[Red]0.00"));
+        // A code that can't be shown: the nearest of ours.
+        assert_eq!(num_fmt(168, Some("0.00E+00")), ours(NumFmt::Decimal));
     }
 }

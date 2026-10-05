@@ -36,7 +36,7 @@ fn layout(wb: &mut Workbook, headers: &[&str], widths: &[(u32, u32)]) {
     for (c, w) in widths {
         wb.set_col_w(*c, *w);
     }
-    wb.sheet_mut().freeze = true;
+    wb.sheet_mut().freeze_rows = 1;
 }
 
 pub fn build(id: &str) -> Option<Workbook> {

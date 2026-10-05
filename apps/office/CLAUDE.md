@@ -72,7 +72,10 @@
   every value per change, working top to bottom so chains don't recurse deeply. Sorting
   reorders rows (undoable; refused when merged cells are in the data); filtering is a
   view (`view_rows`). Merged cells (`Sheet.merges`) only show as merged while no filter
-  is on. Highlight rules (`rules.rs`) apply through `Calc::look`, used by the grid and
+  is on. Frozen panes are `Sheet.freeze_rows`/`freeze_cols` (on-screen rows; the grid
+  draws the scrolled columns, then the frozen ones over them, each clipped to its pane).
+  Number formats are `NumFmt` (the toolbar's five) or `Format.pattern`, an Excel format
+  code drawn by `numfmt.rs` and written to Excel as is. Highlight rules (`rules.rs`) apply through `Calc::look`, used by the grid and
   print. Functions beyond the core live in `functions.rs`; borders, wrapped cells and
   Summarize (SUMIFS-style formulas on a new sheet) in `summary.rs`. The grid (`grid.rs`) is
   a `DrawingArea` with its own adjustments; selection is in on-screen rows
@@ -106,7 +109,8 @@
   their centre (`Object::rotation`; hit-testing goes through `to_local`). Slide charts
   reuse `sheets::chart::draw`. Builds are `Object::build` (in) and `build_out`,
   played in `Slide::steps` order; Magic Move pairs objects with `Object::same_as` and
-  is written as PowerPoint's Morph.
+  is written as PowerPoint's Morph. In the slideshow, digits then Enter go to a slide and
+  L toggles the laser pointer (drawn by `Show::paint_extras` over the live slide).
 - **Office files** are written by hand as XML strings (`write/docx.rs`,
   `present/pptx.rs`, `present/pptx_more.rs` for tables, charts, transitions and
   timing) and read with roxmltree.

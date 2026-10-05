@@ -38,7 +38,8 @@ Then:
     underlined in green, deleted text stays struck through in red; go through them and
     accept or reject each one, or all at once.
   - Spelling checked as you type (right-click a word for suggestions).
-  - Page setup: Letter or A4, margins, a header, a footer, page numbers and columns.
+  - Page setup: Letter, A4, Legal or A5, portrait or landscape, margins, a header, a
+    footer, page numbers and columns.
   - The headings appear in the sidebar as an outline; click one to go there.
   - Starter templates: a personal letter, a recipe and a journal.
 - **Sheets**
@@ -70,7 +71,9 @@ Then:
       EOMONTH, WEEKDAY, WEEKNUM, NETWORKDAYS.
   - Typed dates (`2026-10-05`, `10/5/2026`), money (`$12.50`), percentages and
     thousands separators are understood as numbers.
-  - Number formats (two decimals, currency, percent, date), bold, italic, text and fill
+  - Number formats: two decimals, currency, percent and date on the toolbar; more under
+    its arrow (whole numbers, euros, pounds, yen, date styles like "5 Oct 2026", times),
+    or type a format code of your own (`#,##0.0 "kg"`). Bold, italic, text and fill
     colors, alignment, and column widths and row heights you drag.
   - Merged cells, cell borders, text that wraps inside its cell (the row grows to fit),
     and comments on cells (a corner mark; rest the pointer on it to read).
@@ -83,7 +86,8 @@ Then:
     and paste (formulas follow the cells); drag the corner handle to fill,
     <kbd>Ctrl</kbd>+<kbd>D</kbd> / <kbd>Ctrl</kbd>+<kbd>R</kbd> to fill down or right.
   - Sort by a column, filter rows by what a column contains, keep the first row as a
-    header and in view while scrolling.
+    header. Keep the top row, the first column, or everything above and left of the
+    cursor in view while the rest scrolls.
   - Bar, stacked bar, line, area, stacked area, pie and scatter charts of up to six
     series, beside the sheet or placed anywhere on it (drag to move, drag the corner
     to resize, double-click to change).
@@ -114,7 +118,8 @@ Then:
     or take them away, one click at a time (appear, fade, fly).
   - Thumbnails of every slide in the sidebar; right-click one to copy, move or delete it.
   - **Present** with <kbd>F5</kbd> (or <kbd>Shift</kbd>+<kbd>F5</kbd> from the current
-    slide); the slideshow plays the transitions and builds. With a second screen connected, the slides go there and this screen shows
+    slide); the slideshow plays the transitions and builds. Type a slide number and press
+    <kbd>Enter</kbd> to go there; <kbd>L</kbd> turns on a laser pointer. With a second screen connected, the slides go there and this screen shows
     the current and next slide, your notes and a timer.
   - Starter templates: a trip plan, a celebration and a story.
 
@@ -126,7 +131,7 @@ All three:
   file, for instance), a note says what. Sheets also opens and saves CSV.
 - **Find and replace** (<kbd>Ctrl</kbd>+<kbd>F</kbd>, <kbd>Ctrl</kbd>+<kbd>H</kbd>).
 - **Export as PDF** (<kbd>Ctrl</kbd>+<kbd>E</kbd>) and **print** (<kbd>Ctrl</kbd>+<kbd>P</kbd>),
-  on Letter or A4 paper.
+  on the document's paper (Write) or the one chosen in Settings.
 - **Zoom** from 50% to 300% (<kbd>Ctrl</kbd>+scroll, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>=</kbd>
   / <kbd>-</kbd>, or the buttons at the end of the status bar; <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>0</kbd>
   for 100%). Each app remembers its own.

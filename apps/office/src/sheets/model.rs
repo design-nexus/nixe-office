@@ -42,6 +42,9 @@ fn is_default<T: Default + PartialEq>(v: &T) -> bool {
 pub struct Format {
     #[serde(skip_serializing_if = "is_default")]
     pub number: NumFmt,
+    /// A format code (`#,##0.00`, `d mmm yyyy`) that takes the place of `number`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
     #[serde(skip_serializing_if = "is_default")]
     pub bold: bool,
     #[serde(skip_serializing_if = "is_default")]
@@ -175,8 +178,9 @@ pub struct Sheet {
     pub filter: Option<Filter>,
     /// The first row names the columns: sort and filter leave it at the top.
     pub header: bool,
-    /// The first row stays in view while scrolling.
-    pub freeze: bool,
+    /// The first rows and columns stay in view while scrolling.
+    pub freeze_rows: u32,
+    pub freeze_cols: u32,
     pub chart: Option<Chart>,
     /// Blocks of cells shown as one; the top-left cell holds the content.
     pub merges: Vec<Area>,
@@ -248,7 +252,8 @@ impl Sheet {
             hidden_cols: BTreeSet::new(),
             filter: None,
             header: true,
-            freeze: false,
+            freeze_rows: 0,
+            freeze_cols: 0,
             chart: None,
             merges: Vec::new(),
             rules: Vec::new(),
@@ -575,6 +580,9 @@ impl Calc {
 pub fn display(v: &Value, raw: &str, f: &Format) -> (String, bool) {
     match v {
         Value::Num(n) => {
+            if let Some(text) = f.pattern.as_deref().and_then(|p| super::numfmt::render(p, *n)) {
+                return (text, true);
+            }
             let text = match f.number {
                 // A typed number or date shows as typed.
                 NumFmt::General if !raw.starts_with('=') => raw.to_string(),
@@ -594,6 +602,7 @@ pub fn display(v: &Value, raw: &str, f: &Format) -> (String, bool) {
         }
         Value::Bool(_) => (v.text(), false),
         Value::Err(e) => ((*e).to_string(), false),
+        Value::Text(t) if f.pattern.is_some() => (super::numfmt::render_text(f.pattern.as_deref().unwrap_or(""), t), false),
         _ => (v.text(), false),
     }
 }
@@ -1093,8 +1102,13 @@ struct SheetFile {
     filter: Option<Filter>,
     #[serde(default = "yes")]
     header: bool,
-    #[serde(default)]
+    /// Files before frozen panes: the first row only.
+    #[serde(default, skip_serializing)]
     freeze: bool,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    freeze_rows: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    freeze_cols: u32,
     #[serde(default)]
     chart: Option<Chart>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1110,6 +1124,13 @@ struct SheetFile {
 fn yes() -> bool {
     true
 }
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// At most this many rows or columns stay in view.
+pub const MAX_FROZEN: u32 = 50;
 
 #[derive(Serialize, Deserialize)]
 struct WorkbookFile {
@@ -1143,7 +1164,9 @@ impl Workbook {
                     hidden_cols: s.hidden_cols.iter().copied().collect(),
                     filter: s.filter.clone(),
                     header: s.header,
-                    freeze: s.freeze,
+                    freeze: false,
+                    freeze_rows: s.freeze_rows,
+                    freeze_cols: s.freeze_cols,
                     chart: s.chart.clone(),
                     merges: s.merges.iter().map(Area::name).collect(),
                     rules: s.rules.clone(),
@@ -1171,7 +1194,8 @@ impl Workbook {
             s.hidden_cols = sf.hidden_cols.into_iter().filter(|c| *c < COLS).collect();
             s.filter = sf.filter.filter(|x| x.col < COLS);
             s.header = sf.header;
-            s.freeze = sf.freeze;
+            s.freeze_rows = sf.freeze_rows.max(sf.freeze as u32).min(MAX_FROZEN);
+            s.freeze_cols = sf.freeze_cols.min(MAX_FROZEN);
             s.chart = sf.chart;
             s.merges = sf.merges.iter().filter_map(|m| Area::parse(m)).filter(|a| !a.is_cell()).collect();
             s.rules = sf.rules;
@@ -1515,7 +1539,7 @@ mod tests {
             f.fill = Some("#FFEEDD".into());
         });
         wb.set_col_w(2, 200);
-        wb.sheet_mut().freeze = true;
+        wb.sheet_mut().freeze_rows = 1;
         wb.add_sheet();
         let back = Workbook::from_json(&wb.to_json()).unwrap();
         assert_eq!(back, wb);

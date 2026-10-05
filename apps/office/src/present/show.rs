@@ -38,6 +38,17 @@ struct Show {
     stage_area: RefCell<Option<gtk::DrawingArea>>,
     /// Video and audio on the slide showing: the widget and where it goes.
     players: RefCell<Vec<(gtk::Widget, Object)>>,
+    /// A slide number being typed, to go to with Enter.
+    typed: RefCell<String>,
+    /// The laser pointer is on (L), and where it is on the slide, in points.
+    laser: Cell<bool>,
+    pointer: Cell<Option<(f64, f64)>>,
+}
+
+/// Where a slide sits letterboxed in a `w` × `h` area: (x, y, scale).
+fn letterbox(w: f64, h: f64) -> (f64, f64, f64) {
+    let scale = (w / W).min(h / H);
+    ((w - W * scale) / 2.0, (h - H * scale) / 2.0, scale)
 }
 
 #[derive(Clone, Copy)]
@@ -205,10 +216,94 @@ impl Show {
         (t < 1.0).then_some((a, t))
     }
 
-    fn refresh(&self) {
+    fn redraw(&self) {
         for a in self.areas.borrow().iter() {
             a.queue_draw();
         }
+    }
+
+    /// Over the slide showing: the laser's dot, and a slide number being typed.
+    fn paint_extras(&self, cr: &cairo::Context, w: f64, h: f64) {
+        let (ox, oy, scale) = letterbox(w, h);
+        if self.laser.get()
+            && let Some((px, py)) = self.pointer.get()
+            && (0.0..=W).contains(&px)
+            && (0.0..=H).contains(&py)
+        {
+            let (x, y) = (ox + px * scale, oy + py * scale);
+            let r = (7.0 * scale).max(4.0);
+            let glow = cairo::RadialGradient::new(x, y, 0.0, x, y, r * 3.0);
+            glow.add_color_stop_rgba(0.0, 1.0, 0.1, 0.1, 0.55);
+            glow.add_color_stop_rgba(1.0, 1.0, 0.1, 0.1, 0.0);
+            cr.set_source(&glow).ok();
+            cr.arc(x, y, r * 3.0, 0.0, std::f64::consts::TAU);
+            cr.fill().ok();
+            cr.set_source_rgb(1.0, 0.15, 0.1);
+            cr.arc(x, y, r, 0.0, std::f64::consts::TAU);
+            cr.fill().ok();
+        }
+        let typed = self.typed.borrow();
+        if !typed.is_empty() {
+            let layout = gtk::pango::Layout::new(&self.ctx);
+            let mut font = gtk::pango::FontDescription::from_string("Noto Sans Bold");
+            font.set_size(18 * gtk::pango::SCALE);
+            layout.set_font_description(Some(&font));
+            layout.set_text(&format!("Go to slide {typed}"));
+            let (tw, th) = layout.pixel_size();
+            let (bw, bh) = (tw as f64 + 32.0, th as f64 + 18.0);
+            let (bx, by) = (w - bw - 24.0, h - bh - 24.0);
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.72);
+            cr.rectangle(bx, by, bw, bh);
+            cr.fill().ok();
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.move_to(bx + 16.0, by + 9.0);
+            pangocairo::functions::show_layout(cr, &layout);
+        }
+    }
+
+    /// Typing a slide number: a digit more, or Enter to go there. True when used.
+    fn type_key(self: &Rc<Self>, key: gdk::Key) -> bool {
+        let digit = key.to_unicode().filter(|c| c.is_ascii_digit());
+        if let Some(d) = digit {
+            let mut t = self.typed.borrow_mut();
+            if t.len() < 4 {
+                t.push(d);
+            }
+            drop(t);
+            self.redraw();
+            return true;
+        }
+        let typed = std::mem::take(&mut *self.typed.borrow_mut());
+        if typed.is_empty() {
+            return false;
+        }
+        match key {
+            gdk::Key::Return | gdk::Key::KP_Enter => {
+                if let Ok(n) = typed.parse::<usize>()
+                    && n >= 1
+                {
+                    self.jump(n - 1);
+                }
+                self.redraw();
+                true
+            }
+            gdk::Key::BackSpace => {
+                let mut t = typed;
+                t.pop();
+                *self.typed.borrow_mut() = t;
+                self.redraw();
+                true
+            }
+            // Any other key lets the number go.
+            _ => {
+                self.redraw();
+                matches!(key, gdk::Key::Escape)
+            }
+        }
+    }
+
+    fn refresh(&self) {
+        self.redraw();
         self.load_players();
         let n = self.deck.slides.len();
         let i = self.index.get();
@@ -409,7 +504,32 @@ fn slide_area(show: &Rc<Show>, offset: usize) -> gtk::DrawingArea {
             return;
         }
         s.paint(cr, i, w as f64, h as f64, end, offset == 0);
+        if offset == 0 {
+            s.paint_extras(cr, w as f64, h as f64);
+        }
     });
+    // The pointer, for the laser, in the slide's points.
+    let motion = gtk::EventControllerMotion::new();
+    let weak = Rc::downgrade(show);
+    motion.connect_motion(move |c, x, y| {
+        let Some(s) = weak.upgrade() else { return };
+        let Some(a) = c.widget() else { return };
+        let (ox, oy, scale) = letterbox(a.width() as f64, a.height() as f64);
+        s.pointer.set(Some(((x - ox) / scale, (y - oy) / scale)));
+        if s.laser.get() {
+            s.redraw();
+        }
+    });
+    let weak = Rc::downgrade(show);
+    motion.connect_leave(move |_| {
+        if let Some(s) = weak.upgrade() {
+            s.pointer.set(None);
+            s.redraw();
+        }
+    });
+    if offset == 0 {
+        area.add_controller(motion);
+    }
     show.areas.borrow_mut().push(area.clone());
     area
 }
@@ -419,7 +539,14 @@ fn keys(show: &Rc<Show>, w: &gtk::Window) {
     let weak = Rc::downgrade(show);
     keys.connect_key_pressed(move |_, key, _, _| {
         let Some(s) = weak.upgrade() else { return glib::Propagation::Proceed };
+        if s.type_key(key) {
+            return glib::Propagation::Stop;
+        }
         match key {
+            gdk::Key::l | gdk::Key::L => {
+                s.laser.set(!s.laser.get());
+                s.redraw();
+            }
             gdk::Key::Right
             | gdk::Key::Down
             | gdk::Key::space
@@ -481,6 +608,9 @@ pub fn start(editor: Rc<Present>, from: usize) {
         stage: gtk::Overlay::new(),
         stage_area: RefCell::new(None),
         players: RefCell::new(Vec::new()),
+        typed: RefCell::new(String::new()),
+        laser: Cell::new(false),
+        pointer: Cell::new(None),
     });
 
     // The slides themselves.

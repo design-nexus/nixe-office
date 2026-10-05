@@ -1710,6 +1710,8 @@ impl doc::Editor for Present {
         &[
             (&["F5"], "Present from the start"),
             (&["Shift", "F5"], "Present from this slide"),
+            (&["Number", "Enter"], "In the slideshow: go to that slide"),
+            (&["L"], "In the slideshow: laser pointer on or off"),
             (&["Ctrl", "M"], "New slide"),
             (&["PgDn"], "Next slide (PgUp: the one before)"),
             (&["Alt", "↑"], "Move the slide up (Alt+↓: down)"),

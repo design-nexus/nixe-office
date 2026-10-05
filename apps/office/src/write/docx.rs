@@ -452,9 +452,10 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
     }
     let refs = std::mem::take(&mut sect);
     let page = format!(
-        r#"<w:pgSz w:w="{}" w:h="{}"/><w:pgMar w:top="{t}" w:right="{r}" w:bottom="{b}" w:left="{l}" w:header="{}" w:footer="{}" w:gutter="0"/>"#,
+        r#"<w:pgSz w:w="{}" w:h="{}"{}/><w:pgMar w:top="{t}" w:right="{r}" w:bottom="{b}" w:left="{l}" w:header="{}" w:footer="{}" w:gutter="0"/>"#,
         (paper.width * TWIP).round() as i64,
         (paper.height * TWIP).round() as i64,
+        if doc.page.landscape { r#" w:orient="landscape""# } else { "" },
         t / 2,
         b / 2
     );
@@ -1215,7 +1216,9 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
     if let Some(sect) = body.children().rfind(|n| n.has_tag_name((W_NS, "sectPr"))) {
         if let Some(sz) = child(&sect, "pgSz") {
             let w = wattr(&sz, "w").and_then(|v| v.parse::<f64>().ok()).unwrap_or(12240.0) / TWIP;
-            doc.page.paper = if (w - crate::print::A4.width).abs() < 6.0 { "a4" } else { "letter" }.into();
+            let h = wattr(&sz, "h").and_then(|v| v.parse::<f64>().ok()).unwrap_or(15840.0) / TWIP;
+            doc.page.paper = crate::print::Paper::closest(w, h).unwrap_or("letter").into();
+            doc.page.landscape = w > h || wattr(&sz, "orient") == Some("landscape");
         }
         if let Some(m) = child(&sect, "pgMar") {
             let g = |k: &str| wattr(&m, k).and_then(|v| v.parse::<f64>().ok()).map(|v| (v / TWIP).clamp(18.0, 216.0));
@@ -1421,6 +1424,7 @@ mod tests {
             .push(Block::Table(Table { rows: vec![vec!["a".into(), "b".into()], vec!["1".into(), "2".into()]], header: true }));
         doc.page = PageSetup {
             paper: "a4".into(),
+            landscape: false,
             margins: [54.0, 60.0, 72.0, 90.0],
             header: "Head".into(),
             footer: String::new(),
@@ -1434,6 +1438,14 @@ mod tests {
         assert!(lost.is_empty());
         let (back, back_media) = read(&bytes).unwrap();
         assert_eq!(back.page.paper, "a4");
+        for (paper, landscape) in [("a5", true), ("legal", false), ("legal", true)] {
+            let mut turned = Document { blocks: vec![Block::Paragraph(Paragraph::text(Style::Normal, "Turned"))], ..Default::default() };
+            turned.page.paper = paper.into();
+            turned.page.landscape = landscape;
+            let (bytes, _) = write(&turned, &BTreeMap::new()).unwrap();
+            let (back, _) = read(&bytes).unwrap();
+            assert_eq!((back.page.paper.as_str(), back.page.landscape), (paper, landscape));
+        }
         assert_eq!(back.page.margins, [54.0, 60.0, 72.0, 90.0]);
         assert_eq!(back.blocks.len(), doc.blocks.len());
         for (a, b) in doc.blocks.iter().zip(&back.blocks) {

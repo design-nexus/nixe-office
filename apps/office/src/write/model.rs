@@ -49,8 +49,10 @@ pub struct Comment {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PageSetup {
-    /// `letter` or `a4`.
+    /// `letter`, `a4`, `legal` or `a5` (`print::PAPERS`).
     pub paper: String,
+    /// The paper turned on its side.
+    pub landscape: bool,
     /// Margins in points: top, bottom, left, right.
     pub margins: [f64; 4],
     pub header: String,
@@ -64,7 +66,7 @@ pub struct PageSetup {
 
 impl Default for PageSetup {
     fn default() -> Self {
-        Self { paper: "letter".into(), margins: [72.0; 4], header: String::new(),
+        Self { paper: "letter".into(), landscape: false, margins: [72.0; 4], header: String::new(),
             footer: String::new(),
             page_numbers: false,
             columns: 1,
@@ -74,8 +76,10 @@ impl Default for PageSetup {
 }
 
 impl PageSetup {
+    /// The page's size, turned when it's landscape.
     pub fn paper(&self) -> crate::print::Paper {
-        crate::print::Paper::from_id(&self.paper)
+        let p = crate::print::Paper::from_id(&self.paper);
+        if self.landscape { p.landscape() } else { p }
     }
     pub fn content_width(&self) -> f64 {
         (self.paper().width - self.margins[2] - self.margins[3]).max(72.0)
