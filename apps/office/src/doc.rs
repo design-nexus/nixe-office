@@ -536,20 +536,31 @@ pub fn export_pdf_dialog() {
     if !is_open() {
         return;
     }
+    export_pages_dialog("Export as PDF", "", move || ed.pages());
+}
+
+/// The file's name without its extension, or the document's title.
+pub fn stem() -> String {
+    path().and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned())).unwrap_or_else(title)
+}
+
+/// Ask where to save a PDF of the pages `make` gives (`suffix` goes after the
+/// file's name: " handouts"), then write it.
+pub fn export_pages_dialog(title: &str, suffix: &str, make: impl Fn() -> Rc<dyn Pages> + 'static) {
     let filters = gio::ListStore::new::<gtk::FileFilter>();
     filters.append(&filter("PDF", &["pdf"]));
-    let stem = path().and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned())).unwrap_or_else(title);
+    let stem = stem();
     let dialog = gtk::FileDialog::builder()
-        .title("Export as PDF")
+        .title(title)
         .modal(true)
         .filters(&filters)
-        .initial_name(format!("{stem}.pdf"))
+        .initial_name(format!("{stem}{suffix}.pdf"))
         .build();
     dialog.set_initial_folder(Some(&start_folder()));
     dialog.save(window::window().as_ref(), gio::Cancellable::NONE, move |res| {
         let Ok(file) = res else { return };
         let Some(mut p) = file.path() else { return };
-        let export = move |p: PathBuf| match print::export_pdf(ed.pages().as_ref(), &p) {
+        let export = move |p: PathBuf| match print::export_pdf(make().as_ref(), &p) {
             Ok(()) => window::toast(&format!("Exported {}.", file_name(&p))),
             Err(e) => window::toast(&format!("Couldn't export the PDF: {e:#}")),
         };

@@ -1,5 +1,6 @@
 //! Nexus Write: the word processor.
 
+mod autocorrect;
 mod buffer;
 mod changes;
 mod comments;
@@ -84,6 +85,8 @@ pub struct Writer {
     revisions: RefCell<Vec<Revision>>,
     /// New edits are tracked as changes.
     tracking: Cell<bool>,
+    /// An autocorrection is being made (its own edits aren't corrected again).
+    correcting: Cell<bool>,
     /// The comment cards beside the page.
     comment_panel: gtk::Box,
     controls: RefCell<Option<Controls>>,
@@ -196,6 +199,7 @@ impl Writer {
             comments: RefCell::new(Vec::new()),
             revisions: RefCell::new(Vec::new()),
             tracking: Cell::new(false),
+            correcting: Cell::new(false),
             comment_panel: widgets::vbox(10),
             controls: RefCell::new(None),
             outline,
@@ -820,6 +824,11 @@ impl Writer {
             if !self.pasting.get() {
                 let t = self.typing.borrow().clone();
                 *self.typing.borrow_mut() = t;
+            }
+            // One character typed: maybe a straight quote to curl, or a symbol to make.
+            // (Only typing in the page: not find and replace or other commands.)
+            if len == 1 && !newline && !self.pasting.get() && self.view.has_focus() {
+                self.autocorrect(start);
             }
         } else {
             let line = self.cursor_iter().line();
@@ -1994,6 +2003,15 @@ pub mod tests {
         recipe.tidy();
         w.load_fresh(&recipe, &BTreeMap::new());
         assert_eq!(w.document().blocks, recipe.blocks);
+
+        // Autocorrect: the quote just typed curls; "--" becomes a dash.
+        w.load_fresh(&Document { blocks: vec![Block::Paragraph(Paragraph::text(Style::Normal, ""))], ..Default::default() }, &BTreeMap::new());
+        for ch in ["\"", "H", "i", "-", "-"] {
+            let mut at = line_end(&w, 0);
+            w.tb().insert(&mut at, ch);
+            w.autocorrect(line_end(&w, 0).offset() - 1);
+        }
+        assert_eq!(para(&w.document(), 0).plain_text(), "\u{201c}Hi\u{2014}");
 
         // Spacing survives the trip through the buffer.
         let spaced = Document {

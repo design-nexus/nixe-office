@@ -289,11 +289,17 @@ impl Workbook {
         }
         let target = sheet.name.clone();
 
-        // Formulas, on every sheet.
+        // Formulas on every sheet, and lists that take their choices from cells.
         for (sj, s) in self.sheets.iter_mut().enumerate() {
             for cell in s.cells.values_mut() {
                 if cell.raw.starts_with('=') {
                     cell.raw = rewrite(&cell.raw, &edit, &target, sj == si);
+                }
+            }
+            for l in &mut s.lists {
+                if let Some(src) = &l.source {
+                    let moved = rewrite(&format!("={src}"), &edit, &target, sj == si);
+                    l.source = Some(moved.trim_start_matches('=').to_string());
                 }
             }
         }
@@ -344,6 +350,13 @@ impl Workbook {
         s.rules.retain_mut(|rule| match edit.range_text(&rule.range) {
             Some(r) => {
                 rule.range = r;
+                true
+            }
+            None => false,
+        });
+        s.lists.retain_mut(|l| match edit.range_text(&l.range) {
+            Some(r) => {
+                l.range = r;
                 true
             }
             None => false,

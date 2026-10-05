@@ -191,6 +191,21 @@ fn object_xml(o: &Object, id: usize, s: &Slide, media: &BTreeMap<String, Vec<u8>
                 if o.outline.is_some() { deco(o) } else { format!("<a:ln><a:noFill/></a:ln>{}", deco(o)) }
             );
         }
+        Kind::Line { arrow_start, arrow_end } => {
+            // A connector: level through the box's middle, turned with it.
+            let (color, width) = o.line_look();
+            let end = |tag: &str, on: bool| if on { format!(r#"<a:{tag} type="triangle"/>"#) } else { String::new() };
+            let _ = write!(
+                tree,
+                r#"<p:cxnSp><p:nvCxnSpPr><p:cNvPr id="{id}" name="Line {id}"/><p:cNvCxnSpPr/><p:nvPr/></p:nvCxnSpPr><p:spPr>{}<a:prstGeom prst="line"><a:avLst/></a:prstGeom><a:ln w="{}"><a:solidFill><a:srgbClr val="{}"/></a:solidFill>{}{}</a:ln>{}</p:spPr></p:cxnSp>"#,
+                xfrm_rot(o.x, o.y + o.h / 2.0, o.w, 0.0, o.rotation),
+                emu(width),
+                hex(&color),
+                end("headEnd", *arrow_start),
+                end("tailEnd", *arrow_end),
+                if o.shadow { deco(&Object { outline: None, ..o.clone() }) } else { String::new() }
+            );
+        }
         Kind::Image { image } => {
             let Some(bytes) = media.get(image) else { return tree };
             out.media_n += 1;
@@ -476,9 +491,16 @@ fn read_master(
     let rels = read_rels(&text_part(zip, &rels_of(path)).unwrap_or_default(), folder(path));
     let mut out: Vec<Object> = Vec::new();
     let next = |out: &Vec<Object>| out.iter().map(|o| o.id).max().unwrap_or(0) + 1;
-    for sp in doc.descendants().filter(|n| n.has_tag_name((P, "sp"))) {
+    for sp in doc.descendants().filter(|n| n.has_tag_name((P, "sp")) || n.has_tag_name((P, "cxnSp"))) {
         // Placeholders only describe the layouts' title and text.
         if sp.descendants().any(|n| n.has_tag_name((P, "ph"))) {
+            continue;
+        }
+        if let Some(o) = line_object(&sp, (fx, fy), next(&out)) {
+            out.push(o);
+            continue;
+        }
+        if sp.has_tag_name((P, "cxnSp")) {
             continue;
         }
         let Some((x, y, w, h)) = geometry(&sp).map(|(x, y, w, h)| (x * fx, y * fy, w * fx, h * fy)) else { continue };
@@ -643,6 +665,40 @@ fn read_deco(n: &roxmltree::Node, o: &mut Object) {
 }
 
 /// The shape's id in the file (`p:cNvPr id`), which animations refer to.
+/// A line (a `line` shape, or a connector) as one of ours: level across the
+/// middle of its box, turned to the line's angle.
+fn line_object(n: &roxmltree::Node, (fx, fy): (f64, f64), id: u32) -> Option<Object> {
+    let connector = n.has_tag_name((P, "cxnSp"));
+    let prst = n.descendants().find(|c| c.has_tag_name((A, "prstGeom"))).and_then(|g| g.attribute("prst")).unwrap_or("");
+    if !connector && !matches!(prst, "line" | "straightConnector1") {
+        return None;
+    }
+    let (x, y, w, h) = geometry(n).map(|(x, y, w, h)| (x * fx, y * fy, w * fx, h * fy))?;
+    let sp = n.children().find(|c| c.has_tag_name((P, "spPr")))?;
+    let xf = sp.children().find(|c| c.has_tag_name((A, "xfrm")));
+    let flip = |a: &str| xf.and_then(|x| x.attribute(a)).is_some_and(|v| v == "1" || v == "true");
+    // The box's diagonal, from top left to bottom right unless flipped one way.
+    let len = w.hypot(h).max(24.0);
+    let mut angle = h.atan2(w).to_degrees();
+    if flip("flipH") != flip("flipV") {
+        angle = -angle;
+    }
+    if flip("flipH") {
+        angle += 180.0;
+    }
+    let ln = sp.children().find(|c| c.has_tag_name((A, "ln")));
+    let arrow = |tag: &str| {
+        ln.and_then(|l| l.children().find(|c| c.has_tag_name((A, tag)))).and_then(|e| e.attribute("type")).is_some_and(|t| t != "none")
+    };
+    let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+    let kind = Kind::Line { arrow_start: arrow("headEnd"), arrow_end: arrow("tailEnd") };
+    let mut o = Object::new(id, kind, (cx - len / 2.0, cy - LINE_BOX / 2.0, len, LINE_BOX));
+    read_deco(n, &mut o);
+    let turned = (o.rotation + angle).rem_euclid(360.0);
+    o.rotation = if turned > 180.0 { turned - 360.0 } else { turned };
+    Some(o)
+}
+
 fn shape_id(n: &roxmltree::Node) -> Option<String> {
     n.descendants().find(|c| c.has_tag_name((P, "cNvPr"))).and_then(|c| c.attribute("id")).map(String::from)
 }
@@ -730,7 +786,23 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
         }
         let (mut title, mut body, mut centre_title, mut section) = (None::<String>, Vec::<String>::new(), false, false);
         let mut colour = None;
+        // Lines and connectors.
+        for ln in doc.descendants().filter(|n| n.has_tag_name((P, "sp")) || n.has_tag_name((P, "cxnSp"))) {
+            if s.objects.len() >= MAX_OBJECTS {
+                break;
+            }
+            if let Some(mut o) = line_object(&ln, (fx, fy), s.next_id()) {
+                o.group = group_number(&ln);
+                if let Some(sid) = shape_id(&ln) {
+                    spids.insert(sid, o.id);
+                }
+                s.objects.push(o);
+            }
+        }
         for sp in doc.descendants().filter(|n| n.has_tag_name((P, "sp"))) {
+            if line_object(&sp, (1.0, 1.0), 0).is_some() {
+                continue;
+            }
             let ph =
                 sp.descendants().find(|n| n.has_tag_name((P, "ph"))).map(|p| p.attribute("type").unwrap_or("body").to_string());
             let text = shape_text(&sp);
@@ -1002,10 +1074,19 @@ mod tests {
         if let Kind::Shape { shape, .. } = &mut a.kind {
             *shape = Shape::Star;
         }
-        s.objects = vec![table, chart, a, b];
+        let mut line = Object::new(5, Kind::Line { arrow_start: false, arrow_end: true }, (500.0, 400.0, 300.0, LINE_BOX));
+        line.rotation = -30.0;
+        line.outline = Some(Outline { color: "#3f9e8f".into(), width: 5.0 });
+        s.objects = vec![table, chart, a, b, line];
         let (bytes, _) = write(&deck, &BTreeMap::new()).unwrap();
         let (back, _) = read(&bytes).unwrap();
         let s = &back.slides[0];
+        // The line comes back the same length, angle, centre, colour and ends.
+        let l = s.objects.iter().find(|o| matches!(o.kind, Kind::Line { .. })).expect("the line");
+        assert!(matches!(l.kind, Kind::Line { arrow_start: false, arrow_end: true }));
+        assert!((l.w - 300.0).abs() < 0.5 && (l.rotation + 30.0).abs() < 0.1, "{} {}", l.w, l.rotation);
+        assert!((l.x + l.w / 2.0 - 650.0).abs() < 0.5 && (l.y + l.h / 2.0 - 410.0).abs() < 0.5);
+        assert_eq!(l.outline.as_ref().map(|o| (o.color.as_str(), o.width.round())), Some(("#3f9e8f", 5.0)));
         assert_eq!(s.transition.map(|t| t.kind), Some(TransitionKind::Push));
         let morph = super::super::pptx_more::transition(&Transition { kind: TransitionKind::MagicMove, secs: 1.5 });
         let xml = format!(r#"<p:sld xmlns:p="{P}">{morph}</p:sld>"#);

@@ -100,6 +100,11 @@ impl Sheets {
         item("Cut", false, Box::new(|s| s.copy(true)));
         item("Copy", false, Box::new(|s| s.copy(false)));
         item("Paste", false, Box::new(|s| s.paste()));
+        if self.clip.borrow().is_some() {
+            item("Paste values only", false, Box::new(|s| s.paste_special(Paste::Values)));
+            item("Paste formatting only", false, Box::new(|s| s.paste_special(Paste::Formats)));
+        }
+        item("Dropdown list…", false, Box::new(|s| s.rc().list_dialog()));
         list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         let r = fmt::count(nr as usize, "row", "rows");
         let c = fmt::count(nc as usize, "column", "columns");

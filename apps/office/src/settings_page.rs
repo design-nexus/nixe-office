@@ -22,6 +22,13 @@ pub fn build(page: &Page) {
                 },
             );
             g.add(&r);
+            let (r, _) = widgets::switch_row(
+                "Smart quotes and symbols",
+                "As you type, \"quotes\" become curly, -- a dash —, ... an ellipsis …, and (c) ©.",
+                p.autocorrect,
+                |on| prefs::update(|p| p.autocorrect = on),
+            );
+            g.add(&r);
             let langs = crate::write::spelling_languages();
             if !langs.is_empty() {
                 let mut options = vec![(String::new(), "System language".to_string())];

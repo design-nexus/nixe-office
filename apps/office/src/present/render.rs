@@ -243,10 +243,40 @@ pub fn shape_path(cr: &cairo::Context, shape: Shape, (x, y, w, h): (f64, f64, f6
     }
 }
 
+/// A level line from `(x, y)`, `len` long, with arrowheads at (start, end).
+pub fn draw_line(cr: &cairo::Context, (x, y): (f64, f64), len: f64, color: &str, width: f64, (start, end): (bool, bool)) {
+    let (r, g, b) = rgb(color);
+    cr.set_source_rgb(r, g, b);
+    // Arrowheads grow with the line, and the line stops short of their tips.
+    let head = (width * 3.5).max(10.0).min(len / 2.0);
+    let (a, z) = (x + if start { head * 0.8 } else { 0.0 }, x + len - if end { head * 0.8 } else { 0.0 });
+    cr.set_line_width(width);
+    cr.set_line_cap(cairo::LineCap::Round);
+    cr.move_to(a, y);
+    cr.line_to(z.max(a), y);
+    cr.stroke().ok();
+    cr.set_line_cap(cairo::LineCap::Butt);
+    let arrow = |tip: f64, dir: f64| {
+        cr.move_to(tip, y);
+        cr.line_to(tip - dir * head, y - head * 0.55);
+        cr.line_to(tip - dir * head, y + head * 0.55);
+        cr.close_path();
+        cr.fill().ok();
+    };
+    if start {
+        arrow(x, -1.0);
+    }
+    if end {
+        arrow(x + len, 1.0);
+    }
+}
+
 /// The box an object's border and shadow follow: a picture's is the picture as fitted.
 fn object_path(cr: &cairo::Context, o: &Object, media: &BTreeMap<String, Vec<u8>>, pictures: &Pictures) {
     match &o.kind {
         Kind::Shape { shape, .. } => shape_path(cr, *shape, (o.x, o.y, o.w, o.h)),
+        // A line draws its own stroke; it has no border or shadow box.
+        Kind::Line { .. } => {}
         Kind::Image { image } => match pictures.get(image, media) {
             Some(pic) => {
                 let (pw, ph) = (pic.width().max(1) as f64, pic.height().max(1) as f64);
@@ -332,6 +362,10 @@ fn draw_content(
                 cr.set_source_rgb(r, g, b);
                 shape_path(cr, *shape, (o.x, o.y, o.w, o.h));
                 cr.fill().ok();
+            }
+            Kind::Line { arrow_start, arrow_end } => {
+                let (color, width) = o.line_look();
+                draw_line(cr, (o.x, o.y + o.h / 2.0), o.w, &color, width, (*arrow_start, *arrow_end));
             }
             Kind::Image { image } => {
                 let Some(pic) = pictures.get(image, media) else {

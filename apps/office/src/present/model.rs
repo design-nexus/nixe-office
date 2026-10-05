@@ -252,6 +252,14 @@ pub enum Kind {
         shape: Shape,
         fill: String,
     },
+    /// A line across the middle of its box (turned with the box), drawn in the
+    /// object's outline colour and width, with arrowheads at either end.
+    Line {
+        #[serde(default)]
+        arrow_start: bool,
+        #[serde(default)]
+        arrow_end: bool,
+    },
     /// Rows of cells; with `header`, the first row is a heading.
     Table {
         rows: Vec<Vec<String>>,
@@ -274,6 +282,22 @@ pub enum Kind {
 }
 
 pub use crate::sheets::model::ChartKind;
+
+/// The height of a line's box: room to pick it up.
+pub const LINE_BOX: f64 = 20.0;
+
+/// A line's width when it has no outline of its own, in points.
+pub const LINE_WIDTH: f64 = 3.0;
+
+impl Object {
+    /// A line's colour and width.
+    pub fn line_look(&self) -> (String, f64) {
+        match &self.outline {
+            Some(l) => (l.color.clone(), l.width.max(0.5)),
+            None => ("#202329".into(), LINE_WIDTH),
+        }
+    }
+}
 
 impl Kind {
     pub fn table(rows: usize, cols: usize) -> Kind {

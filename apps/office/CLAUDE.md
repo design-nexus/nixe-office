@@ -60,6 +60,9 @@
   hover tooltip); in Word they're `w:hyperlink` with an external relationship, in a
   PDF a cairo `Link` tag per line. Superscript and subscript are the `sup`/`sub` flags.
   Typing at the end of a link or comment doesn't extend it (`pick_up_format`).
+  Smart quotes and symbols (`autocorrect.rs`) replace a single typed character in
+  `after_change`, only while the page has focus; multi-character ones are skipped while
+  tracking changes.
   Shapes and charts in the text are `Run::Drawing` (`figure.rs`: a paintable drawn
   with Cairo, reusing Present's shapes and Sheets' charts); in Word they're `wps`
   shapes and chart parts.
@@ -75,7 +78,10 @@
   is on. Frozen panes are `Sheet.freeze_rows`/`freeze_cols` (on-screen rows; the grid
   draws the scrolled columns, then the frozen ones over them, each clipped to its pane).
   Number formats are `NumFmt` (the toolbar's five) or `Format.pattern`, an Excel format
-  code drawn by `numfmt.rs` and written to Excel as is. Highlight rules (`rules.rs`) apply through `Calc::look`, used by the grid and
+  code drawn by `numfmt.rs` and written to Excel as is. Dropdown lists
+  (`Sheet.lists`, `lists.rs`) are checked in `commit_raw` (`checked_entry`); in Excel
+  they're list data validations. Paste Special is `Workbook::paste_as` with the values
+  `copy_with_values` worked out when copying. Highlight rules (`rules.rs`) apply through `Calc::look`, used by the grid and
   print. Functions beyond the core live in `functions.rs`; borders, wrapped cells and
   Summarize (SUMIFS-style formulas on a new sheet) in `summary.rs`. The grid (`grid.rs`) is
   a `DrawingArea` with its own adjustments; selection is in on-screen rows
@@ -106,7 +112,10 @@
   audio (`Kind::Media`, played by `gtk::Video`/`MediaControls` laid over the slide in
   `show.rs`, from files in the cache) and the master slide (`Deck::master`: shown
   through `Deck::composed`, edited through `Deck::editing`/`edit` in master mode). Objects turn about
-  their centre (`Object::rotation`; hit-testing goes through `to_local`). Slide charts
+  their centre (`Object::rotation`; hit-testing goes through `to_local`). Lines
+  (`Kind::Line`) run level across the middle of their box and turn with it; their
+  colour and width are `Object::outline`; in PowerPoint they're `p:cxnSp` connectors.
+  `export.rs` has pictures, handouts and notes pages (the file menu's extra items). Slide charts
   reuse `sheets::chart::draw`. Builds are `Object::build` (in) and `build_out`,
   played in `Slide::steps` order; Magic Move pairs objects with `Object::same_as` and
   is written as PowerPoint's Morph. In the slideshow, digits then Enter go to a slide and

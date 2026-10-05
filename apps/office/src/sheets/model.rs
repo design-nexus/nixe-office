@@ -190,6 +190,8 @@ pub struct Sheet {
     pub charts: Vec<PlacedChart>,
     /// Blocks of cells styled as tables: a heading row, banded rows, a total row.
     pub tables: Vec<TableRegion>,
+    /// Cells whose value is picked from a list.
+    pub lists: Vec<super::lists::ListRule>,
 }
 
 /// A chart on the sheet: its data, and where it sits (pixels from the top
@@ -259,6 +261,7 @@ impl Sheet {
             rules: Vec::new(),
             charts: Vec::new(),
             tables: Vec::new(),
+            lists: Vec::new(),
         }
     }
 
@@ -354,6 +357,7 @@ impl Sheet {
             || !self.rules.is_empty()
             || !self.charts.is_empty()
             || !self.tables.is_empty()
+            || !self.lists.is_empty()
             || self.cells.values().any(|c| c.comment.is_some())
     }
 }
@@ -420,11 +424,23 @@ impl Area {
     }
 }
 
+/// What a paste brings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Paste {
+    All,
+    /// What the cells worked out to, without their formulas or formatting.
+    Values,
+    /// Only how the cells look.
+    Formats,
+}
+
 /// Cells copied: their values and formats, and where they came from.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Clip {
     pub from: (u32, u32),
     pub cells: Vec<Vec<Cell>>,
+    /// What each cell worked out to when copied, for pasting values only.
+    pub values: Vec<Vec<String>>,
     /// The text put on the system clipboard, to recognise our own copy.
     pub text: String,
 }
@@ -666,12 +682,35 @@ impl Workbook {
             .map(|row| row.iter().map(|c| c.raw.replace(['\t', '\n'], " ")).collect::<Vec<_>>().join("\t"))
             .collect::<Vec<_>>()
             .join("\n");
-        Clip { from: (area.top, area.left), cells, text }
+        let values = cells.iter().map(|row| row.iter().map(|c| c.raw.clone()).collect()).collect();
+        Clip { from: (area.top, area.left), cells, values, text }
+    }
+
+    /// A copy with what each cell works out to now, for pasting values only.
+    pub fn copy_with_values(&self, area: Area, calc: &Calc) -> Clip {
+        let mut clip = self.copy(area);
+        clip.values = (area.top..=area.bottom)
+            .map(|r| {
+                (area.left..=area.right)
+                    .map(|c| match calc.value(self, self.active, r, c) {
+                        Value::Num(n) => format!("{n}"),
+                        Value::Empty => String::new(),
+                        v => v.text(),
+                    })
+                    .collect()
+            })
+            .collect();
+        clip
     }
 
     /// Paste into `target`. A single cell takes the whole copy; a larger
     /// selection repeats the copy to fill it. Formulas move with the cells.
     pub fn paste(&mut self, target: Area, clip: &Clip) {
+        self.paste_as(target, clip, Paste::All);
+    }
+
+    /// Paste all of the copy, or only its values or only its formatting.
+    pub fn paste_as(&mut self, target: Area, clip: &Clip, what: Paste) {
         let (h, w) = (clip.cells.len() as u32, clip.cells.first().map(|r| r.len()).unwrap_or(0) as u32);
         if h == 0 || w == 0 {
             return;
@@ -684,10 +723,20 @@ impl Workbook {
         let s = self.sheet_mut();
         for (r, c) in area.iter() {
             let (sr, sc) = ((r - area.top) % h, (c - area.left) % w);
-            let mut cell = clip.cells[sr as usize][sc as usize].clone();
-            let dr = r as i64 - (clip.from.0 + sr) as i64;
-            let dc = c as i64 - (clip.from.1 + sc) as i64;
-            cell.raw = formula::shift(&cell.raw, dr, dc, ROWS, COLS);
+            let copied = &clip.cells[sr as usize][sc as usize];
+            let mut cell = s.cells.get(&(r, c)).cloned().unwrap_or_default();
+            match what {
+                Paste::All => {
+                    let dr = r as i64 - (clip.from.0 + sr) as i64;
+                    let dc = c as i64 - (clip.from.1 + sc) as i64;
+                    cell = copied.clone();
+                    cell.raw = formula::shift(&cell.raw, dr, dc, ROWS, COLS);
+                }
+                Paste::Values => {
+                    cell.raw = clip.values.get(sr as usize).and_then(|v| v.get(sc as usize)).cloned().unwrap_or_default();
+                }
+                Paste::Formats => cell.format = copied.format.clone(),
+            }
             s.put(r, c, cell);
         }
     }
@@ -1119,6 +1168,8 @@ struct SheetFile {
     charts: Vec<PlacedChart>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     tables: Vec<TableRegion>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    lists: Vec<super::lists::ListRule>,
 }
 
 fn yes() -> bool {
@@ -1172,6 +1223,7 @@ impl Workbook {
                     rules: s.rules.clone(),
                     charts: s.charts.clone(),
                     tables: s.tables.clone(),
+                    lists: s.lists.clone(),
                 })
                 .collect(),
         };
@@ -1201,6 +1253,7 @@ impl Workbook {
             s.rules = sf.rules;
             s.charts = sf.charts;
             s.tables = sf.tables;
+            s.lists = sf.lists.into_iter().filter(|l| Area::parse(&l.range).is_some()).collect();
             wb.sheets.push(s);
         }
         if wb.sheets.is_empty() {
@@ -1457,6 +1510,17 @@ mod tests {
         // A larger selection repeats the copy.
         wb.paste(Area::new(5, 1, 7, 1), &clip);
         assert_eq!(wb.sheet().raw(7, 1), "=A8*10");
+        // Values only: the number, not the formula, and the target's own look.
+        let calc = Calc::new(&wb, 0.0);
+        let clip = wb.copy_with_values(Area::cell(0, 1), &calc);
+        wb.paste_as(Area::cell(20, 3), &clip, Paste::Values);
+        assert_eq!(wb.sheet().raw(20, 3), "10");
+        assert!(!wb.sheet().format(20, 3).bold);
+        // Formatting only: the look, not the contents.
+        wb.set(21, 3, "keep");
+        wb.paste_as(Area::cell(21, 3), &clip, Paste::Formats);
+        assert_eq!(wb.sheet().raw(21, 3), "keep");
+        assert!(wb.sheet().format(21, 3).bold);
         // Fill down.
         wb.set(10, 0, "=B1");
         wb.fill(Area::cell(10, 0), (13, 0));

@@ -6,6 +6,7 @@ mod finance;
 pub mod formula;
 mod functions;
 pub(super) mod grid;
+mod lists;
 pub mod model;
 mod numfmt;
 mod pages;
@@ -1140,6 +1141,9 @@ impl Sheets {
 
     fn commit_raw(&self, r: u32, c: u32, raw: &str) {
         let src = self.src_row(r);
+        // A cell with a list takes only its choices.
+        let Some(raw) = self.checked_entry(src, c, raw) else { return };
+        let raw = raw.as_str();
         if self.wb.borrow().sheet().raw(src, c) == raw {
             return;
         }
@@ -1214,7 +1218,7 @@ impl Sheets {
 
     fn copy(&self, cut: bool) {
         let a = self.selection_src();
-        let clip = self.wb.borrow().copy(a);
+        let clip = self.wb.borrow().copy_with_values(a, &self.calc.borrow());
         if let Some(d) = gdk::Display::default() {
             d.clipboard().set_text(&clip.text);
         }
@@ -1260,6 +1264,24 @@ impl Sheets {
                 _ => {}
             }
         });
+    }
+
+    /// Paste only the values, or only the formatting, of what was copied here.
+    /// (Text from another app has no formatting: values paste it as it is.)
+    fn paste_special(&self, what: Paste) {
+        let target = self.selection_src();
+        let Some(clip) = self.clip.borrow().clone() else {
+            if what == Paste::Values {
+                self.paste();
+            } else {
+                window::toast("Copy some cells first, then paste their formatting.");
+            }
+            return;
+        };
+        self.change(|wb| wb.paste_as(target, &clip, what));
+        // A cut stays put when only part of it is pasted.
+        self.cut.set(false);
+        self.area.grab_focus();
     }
 
     /// Select source area `a` (when no filter is hiding rows, rows match the screen).
@@ -1680,6 +1702,7 @@ impl doc::Editor for Sheets {
             (&["Ctrl", "C"], "Copy (Ctrl+X cuts, then paste moves)"),
             (&["Drag", "Edge"], "Drag the selection by its edge to move it (hold Ctrl to copy)"),
             (&["Ctrl", "V"], "Paste; a larger selection repeats the copy"),
+            (&["Ctrl", "Shift", "V"], "Paste values only (right-click for formatting only)"),
             (&["Ctrl", "+"], "Insert rows above (columns, when whole columns are selected)"),
             (&["Ctrl", "−"], "Delete the selected rows (or whole columns)"),
             (&["Right-click"], "Cut, copy, paste, insert, delete, hide or show rows and columns"),
@@ -1813,6 +1836,15 @@ pub mod tests {
         assert_eq!(s.wb.borrow().sheet().raw(1, 1), "=B1*2");
         Editor::undo(&*s);
         assert_eq!(s.wb.borrow().sheet().raw(1, 0), "=A1*2");
+
+        // A dropdown list takes only its choices, written as the list writes them.
+        s.change(|wb| {
+            wb.set_list(Area::cell(20, 0), Some(lists::ListRule { range: String::new(), items: vec!["Paid".into(), "Unpaid".into()], source: None }))
+        });
+        s.commit_raw(20, 0, "maybe");
+        assert_eq!(s.wb.borrow().sheet().raw(20, 0), "");
+        s.commit_raw(20, 0, " paid ");
+        assert_eq!(s.wb.borrow().sheet().raw(20, 0), "Paid");
 
         // Frozen panes: the first row and column stay put while the rest scrolls.
         s.area.set_size_request(800, 600);

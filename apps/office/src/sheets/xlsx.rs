@@ -427,6 +427,18 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
                 sheet.merges.push(a);
             }
         }
+        // Dropdown lists: choices typed in quotes ("Paid,Unpaid"), or cells (=$D$1:$D$5).
+        for dv in doc.descendants().filter(|n| n.has_tag_name("dataValidation") && n.attribute("type") == Some("list")) {
+            let Some(f) = dv.children().find(|n| n.has_tag_name("formula1")).and_then(|n| n.text()) else { continue };
+            let f = f.trim();
+            let (items, source) = match f.strip_prefix('"').and_then(|x| x.strip_suffix('"')) {
+                Some(list) => (list.split(',').map(|x| x.replace("\"\"", "\"").trim().to_string()).collect(), None),
+                None => (Vec::new(), Some(f.trim_start_matches('=').replace('$', ""))),
+            };
+            for a in dv.attribute("sqref").unwrap_or("").split_whitespace().filter_map(Area::parse) {
+                sheet.lists.push(super::lists::ListRule { range: a.name(), items: items.clone(), source: source.clone() });
+            }
+        }
         // Rules come grouped by range; `priority` gives their order across the sheet.
         let mut rules: Vec<(i64, Rule)> = Vec::new();
         for cf in doc.descendants().filter(|n| n.has_tag_name("conditionalFormatting")) {
@@ -817,6 +829,21 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
         if s.freeze_rows > 0 || s.freeze_cols > 0 {
             ws.set_freeze_panes(s.freeze_rows, s.freeze_cols as u16)?;
         }
+        for l in &s.lists {
+            let Some(a) = Area::parse(&l.range) else { continue };
+            let dv = rust_xlsxwriter::DataValidation::new();
+            let dv = match &l.source {
+                Some(src) => Ok(dv.allow_list_formula(rust_xlsxwriter::Formula::new(format!("={src}")))),
+                None => dv.allow_list_strings(&l.items),
+            };
+            match dv {
+                Ok(dv) => {
+                    ws.add_data_validation(a.top, a.left as u16, a.bottom, a.right as u16, &dv)?;
+                }
+                // Excel keeps at most 255 characters of typed choices.
+                Err(_) => lost.push("dropdown lists with that many choices (put the choices in cells instead)".into()),
+            }
+        }
         // Tables first: they write their heading row, which the cells below then fill in.
         for t in &s.tables {
             let Some(a) = t.area() else { continue };
@@ -979,6 +1006,13 @@ mod tests {
         wb.set(0, 0, "='Sheet 1'!B4");
         wb.active = 0;
         wb.hide_rows(6, 7, true);
+        let list = |items: &[&str], source: Option<&str>| super::super::lists::ListRule {
+            range: String::new(),
+            items: items.iter().map(|x| x.to_string()).collect(),
+            source: source.map(String::from),
+        };
+        wb.set_list(Area::new(1, 2, 5, 2), Some(list(&["Paid", "Not \"yet\""], None)));
+        wb.set_list(Area::cell(6, 2), Some(list(&[], Some("A2:A3"))));
         wb.format(Area::cell(2, 1), |f| f.pattern = Some("#,##0.0 \"kg\"".into()));
         wb.hide_cols(3, 3, true);
 
@@ -1009,6 +1043,9 @@ mod tests {
         assert_eq!(s.hidden_rows.iter().copied().collect::<Vec<_>>(), [6, 7]);
         assert_eq!(s.hidden_cols.iter().copied().collect::<Vec<_>>(), [3]);
         assert_eq!(s.format(2, 1).pattern.as_deref(), Some("#,##0.0 \"kg\""));
+        assert_eq!(s.lists.len(), 2);
+        assert_eq!(back.list_at(0, 3, 2).map(|l| l.items.clone()), Some(vec!["Paid".to_string(), "Not \"yet\"".to_string()]));
+        assert_eq!(back.list_at(0, 6, 2).and_then(|l| l.source.clone()).as_deref(), Some("A2:A3"));
         assert_eq!((s.row_h(6), s.size_of_row(6)), (0, ROW_H));
         assert_eq!((s.freeze_rows, s.freeze_cols), (1, 2));
         assert_eq!(s.merges, [Area::new(8, 0, 9, 2)]);

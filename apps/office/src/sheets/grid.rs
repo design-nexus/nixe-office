@@ -749,6 +749,13 @@ impl Sheets {
         }
         cr.restore().ok();
 
+        // The selected cell's list arrow.
+        cr.save().ok();
+        cr.rectangle(HEAD_W, HEAD_H, w - HEAD_W, h - HEAD_H);
+        cr.clip();
+        self.draw_list_arrow(cr, accent);
+        cr.restore().ok();
+
         // Headers, in the window's colours.
         let head_bg = bg;
         cr.set_source_rgb(head_bg.0, head_bg.1, head_bg.2);
@@ -992,6 +999,11 @@ impl Sheets {
     }
 
     pub(super) fn press(&self, x: f64, y: f64, shift: bool) {
+        // The selected cell's list arrow opens its choices.
+        if self.on_list_arrow(x, y) {
+            self.rc().show_choices();
+            return;
+        }
         // Picking a cell for a formula being typed keeps the editor's focus.
         if let Hit::Cell(r, c) = self.hit(x, y)
             && let Some((e, at)) = self.can_pick()
@@ -1231,6 +1243,7 @@ impl Sheets {
         let rows = self.view.borrow().len().max(1) as u32;
         let page = ((self.area.height() as f64 - HEAD_H) / ROW_H as f64).max(1.0) as u32;
         match key {
+            gdk::Key::Down if alt => self.rc().show_choices(),
             gdk::Key::Up | gdk::Key::Down | gdk::Key::Left | gdk::Key::Right => {
                 let (dr, dc) = match key {
                     gdk::Key::Up => (-1, 0),
@@ -1304,6 +1317,8 @@ impl Sheets {
                 }
                 gdk::Key::c => self.copy(false),
                 gdk::Key::x => self.copy(true),
+                gdk::Key::v if shift => self.paste_special(Paste::Values),
+                gdk::Key::V => self.paste_special(Paste::Values),
                 gdk::Key::v => self.paste(),
                 gdk::Key::d => self.fill_down_or_right(true),
                 gdk::Key::r => self.fill_down_or_right(false),

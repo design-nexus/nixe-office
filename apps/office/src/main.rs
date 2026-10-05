@@ -166,5 +166,6 @@ mod samples {
         crate::write::write_sample(&dir.join("sample.docx"));
         crate::sheets::write_sample(&dir.join("sample.xlsx"));
         crate::present::write_sample(&dir.join("sample.pptx"));
+        crate::present::write_export_samples(&dir);
     }
 }

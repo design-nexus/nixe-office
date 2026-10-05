@@ -38,6 +38,8 @@ Then:
     underlined in green, deleted text stays struck through in red; go through them and
     accept or reject each one, or all at once.
   - Spelling checked as you type (right-click a word for suggestions).
+  - Smart quotes and symbols as you type: "quotes" curl, `--` makes a dash —, `...` an
+    ellipsis …, `(c)` ©, `(tm)` ™ and `->` →. Turn it off in Settings.
   - Page setup: Letter, A4, Legal or A5, portrait or landscape, margins, a header, a
     footer, page numbers and columns.
   - The headings appear in the sidebar as an outline; click one to go there.
@@ -83,7 +85,8 @@ Then:
     to one, contain some text, are blank or an error, are in the top few, or above
     average.
   - Drag the selection by its edge to move it (hold <kbd>Ctrl</kbd> to copy); copy, cut
-    and paste (formulas follow the cells); drag the corner handle to fill,
+    and paste (formulas follow the cells), or paste only the values
+    (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd>) or only the formatting; drag the corner handle to fill,
     <kbd>Ctrl</kbd>+<kbd>D</kbd> / <kbd>Ctrl</kbd>+<kbd>R</kbd> to fill down or right.
   - Sort by a column, filter rows by what a column contains, keep the first row as a
     header. Keep the top row, the first column, or everything above and left of the
@@ -95,6 +98,9 @@ Then:
     as many as you like on a sheet; they open and save as Excel tables.
   - Checkboxes in cells: click one or press <kbd>Space</kbd> to tick it; formulas see
     TRUE or FALSE.
+  - Dropdown lists in cells (right-click → Dropdown list…): choices typed in, or taken
+    from other cells. Pick from the cell's arrow or <kbd>Alt</kbd>+<kbd>↓</kbd>; anything
+    else typed there is refused. Excel files keep them.
   - The status bar shows the sum, average and count of the selected cells.
   - Starter templates: a monthly budget, a home inventory and a trip budget.
 - **Present**
@@ -103,9 +109,9 @@ Then:
   - Ready-made looks, background and text colors, font, sizes, bold and italic.
   - Text boxes, pictures, tables, charts (double-click a table or chart to change
     what's in it) and eight shapes (rectangle, rounded rectangle, ellipse, triangle,
-    diamond, hexagon, star, arrow): drag them, resize them by their corner, turn them by
-    the round handle above, nudge them with the arrow keys; give them a border and a
-    drop shadow.
+    diamond, hexagon, star, arrow) and lines, with or without arrowheads: drag them,
+    resize them by their corner, turn them by the round handle above, nudge them with
+    the arrow keys; give them a border (a line's color and thickness) and a drop shadow.
   - Video and audio on slides, played in the slideshow with their own controls.
   - A master slide for what goes on every slide (a logo, a footer, the slide number);
     any slide can leave it out.
@@ -121,6 +127,8 @@ Then:
     slide); the slideshow plays the transitions and builds. Type a slide number and press
     <kbd>Enter</kbd> to go there; <kbd>L</kbd> turns on a laser pointer. With a second screen connected, the slides go there and this screen shows
     the current and next slide, your notes and a timer.
+  - Export each slide as a picture (1920 × 1080 PNG), handouts with six slides to a page,
+    or pages with each slide over its speaker notes.
   - Starter templates: a trip plan, a celebration and a story.
 
 All three:

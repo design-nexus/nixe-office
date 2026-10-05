@@ -2,6 +2,7 @@
 
 pub mod model;
 mod arrange;
+mod export;
 mod looks;
 mod media;
 pub(crate) mod data;
@@ -450,7 +451,9 @@ impl Present {
                 p.present(0);
             }
         });
-        bar.append(&doc::file_menu(vec![("Present from the start", from_start)]));
+        let mut extra: Vec<doc::MenuItem> = vec![("Present from the start", from_start)];
+        extra.extend(self.export_items());
+        bar.append(&doc::file_menu(extra));
         *self.controls.borrow_mut() = Some(Controls {
             layout,
             font,
@@ -1754,6 +1757,11 @@ impl doc::Editor for Present {
         }
         true
     }
+}
+
+#[cfg(test)]
+pub fn write_export_samples(dir: &Path) {
+    export::write_samples(dir);
 }
 
 #[cfg(test)]

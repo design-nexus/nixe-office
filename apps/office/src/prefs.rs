@@ -29,6 +29,8 @@ pub struct Prefs {
     pub spellcheck: bool,
     /// Write: the spelling language ("" = the system's).
     pub spelling_language: String,
+    /// Write: curly quotes and symbols (—, …, ©) as you type.
+    pub autocorrect: bool,
     /// Save a copy of unsaved work every few seconds, offered back after a crash.
     pub recovery: bool,
     /// Present: open the presenter view on a second screen when one is connected.
@@ -46,6 +48,7 @@ impl Default for Prefs {
             paper: default_paper().into(),
             spellcheck: true,
             spelling_language: String::new(),
+            autocorrect: true,
             recovery: true,
             presenter_view: true,
         }

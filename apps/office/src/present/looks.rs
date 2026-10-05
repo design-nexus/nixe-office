@@ -55,6 +55,28 @@ impl Present {
             });
             grid.append(&b);
         }
+        // Lines: their colour and thickness are the border's.
+        for (name, ends) in [("Line", (false, false)), ("Arrow line", (false, true)), ("Double arrow line", (true, true))] {
+            let b = gtk::Button::new();
+            b.add_css_class("flat");
+            b.set_tooltip_text(Some(&format!("{name} (its border color and thickness set how it looks)")));
+            let area = gtk::DrawingArea::new();
+            area.set_content_width(34);
+            area.set_content_height(28);
+            area.set_draw_func(move |_, cr, w, h| {
+                render::draw_line(cr, (3.0, h as f64 / 2.0), w as f64 - 6.0, "#7a8194", 2.0, ends);
+            });
+            b.set_child(Some(&area));
+            let me = Rc::downgrade(self);
+            let p = pop.clone();
+            b.connect_clicked(move |_| {
+                p.popdown();
+                if let Some(pr) = me.upgrade() {
+                    pr.add_object(Kind::Line { arrow_start: ends.0, arrow_end: ends.1 }, 300.0, LINE_BOX);
+                }
+            });
+            grid.append(&b);
+        }
         pop.set_child(Some(&grid));
         menu.set_popover(Some(&pop));
         menu
