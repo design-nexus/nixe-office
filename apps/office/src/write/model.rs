@@ -175,6 +175,11 @@ impl Style {
             Style::Quote => (DEFAULT_SIZE, 4.0, 10.0, false, true),
         }
     }
+    /// Space above and below in points.
+    pub fn spacing(self) -> (f64, f64) {
+        let (_, above, below, _, _) = self.look();
+        (above, below)
+    }
     pub fn is_heading(self) -> bool {
         matches!(self, Style::Title | Style::H1 | Style::H2 | Style::H3)
     }
@@ -227,10 +232,26 @@ pub struct Paragraph {
     pub align: Align,
     pub list: Option<List>,
     pub indent: u8,
+    /// Line spacing as a multiple (1.5 = one and a half); None is single.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_spacing: Option<f64>,
+    /// Space above and below the paragraph in points; None is the style's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_before: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_after: Option<f64>,
     pub runs: Vec<Run>,
 }
 
+/// The line spacings offered, as in other word processors.
+pub const LINE_SPACINGS: [f64; 4] = [1.0, 1.15, 1.5, 2.0];
+
 impl Paragraph {
+    /// Space above and below in points, the style's unless set.
+    pub fn spacing(&self) -> (f64, f64) {
+        let (above, below) = self.style.spacing();
+        (self.space_before.unwrap_or(above), self.space_after.unwrap_or(below))
+    }
     pub fn text(style: Style, text: &str) -> Paragraph {
         Paragraph { style, runs: vec![Run::text(text)], ..Default::default() }
     }

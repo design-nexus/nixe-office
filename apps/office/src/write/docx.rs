@@ -211,6 +211,18 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
                 if let Some(s) = style_id(p.style) {
                     let _ = write!(ppr, r#"<w:pStyle w:val="{s}"/>"#);
                 }
+                // w:spacing goes after w:numPr and before w:ind.
+                let mut spacing = String::new();
+                if let Some(b) = p.space_before {
+                    let _ = write!(spacing, r#" w:before="{}""#, (b * TWIP).round() as i64);
+                }
+                if let Some(a) = p.space_after {
+                    let _ = write!(spacing, r#" w:after="{}""#, (a * TWIP).round() as i64);
+                }
+                if let Some(l) = p.line_spacing {
+                    let _ = write!(spacing, r#" w:line="{}" w:lineRule="auto""#, (l * 240.0).round() as i64);
+                }
+                let spacing = if spacing.is_empty() { spacing } else { format!("<w:spacing{spacing}/>") };
                 match p.list {
                     Some(l) => {
                         let id = match (l, list_num) {
@@ -236,8 +248,10 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
                             r#"<w:numPr><w:ilvl w:val="{}"/><w:numId w:val="{id}"/></w:numPr>"#,
                             p.indent.min(MAX_INDENT)
                         );
+                        ppr.push_str(&spacing);
                     }
                     None => {
+                        ppr.push_str(&spacing);
                         if p.indent > 0 {
                             let _ = write!(ppr, r#"<w:ind w:left="{}"/>"#, (p.indent as f64 * INDENT_STEP * TWIP) as i64);
                         }
@@ -890,11 +904,24 @@ impl Reader<'_, '_> {
         {
             indent = ((left / TWIP) / INDENT_STEP).round().clamp(0.0, MAX_INDENT as f64) as u8;
         }
+        // Spacing set on the paragraph itself (a style's own spacing is the style's).
+        let spacing = ppr.and_then(|pp| child(&pp, "spacing"));
+        let twips = |name: &str| spacing.and_then(|s| wattr(&s, name)).and_then(|v| v.parse::<f64>().ok()).map(|v| v / TWIP);
+        let (above, below) = style.spacing();
+        let line_spacing = spacing
+            .filter(|s| wattr(s, "lineRule").is_none_or(|r| r == "auto"))
+            .and_then(|s| wattr(&s, "line"))
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|v| (v / 240.0 * 100.0).round() / 100.0)
+            .filter(|l| *l > 0.0 && (*l - 1.0).abs() > 0.001);
         let mut para = Paragraph {
             style,
             align,
             list,
             indent: if style == Style::Quote { indent.saturating_sub(1) } else { indent },
+            line_spacing,
+            space_before: twips("before").filter(|v| (v - above).abs() > 0.01),
+            space_after: twips("after").filter(|v| (v - below).abs() > 0.01),
             runs: Vec::new(),
         };
         self.break_before = ppr.is_some_and(|pp| on(&pp, "pageBreakBefore"));
@@ -1525,6 +1552,35 @@ mod tests {
             .filter_map(|r| if let Run::Text(t) = r { Some((t.text.clone(), t.inserted.is_some(), t.deleted.is_some())) } else { None })
             .collect();
         assert_eq!(marks, [("Moved".into(), false, true), (" stays ".into(), false, false), ("Moved".into(), true, false)]);
+
+        // Line and paragraph spacing.
+        let spaced = Document {
+            blocks: vec![
+                Block::Paragraph(Paragraph {
+                    line_spacing: Some(1.5),
+                    space_before: Some(12.0),
+                    space_after: Some(0.0),
+                    runs: vec![Run::text("Spaced")],
+                    ..Default::default()
+                }),
+                Block::Paragraph(Paragraph {
+                    list: Some(List::Bullet),
+                    line_spacing: Some(2.0),
+                    runs: vec![Run::text("Listed")],
+                    ..Default::default()
+                }),
+                Block::Paragraph(Paragraph::text(Style::H1, "Heading keeps its own")),
+            ],
+            ..Default::default()
+        };
+        let (bytes, _) = write(&spaced, &BTreeMap::new()).unwrap();
+        let (back, _) = read(&bytes).unwrap();
+        let spacing: Vec<(Option<f64>, Option<f64>, Option<f64>)> = back
+            .blocks
+            .iter()
+            .filter_map(|b| if let Block::Paragraph(p) = b { Some((p.line_spacing, p.space_before, p.space_after)) } else { None })
+            .collect();
+        assert_eq!(spacing, [(Some(1.5), Some(12.0), Some(0.0)), (Some(2.0), None, None), (None, None, None)]);
 
         // Links, superscript and subscript.
         let url = "https://example.com/a?b=1&c='2'";

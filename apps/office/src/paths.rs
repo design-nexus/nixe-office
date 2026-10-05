@@ -52,6 +52,11 @@ pub fn recovery_dir(app: &str) -> PathBuf {
     state_home().join("nexus-office/recovery").join(app)
 }
 
+/// Each app's zoom, a number on its own (`write`, `sheets`, `present`).
+pub fn zoom_file(app: &str) -> PathBuf {
+    state_home().join("nexus-office").join(format!("zoom-{app}"))
+}
+
 pub fn documents_dir() -> PathBuf {
     let dirs = config_home().join("user-dirs.dirs");
     if let Ok(text) = std::fs::read_to_string(dirs) {

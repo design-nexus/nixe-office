@@ -17,6 +17,8 @@ Then:
     alignment.
   - Links (<kbd>Ctrl</kbd>+<kbd>K</kbd>) to web pages, email addresses or files;
     <kbd>Ctrl</kbd>+click opens one. They stay links in Word files and exported PDFs.
+  - Line spacing (single, 1.15, 1½, double) and space before and after each
+    paragraph.
   - Bulleted and numbered lists with nested levels (<kbd>Tab</kbd> /
     <kbd>Shift</kbd>+<kbd>Tab</kbd>), and indents.
   - Shapes and charts in the text (a chart's numbers are edited in a small table).
@@ -125,6 +127,9 @@ All three:
 - **Find and replace** (<kbd>Ctrl</kbd>+<kbd>F</kbd>, <kbd>Ctrl</kbd>+<kbd>H</kbd>).
 - **Export as PDF** (<kbd>Ctrl</kbd>+<kbd>E</kbd>) and **print** (<kbd>Ctrl</kbd>+<kbd>P</kbd>),
   on Letter or A4 paper.
+- **Zoom** from 50% to 300% (<kbd>Ctrl</kbd>+scroll, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>=</kbd>
+  / <kbd>-</kbd>, or the buttons at the end of the status bar; <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>0</kbd>
+  for 100%). Each app remembers its own.
 - **Undo and redo**, and a copy of unsaved work every few seconds: if an app closes
   unexpectedly, Home offers to bring the work back.
 
@@ -183,6 +188,7 @@ Launching an app again while it's running brings its window forward.
 | `~/.config/nexus-office/themes/*.toml` | Your own themes |
 | `~/.local/share/nexus-office/recent-*.json` | Each app's recent files |
 | `~/.local/state/nexus-office/recovery/` | Copies of unsaved work |
+| `~/.local/state/nexus-office/zoom-*` | Each app's zoom |
 
 ## Building
 

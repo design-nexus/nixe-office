@@ -97,6 +97,10 @@ pub struct Present {
     /// Snap guides to draw while dragging: (vertical, position in slide points).
     guides: RefCell<Vec<(bool, f64)>>,
     canvas: gtk::DrawingArea,
+    /// Scrolls the canvas when it's zoomed in past the window.
+    desk: gtk::ScrolledWindow,
+    /// 1 fits the slide to the window.
+    zoom: Cell<f64>,
     edit: gtk::TextView,
     edit_css: gtk::CssProvider,
     editing: Cell<Option<Target>>,
@@ -174,6 +178,8 @@ impl Present {
             group: RefCell::new(None),
             syncing: Cell::new(false),
             thumbs_job: RefCell::new(None),
+            desk: gtk::ScrolledWindow::new(),
+            zoom: Cell::new(1.0),
         });
         *p.me.borrow_mut() = Rc::downgrade(&p);
         p.root.add_css_class("present-editor");
@@ -181,9 +187,19 @@ impl Present {
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(&p.canvas));
         overlay.add_overlay(&p.edit);
-        overlay.set_vexpand(true);
         overlay.add_css_class("slide-desk");
-        p.root.append(&overlay);
+        p.desk.set_child(Some(&overlay));
+        p.desk.set_vexpand(true);
+        p.root.append(&p.desk);
+        // The window's size sets the fitted size the zoom starts from.
+        for adj in [p.desk.hadjustment(), p.desk.vadjustment()] {
+            let me = Rc::downgrade(&p);
+            adj.connect_changed(move |_| {
+                if let Some(p) = me.upgrade() {
+                    p.size_canvas();
+                }
+            });
+        }
         let notes_box = widgets::vbox(0);
         notes_box.add_css_class("notes-box");
         let head = widgets::label("SPEAKER NOTES", "notes-head");
@@ -943,11 +959,34 @@ impl Present {
 
     // ---------- Canvas ----------
 
+    /// The scale that fits the slide in the window, before zooming.
+    fn fit_scale(&self) -> f64 {
+        // The scrolled window's view: its adjustments' page sizes.
+        let (vw, vh) = (self.desk.hadjustment().page_size(), self.desk.vadjustment().page_size());
+        let (vw, vh) = if vw > 0.0 && vh > 0.0 { (vw, vh) } else { (self.canvas.width() as f64, self.canvas.height() as f64) };
+        ((vw - 2.0 * PAD) / W).min((vh - 2.0 * PAD) / H).max(0.05)
+    }
+
     /// The slide's place on the canvas: (x, y, scale) in widget pixels.
     fn frame(&self) -> (f64, f64, f64) {
         let (cw, ch) = (self.canvas.width() as f64, self.canvas.height() as f64);
-        let scale = ((cw - 2.0 * PAD) / W).min((ch - 2.0 * PAD) / H).max(0.05);
+        let scale = self.fit_scale() * self.zoom.get();
         ((cw - W * scale) / 2.0, (ch - H * scale) / 2.0, scale)
+    }
+
+    /// Zoomed in, the canvas is as large as the slide (the desk scrolls it).
+    fn size_canvas(&self) {
+        let (w, h) = if self.zoom.get() > 1.0 {
+            let scale = self.fit_scale() * self.zoom.get();
+            ((W * scale + 2.0 * PAD) as i32, (H * scale + 2.0 * PAD) as i32)
+        } else {
+            (-1, -1)
+        };
+        if self.canvas.size_request() != (w, h) {
+            self.canvas.set_size_request(w, h);
+        }
+        self.canvas.queue_draw();
+        self.place_edit();
     }
 
     fn to_slide(&self, x: f64, y: f64) -> (f64, f64) {
@@ -1654,6 +1693,11 @@ impl doc::Editor for Present {
             pictures: Pictures::default(),
             ctx: crate::print::text_context(),
         })
+    }
+
+    fn set_zoom(&self, zoom: f64) {
+        self.zoom.set(zoom);
+        self.size_canvas();
     }
 
     fn focus(&self) {

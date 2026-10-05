@@ -141,6 +141,7 @@ fn install_icons() {
         "superscript",
         "subscript",
         "link",
+        "unfold-vertical",
         "message-square-plus",
         "align-center",
         "align-left",
@@ -345,6 +346,27 @@ fn build(app: &gtk::Application) {
     }
     doc_page.append(&editor_widget);
     stack.add_named(&doc_page, Some("document"));
+    // Ctrl+scroll zooms, before the editor's own scrolling sees it.
+    let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+    wheel.set_propagation_phase(gtk::PropagationPhase::Capture);
+    // A touchpad sends many small steps: add them up to a wheel click's worth.
+    let pending = std::cell::Cell::new(0.0);
+    wheel.connect_scroll(move |c, _, dy| {
+        if !c.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
+            return glib::Propagation::Proceed;
+        }
+        let step = if c.unit() == gdk::ScrollUnit::Surface { dy / 40.0 } else { dy };
+        let total = pending.get() + step;
+        if total.abs() >= 1.0 {
+            doc::zoom_step(total < 0.0);
+            pending.set(0.0);
+        } else {
+            pending.set(total);
+        }
+        glib::Propagation::Stop
+    });
+    doc_page.add_controller(wheel);
+    editor.set_zoom(doc::zoom());
 
     let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     body.set_vexpand(true);
@@ -716,9 +738,34 @@ fn status_bar() -> gtk::Box {
     readout.add_css_class("mono");
     readout.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
     bar.append(&readout);
+    let (zoom, level) = zoom_control();
+    bar.append(&zoom);
     let r = readout.clone();
-    doc::subscribe(&readout, move |_| refresh_status(&r));
+    doc::subscribe(&readout, move |_| {
+        refresh_status(&r);
+        zoom.set_visible(current() == "document" && doc::is_open());
+        level.set_label(&format!("{:.0}%", doc::zoom() * 100.0));
+    });
     bar
+}
+
+/// − 100% + at the end of the status bar; the number goes back to 100%.
+fn zoom_control() -> (gtk::Box, gtk::Button) {
+    let b = widgets::hbox(0);
+    b.add_css_class("status-zoom");
+    let button = |label: &str, tip: &str, f: fn()| {
+        let x = gtk::Button::with_label(label);
+        x.add_css_class("status-help");
+        x.set_tooltip_text(Some(tip));
+        x.connect_clicked(move |_| f());
+        b.append(&x);
+        x
+    };
+    button("−", "Zoom out (Ctrl+Alt+−)", || doc::zoom_step(false));
+    let level = button("100%", "Actual size (Ctrl+Alt+0)", || doc::set_zoom(1.0));
+    level.add_css_class("mono");
+    button("+", "Zoom in (Ctrl+Alt+=)", || doc::zoom_step(true));
+    (b, level)
 }
 
 fn refresh_status(readout: &gtk::Label) {
@@ -738,6 +785,7 @@ pub const FILE_SHORTCUTS: &[doc::Shortcut] = &[
     (&["Ctrl", "Shift", "S"], "Save as (also as an Office file)"),
     (&["Ctrl", "E"], "Export as PDF"),
     (&["Ctrl", "P"], "Print"),
+    (&["Ctrl", "Alt", "="], "Zoom in (Ctrl+Alt+−: out, Ctrl+Alt+0: actual size; or Ctrl+scroll)"),
 ];
 
 pub const WINDOW_SHORTCUTS: &[doc::Shortcut] = &[
@@ -881,6 +929,15 @@ fn install_keys(window: &gtk::ApplicationWindow) {
         let in_entry = gtk::prelude::GtkWindowExt::focus(&w2).is_some_and(|f| f.is::<gtk::Text>());
         let in_doc = current() == "document" && doc::is_open();
         let k = key.to_lower();
+        if ctrl && mods.contains(gdk::ModifierType::ALT_MASK) && in_doc {
+            match k {
+                gdk::Key::equal | gdk::Key::plus | gdk::Key::KP_Add => doc::zoom_step(true),
+                gdk::Key::minus | gdk::Key::KP_Subtract => doc::zoom_step(false),
+                gdk::Key::_0 | gdk::Key::KP_0 => doc::set_zoom(1.0),
+                _ => return glib::Propagation::Proceed,
+            }
+            return stop;
+        }
         if ctrl {
             let handled = match k {
                 gdk::Key::f => {

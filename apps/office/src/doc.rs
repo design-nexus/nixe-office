@@ -8,7 +8,7 @@ use crate::{app, cmd, paths, prefs, print, recent, widgets, window};
 use anyhow::Result;
 use gtk::prelude::*;
 use gtk::{gio, glib};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -80,6 +80,58 @@ pub trait Editor {
     /// A key the window didn't use. True when the editor handled it.
     fn key(&self, _key: gtk::gdk::Key, _mods: gtk::gdk::ModifierType) -> bool {
         false
+    }
+
+    /// Show the document larger or smaller (1.0 is actual size).
+    fn set_zoom(&self, _zoom: f64) {}
+}
+
+// ---------- Zoom ----------
+
+/// The zoom levels the buttons and keys step through.
+pub const ZOOMS: [f64; 13] = [0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
+
+thread_local! {
+    static ZOOM: Cell<Option<f64>> = const { Cell::new(None) };
+}
+
+/// This app's zoom, as last set. It's kept in its own file in the state folder
+/// (not the settings, which the three apps share and each rewrites whole).
+pub fn zoom() -> f64 {
+    ZOOM.with(|z| {
+        z.get().unwrap_or_else(|| {
+            let saved = std::fs::read_to_string(paths::zoom_file(app::kind().id()))
+                .ok()
+                .and_then(|t| t.trim().parse::<f64>().ok())
+                .filter(|z| (ZOOMS[0]..=ZOOMS[ZOOMS.len() - 1]).contains(z))
+                .unwrap_or(1.0);
+            z.set(Some(saved));
+            saved
+        })
+    })
+}
+
+/// Zoom to `z` (clamped to the levels' range), and keep it for next time.
+pub fn set_zoom(z: f64) {
+    let z = (z.clamp(ZOOMS[0], ZOOMS[ZOOMS.len() - 1]) * 100.0).round() / 100.0;
+    ZOOM.with(|c| c.set(Some(z)));
+    let _ = cmd::atomic_write(&paths::zoom_file(app::kind().id()), format!("{z}\n"));
+    if let Some(e) = editor() {
+        e.set_zoom(z);
+    }
+    emit(Change::Status);
+}
+
+/// One level in (`up`) or out from the current zoom.
+pub fn zoom_step(up: bool) {
+    let z = zoom();
+    let next = if up {
+        ZOOMS.iter().copied().find(|l| *l > z + 0.001)
+    } else {
+        ZOOMS.iter().rev().copied().find(|l| *l < z - 0.001)
+    };
+    if let Some(n) = next {
+        set_zoom(n);
     }
 }
 

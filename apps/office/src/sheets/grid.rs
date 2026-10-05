@@ -48,7 +48,11 @@ impl Sheets {
         let vbar = gtk::Scrollbar::new(gtk::Orientation::Vertical, Some(&self.vadj));
         let hbar = gtk::Scrollbar::new(gtk::Orientation::Horizontal, Some(&self.hadj));
         let row = widgets_hbox();
-        row.append(&overlay);
+        let zoomed = crate::widgets::zoom_box(&overlay);
+        zoomed.set_hexpand(true);
+        zoomed.set_vexpand(true);
+        *self.zoomed.borrow_mut() = Some(zoomed.clone());
+        row.append(&zoomed);
         row.append(&vbar);
         let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
         col.add_css_class("grid-frame");

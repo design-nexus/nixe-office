@@ -5,7 +5,8 @@
 //! `cm:<comment id>`, and tracked
 //! changes `ins:<revision id>` / `del:<revision id>`. Paragraph tags cover a whole line,
 //! newline included: `style:<id>`, `align:<id>`, `list:<bullet|number>`,
-//! `indent:<n>`, and `lm:<px>` (the left margin those add up to). The buffer
+//! `indent:<n>`, `lm:<px>` (the left margin those add up to), and spacing:
+//! `ls:<multiple>`, `sb:<points before>`, `sa:<points after>`. The buffer
 //! always ends with a newline, so every paragraph, even an empty last one, has a
 //! character to carry its tags.
 
@@ -17,7 +18,7 @@ use gtk::prelude::*;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-pub const PARA_PREFIXES: [&str; 5] = ["style:", "align:", "list:", "indent:", "lm:"];
+pub const PARA_PREFIXES: [&str; 8] = ["style:", "align:", "list:", "indent:", "lm:", "ls:", "sb:", "sa:"];
 pub const CHAR_PREFIXES: [&str; 8] = ["font:", "size:", "fg:", "bg:", "link:", "cm:", "ins:", "del:"];
 pub const CHAR_FLAGS: [&str; 6] = ["b", "i", "u", "s", "sup", "sub"];
 
@@ -109,6 +110,12 @@ pub fn tag(buffer: &gtk::TextBuffer, name: &str) -> gtk::TextTag {
         t.set_background(Some(v));
     } else if let Some(v) = name.strip_prefix("lm:") {
         t.set_left_margin(v.parse().unwrap_or(0));
+    } else if let Some(v) = name.strip_prefix("ls:") {
+        t.set_line_height(v.parse().unwrap_or(1.0));
+    } else if let Some(v) = name.strip_prefix("sb:") {
+        t.set_pixels_above_lines((v.parse::<f64>().unwrap_or(0.0) * PX).round() as i32);
+    } else if let Some(v) = name.strip_prefix("sa:") {
+        t.set_pixels_below_lines((v.parse::<f64>().unwrap_or(0.0) * PX).round() as i32);
     } else if let Some(v) = name.strip_prefix("wl:") {
         t.set_left_margin(v.parse().unwrap_or(0));
     } else if let Some(v) = name.strip_prefix("wr:") {
@@ -154,11 +161,22 @@ pub struct ParaProps {
     pub align: Align,
     pub list: Option<List>,
     pub indent: u8,
+    pub line: Option<f64>,
+    pub before: Option<f64>,
+    pub after: Option<f64>,
 }
 
 impl ParaProps {
     pub fn of(p: &Paragraph) -> ParaProps {
-        ParaProps { style: p.style, align: p.align, list: p.list, indent: p.indent }
+        ParaProps {
+            style: p.style,
+            align: p.align,
+            list: p.list,
+            indent: p.indent,
+            line: p.line_spacing,
+            before: p.space_before,
+            after: p.space_after,
+        }
     }
     /// The left margin in pixels: indent steps, plus room for a list marker or a quote.
     pub fn margin_px(&self) -> i32 {
@@ -180,6 +198,12 @@ pub fn para_props(buffer: &gtk::TextBuffer, iter: &gtk::TextIter) -> ParaProps {
             p.list = Some(if v == "number" { List::Number } else { List::Bullet });
         } else if let Some(v) = name.strip_prefix("indent:") {
             p.indent = v.parse().unwrap_or(0);
+        } else if let Some(v) = name.strip_prefix("ls:") {
+            p.line = v.parse().ok();
+        } else if let Some(v) = name.strip_prefix("sb:") {
+            p.before = v.parse().ok();
+        } else if let Some(v) = name.strip_prefix("sa:") {
+            p.after = v.parse().ok();
         }
     }
     p
@@ -229,6 +253,15 @@ pub fn set_para(buffer: &gtk::TextBuffer, first: i32, last: i32, p: ParaProps) {
     let m = p.margin_px();
     if m > 0 {
         buffer.apply_tag(&tag(buffer, &format!("lm:{m}")), &start, &end);
+    }
+    // Spacing tags are made after the style tags, so they win over the style's.
+    if let Some(l) = p.line.filter(|l| (*l - 1.0).abs() > 0.001) {
+        buffer.apply_tag(&tag(buffer, &format!("ls:{}", (l * 100.0).round() / 100.0)), &start, &end);
+    }
+    for (prefix, v) in [("sb:", p.before), ("sa:", p.after)] {
+        if let Some(v) = v {
+            buffer.apply_tag(&tag(buffer, &format!("{prefix}{}", fmt_size(v))), &start, &end);
+        }
     }
 }
 
@@ -488,8 +521,16 @@ pub fn read(buffer: &gtk::TextBuffer, tables: &Tables, marks: &Marks) -> Vec<Blo
             }
         }
         let props = para_props(buffer, &start);
-        let mut p =
-            Paragraph { style: props.style, align: props.align, list: props.list, indent: props.indent, runs: Vec::new() };
+        let mut p = Paragraph {
+            style: props.style,
+            align: props.align,
+            list: props.list,
+            indent: props.indent,
+            line_spacing: props.line,
+            space_before: props.before,
+            space_after: props.after,
+            runs: Vec::new(),
+        };
         let mut it = start;
         while it < end {
             let mut next = it;

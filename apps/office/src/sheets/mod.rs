@@ -138,6 +138,8 @@ pub struct Sheets {
     /// While dragging cells: where their top left would land, and whether Ctrl copies.
     move_to: Cell<Option<(u32, u32)>>,
     drag_copy: Cell<bool>,
+    /// The grid's zoom box.
+    zoomed: RefCell<Option<gtk::Box>>,
 }
 
 thread_local! {
@@ -221,6 +223,7 @@ impl Sheets {
             chart_sel: Cell::new(None),
             move_to: Cell::new(None),
             drag_copy: Cell::new(false),
+            zoomed: RefCell::new(None),
         });
         *s.me.borrow_mut() = Rc::downgrade(&s);
         s.root.add_css_class("sheets-editor");
@@ -1492,6 +1495,12 @@ impl doc::Editor for Sheets {
     fn pages(&self) -> Rc<dyn Pages> {
         self.end_edit(true);
         Rc::new(pages::SheetPages::new(&self.wb.borrow(), &self.calc.borrow()))
+    }
+
+    fn set_zoom(&self, zoom: f64) {
+        if let Some(b) = self.zoomed.borrow().as_ref() {
+            crate::widgets::set_zoom(b, zoom);
+        }
     }
 
     fn focus(&self) {

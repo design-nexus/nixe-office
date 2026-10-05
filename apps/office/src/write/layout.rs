@@ -118,7 +118,7 @@ fn rgb(hex: &str) -> Option<(u16, u16, u16)> {
 /// A Pango layout for some text runs in a paragraph of `style`.
 fn text_layout(ctx: &pango::Context, runs: &[&TextRun], style: Style, align: Align, width: f64) -> pango::Layout {
     let pieces: Vec<Piece> = runs.iter().map(|r| Piece::Text((*r).clone())).collect();
-    pieces_layout(ctx, &pieces, style, align, width).0
+    pieces_layout(ctx, &pieces, style, align, width, 1.0).0
 }
 
 /// A layout for runs and footnote marks; also where each mark is: (byte index,
@@ -129,6 +129,7 @@ fn pieces_layout(
     style: Style,
     align: Align,
     width: f64,
+    line: f64,
 ) -> (pango::Layout, Vec<(usize, usize)>, Vec<LinkSpan>) {
     let layout = pango::Layout::new(ctx);
     let (size, _, _, bold, italic) = style.look();
@@ -235,6 +236,10 @@ fn pieces_layout(
         if let Some((cr, cg, cb)) = r.highlight.as_deref().and_then(rgb) {
             add(pango::AttrColor::new_background(cr, cg, cb).into());
         }
+    }
+    // Line spacing scales each line's height, the same attribute the screen's tag sets.
+    if (line - 1.0).abs() > 0.001 {
+        attrs.insert(pango::AttrFloat::new_line_height(line));
     }
     layout.set_text(&text);
     layout.set_attributes(Some(&attrs));
@@ -421,7 +426,9 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
         let width = pg.col_w;
         match block {
             Block::Paragraph(p) => {
-                let (size, above, below, _, _) = p.style.look();
+                let size = p.style.look().0;
+                let (above, below) = p.spacing();
+                let line = p.line_spacing.unwrap_or(1.0);
                 let steps = p.indent as f64 + if p.list.is_some() || p.style == Style::Quote { 1.0 } else { 0.0 };
                 let left = steps * INDENT_STEP;
                 pg.space(above);
@@ -484,7 +491,7 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
                             {
                                 let narrow = width - left - fw - WRAP_GAP;
                                 let nx = if side == Side::Left { left + fw + WRAP_GAP } else { left };
-                                let (l, ..) = pieces_layout(&ctx, &parts[0].0, p.style, p.align, narrow);
+                                let (l, ..) = pieces_layout(&ctx, &parts[0].0, p.style, p.align, narrow, line);
                                 let (tops, _) = line_tops(&l);
                                 let beside = tops.iter().take_while(|t| **t < fh).count();
                                 let at = l.line(beside as i32).map(|line| line.start_index() as usize);
@@ -501,7 +508,7 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
                             }
                             for (pi, (pieces, left, text_w)) in parts.into_iter().enumerate() {
                                 let first_part = pi == 0;
-                                let (layout, marks, links) = pieces_layout(&ctx, &pieces, p.style, p.align, text_w);
+                                let (layout, marks, links) = pieces_layout(&ctx, &pieces, p.style, p.align, text_w, line);
                                 let layout = Rc::new(layout);
                                 let links = Rc::new(links);
                                 let marker = match (first && first_part, p.list) {

@@ -18,6 +18,11 @@
   `doc::status_changed()` when the readout may change. The find bar is inserted after
   the editor widget's first child (its toolbar). Toolbars use `widgets::wrap_row` (a
   `LayoutManager` that wraps groups onto more lines at half-screen width).
+  Zoom (`doc::zoom`/`set_zoom`, kept in `~/.local/state/nexus-office/zoom-<app>`, not
+  the shared settings) reaches editors through `Editor::set_zoom`. Write and Sheets
+  wrap their view in `widgets::zoom_box` (a layout manager that allocates the child
+  at 1/zoom with a scale transform, so GTK maps input back); Present multiplies its
+  fitted slide scale and lets the canvas grow inside a scrolled window.
 - **Saving**: `save(path)` writes the format the extension names and returns what that
   format couldn't keep; `doc.rs` shows that note once per file and format.
   Native files are ZIPs (`container.rs`): `mimetype` first and stored (byte 38, used by
@@ -48,6 +53,9 @@
   the end. `Block::Section` sets the columns from there on (the pager keeps a
   section's top on the page); Word keeps a section's settings at its end, so
   `docx.rs` shifts them by one each way. The editor stays the first section's width.
+  Paragraph spacing is `Paragraph.line_spacing` (a multiple, Word's `w:line`/240) and
+  `space_before`/`space_after` (points; None is the style's), as `ls:`/`sb:`/`sa:` tags;
+  print uses Pango's line-height attribute, the same one the `ls:` tag sets.
   Links are `link:<address>` tags (`links.rs`: the Ctrl+K dialog, Ctrl+click, the
   hover tooltip); in Word they're `w:hyperlink` with an external relationship, in a
   PDF a cairo `Link` tag per line. Superscript and subscript are the `sup`/`sub` flags.

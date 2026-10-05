@@ -11,6 +11,7 @@ mod links;
 mod marks;
 pub mod model;
 mod picture;
+mod spacing;
 mod table;
 mod templates;
 mod view;
@@ -170,7 +171,7 @@ impl Writer {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .vexpand(true)
-            .child(&column)
+            .child(&widgets::zoom_box(&column))
             .build();
         scroll.add_css_class("desk");
 
@@ -427,6 +428,7 @@ impl Writer {
         more.connect_clicked(move |_| f());
         g.append(&less);
         g.append(&more);
+        g.append(&self.spacing_button());
         flow.append(&g);
 
         // Insert.
@@ -1016,7 +1018,8 @@ impl Writer {
     /// side margins shrink first, then the text column.
     fn fit_paper(&self) {
         let s = self.setup.borrow().clone();
-        let avail = self.scroll.hadjustment().page_size() as i32 - 32;
+        // Zoomed, the pages have the room of a window that much smaller or larger.
+        let avail = (self.scroll.hadjustment().page_size() / doc::zoom()) as i32 - 32;
         let paper_w = (s.paper().width * PX) as i32;
         let text_w = self.text_width_px();
         let (left, right) = ((s.margins[2] * PX) as i32, (s.margins[3] * PX) as i32);
@@ -1749,6 +1752,15 @@ impl doc::Editor for Writer {
         Rc::new(layout::paginate(&self.document(), &self.media.borrow()))
     }
 
+    fn set_zoom(&self, zoom: f64) {
+        // The scrolled window put the zoom box in a viewport.
+        let zoomed = self.scroll.child().and_then(|v| v.first_child()).and_downcast::<gtk::Box>();
+        if let Some(b) = zoomed {
+            widgets::set_zoom(&b, zoom);
+        }
+        self.fit_paper();
+    }
+
     fn focus(&self) {
         self.view.grab_focus();
     }
@@ -1972,6 +1984,19 @@ pub mod tests {
         recipe.tidy();
         w.load_fresh(&recipe, &BTreeMap::new());
         assert_eq!(w.document().blocks, recipe.blocks);
+
+        // Spacing survives the trip through the buffer.
+        let spaced = Document {
+            blocks: vec![Block::Paragraph(Paragraph {
+                line_spacing: Some(1.15),
+                space_before: Some(18.0),
+                runs: vec![Run::text("Airy")],
+                ..Default::default()
+            })],
+            ..Default::default()
+        };
+        w.load_fresh(&spaced, &BTreeMap::new());
+        assert_eq!(w.document().blocks, spaced.blocks);
 
         // Typing continues the formatting before the cursor.
         let d = Document {

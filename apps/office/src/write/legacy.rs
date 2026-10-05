@@ -273,7 +273,7 @@ pub fn from_html(html: &str) -> Document {
                         } else {
                             (None, 0)
                         };
-                        para = Some(Paragraph { style, align, list, indent, runs: Vec::new() });
+                        para = Some(Paragraph { style, align, list, indent, ..Default::default() });
                     }
                     "br" => {
                         if let Some(t) = table.as_mut().and_then(|t| t.2.as_mut()) {
