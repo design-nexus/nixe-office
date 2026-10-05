@@ -2,6 +2,7 @@
 
 mod cells;
 pub mod chart;
+mod finance;
 pub mod formula;
 mod functions;
 pub(super) mod grid;

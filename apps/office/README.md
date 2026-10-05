@@ -52,7 +52,7 @@ Then:
     formulas, but don't print. Excel files keep them hidden.
   - Formulas with cell and range references, `$` absolute references and references to
     other sheets (`'Sheet 2'!B4`). Click cells while typing a formula to put their
-    references in. Nearly 100 functions:
+    references in. Over 100 functions:
     - Totals and counts: SUM, AVERAGE, MIN, MAX, COUNT, COUNTA, COUNTBLANK, PRODUCT,
       SUMPRODUCT, COUNTIF(S), SUMIF(S), AVERAGEIF(S), MAXIFS, MINIFS.
     - Statistics: MEDIAN, MODE, STDEV, VAR, LARGE, SMALL, RANK.
@@ -63,6 +63,7 @@ Then:
     - Lookup: VLOOKUP, HLOOKUP, XLOOKUP, INDEX, MATCH, CHOOSE.
     - Text: CONCAT, TEXTJOIN, TEXT, LEN, LEFT, RIGHT, MID, FIND, SEARCH, SUBSTITUTE,
       REPLACE, REPT, UPPER, LOWER, PROPER, TRIM, VALUE, EXACT.
+    - Money: PMT, IPMT, PPMT, PV, FV, NPER, RATE, NPV, IRR, EFFECT, NOMINAL, SLN.
     - Dates: TODAY, NOW, DATE, YEAR, MONTH, DAY, HOUR, MINUTE, SECOND, DAYS, EDATE,
       EOMONTH, WEEKDAY, WEEKNUM, NETWORKDAYS.
   - Typed dates (`2026-10-05`, `10/5/2026`), money (`$12.50`), percentages and

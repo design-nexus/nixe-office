@@ -1,5 +1,5 @@
 //! The larger part of the function library: text, dates, maths, statistics,
-//! conditional totals and lookups. `formula::call` asks here first; `None`
+//! conditional totals and lookups (money functions are in `finance.rs`). `formula::call` asks here first; `None`
 //! means the name is one of the core functions it handles itself.
 
 use super::formula::{
@@ -138,6 +138,9 @@ fn passing(pairs: &[Expr], cells: &dyn Cells) -> Result<Vec<bool>, Value> {
 }
 
 pub fn call(name: &str, args: &[Expr], cells: &dyn Cells) -> Option<Value> {
+    if let Some(v) = super::finance::call(name, args, cells) {
+        return Some(v);
+    }
     let n = args.len();
     let arity = |range: std::ops::RangeInclusive<usize>| range.contains(&n);
     let v = match name {
