@@ -1,0 +1,768 @@
+//! Excel workbooks. Reading parses the XML directly, so styles come along
+//! (bold, italic, colours, fills, alignment, number formats, sizes); writing
+//! uses rust_xlsxwriter, chart included.
+
+use super::formula;
+use super::model::*;
+use super::rules::Test;
+use anyhow::{Context, Result, bail};
+use std::collections::HashMap;
+use std::io::{Cursor, Read};
+
+const MAX_PART: u64 = 64 * 1024 * 1024;
+
+fn part(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Option<String> {
+    let mut f = zip.by_name(name.trim_start_matches('/')).ok()?;
+    if f.size() > MAX_PART {
+        return None;
+    }
+    let mut s = String::new();
+    f.read_to_string(&mut s).ok()?;
+    Some(s)
+}
+
+/// Relationship id → target, resolved against `base` (the folder of the part).
+fn relationships(xml: &str, base: &str) -> HashMap<String, String> {
+    let Ok(doc) = roxmltree::Document::parse(xml) else { return HashMap::new() };
+    doc.descendants()
+        .filter(|n| n.has_tag_name("Relationship"))
+        .filter_map(|n| {
+            let target = n.attribute("Target")?;
+            let path = if let Some(abs) = target.strip_prefix('/') { abs.to_string() } else { resolve(base, target) };
+            Some((n.attribute("Id")?.to_string(), path))
+        })
+        .collect()
+}
+
+fn resolve(base: &str, rel: &str) -> String {
+    let mut parts: Vec<&str> = base.split('/').filter(|p| !p.is_empty()).collect();
+    for seg in rel.split('/') {
+        match seg {
+            ".." => {
+                parts.pop();
+            }
+            "." | "" => {}
+            s => parts.push(s),
+        }
+    }
+    parts.join("/")
+}
+
+fn folder(path: &str) -> &str {
+    path.rsplit_once('/').map(|(a, _)| a).unwrap_or("")
+}
+
+fn rels_of(path: &str) -> String {
+    match path.rsplit_once('/') {
+        Some((dir, file)) => format!("{dir}/_rels/{file}.rels"),
+        None => format!("_rels/{path}.rels"),
+    }
+}
+
+/// `FFRRGGBB` or `RRGGBB` → `#rrggbb`.
+fn argb(v: &str) -> Option<String> {
+    let v = v.trim();
+    let hex = if v.len() == 8 { &v[2..] } else { v };
+    (hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit())).then(|| format!("#{}", hex.to_lowercase()))
+}
+
+fn num_fmt(id: u32, code: Option<&str>) -> NumFmt {
+    match id {
+        0 | 1 | 3 | 49 => return NumFmt::General,
+        2 | 4 => return NumFmt::Decimal,
+        5..=8 => return NumFmt::Currency,
+        9 | 10 => return NumFmt::Percent,
+        14..=17 | 22 => return NumFmt::Date,
+        _ => {}
+    }
+    let Some(code) = code else { return NumFmt::General };
+    let lower = code.to_lowercase();
+    // Strip quoted text and colour codes before looking at the pattern.
+    let bare: String = lower.split('"').step_by(2).collect::<String>().split(['[', ']']).step_by(2).collect();
+    if bare.contains('%') {
+        NumFmt::Percent
+    } else if code.contains('$') || code.contains('€') || code.contains('£') {
+        NumFmt::Currency
+    } else if bare.contains('y') || bare.contains('d') {
+        NumFmt::Date
+    } else if bare.contains("0.0") || bare.contains("#.#") {
+        NumFmt::Decimal
+    } else {
+        NumFmt::General
+    }
+}
+
+/// What reading kept and what it had to leave out.
+pub struct Opened {
+    pub workbook: Workbook,
+    /// Cells past the grid's size were left out.
+    pub truncated: bool,
+    /// Some conditional formats Sheets can't show were left out.
+    pub dropped_rules: bool,
+}
+
+pub fn read(bytes: &[u8]) -> Result<Opened> {
+    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).context("it isn't an Excel workbook")?;
+    let root = relationships(&part(&mut zip, "_rels/.rels").unwrap_or_default(), "");
+    let wb_path = root
+        .values()
+        .find(|p| p.ends_with(".xml") && p.contains("workbook"))
+        .cloned()
+        .unwrap_or_else(|| "xl/workbook.xml".into());
+    let wb_xml = part(&mut zip, &wb_path).context("the workbook is missing")?;
+    let wb_doc = roxmltree::Document::parse(&wb_xml).context("the workbook is damaged")?;
+    let rels = relationships(&part(&mut zip, &rels_of(&wb_path)).unwrap_or_default(), folder(&wb_path));
+    let dir = folder(&wb_path).to_string();
+
+    let active = wb_doc
+        .descendants()
+        .find(|n| n.has_tag_name("workbookView"))
+        .and_then(|n| n.attribute("activeTab"))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0usize);
+    let sheets: Vec<(String, String)> = wb_doc
+        .descendants()
+        .filter(|n| n.has_tag_name("sheet"))
+        .filter_map(|n| {
+            let id = n.attributes().find(|a| a.name() == "id").map(|a| a.value())?;
+            Some((n.attribute("name").unwrap_or("Sheet").to_string(), rels.get(id)?.clone()))
+        })
+        .collect();
+    if sheets.is_empty() {
+        bail!("the workbook has no sheets");
+    }
+
+    // Shared strings.
+    let shared: Vec<String> = part(&mut zip, &format!("{dir}/sharedStrings.xml"))
+        .and_then(|x| {
+            let doc = roxmltree::Document::parse(&x).ok()?;
+            Some(
+                doc.descendants()
+                    .filter(|n| n.has_tag_name("si"))
+                    .map(|si| {
+                        si.descendants()
+                            .filter(|t| t.has_tag_name("t") && !t.ancestors().any(|a| a.has_tag_name("rPh")))
+                            .filter_map(|t| t.text())
+                            .collect()
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or_default();
+
+    // Styles: one Format per cellXfs entry, and the looks conditional formats use.
+    let mut xfs: Vec<Format> = Vec::new();
+    let mut dxfs: Vec<Look> = Vec::new();
+    if let Some(x) = part(&mut zip, &format!("{dir}/styles.xml"))
+        && let Ok(doc) = roxmltree::Document::parse(&x)
+    {
+        let codes: HashMap<u32, String> = doc
+            .descendants()
+            .filter(|n| n.has_tag_name("numFmt"))
+            .filter_map(|n| Some((n.attribute("numFmtId")?.parse().ok()?, n.attribute("formatCode")?.to_string())))
+            .collect();
+        let fonts: Vec<(bool, bool, Option<String>)> = doc
+            .descendants()
+            .find(|n| n.has_tag_name("fonts"))
+            .map(|fs| {
+                fs.children()
+                    .filter(|n| n.has_tag_name("font"))
+                    .map(|f| {
+                        let on = |tag: &str| {
+                            f.children()
+                                .find(|c| c.has_tag_name(tag))
+                                .is_some_and(|c| c.attribute("val").is_none_or(|v| v != "0" && v != "false"))
+                        };
+                        let color =
+                            f.children().find(|c| c.has_tag_name("color")).and_then(|c| c.attribute("rgb")).and_then(argb);
+                        (on("b"), on("i"), color.filter(|c| c != "#000000"))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let fills: Vec<Option<String>> = doc
+            .descendants()
+            .find(|n| n.has_tag_name("fills"))
+            .map(|fs| {
+                fs.children()
+                    .filter(|n| n.has_tag_name("fill"))
+                    .map(|f| {
+                        let p = f.descendants().find(|c| c.has_tag_name("patternFill"))?;
+                        if p.attribute("patternType") != Some("solid") {
+                            return None;
+                        }
+                        p.children().find(|c| c.has_tag_name("fgColor")).and_then(|c| c.attribute("rgb")).and_then(argb)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(list) = doc.descendants().find(|n| n.has_tag_name("dxfs")) {
+            for d in list.children().filter(|n| n.has_tag_name("dxf")) {
+                let font = d.children().find(|c| c.has_tag_name("font"));
+                let color = font
+                    .and_then(|f| f.children().find(|c| c.has_tag_name("color")))
+                    .and_then(|c| c.attribute("rgb"))
+                    .and_then(argb);
+                let bold = font.is_some_and(|f| f.children().any(|c| c.has_tag_name("b")));
+                // Conditional fills keep their colour in bgColor.
+                let fill = d
+                    .descendants()
+                    .find(|c| c.has_tag_name("bgColor") || c.has_tag_name("fgColor"))
+                    .and_then(|c| c.attribute("rgb"))
+                    .and_then(argb);
+                dxfs.push(Look { fill, color, bold });
+            }
+        }
+        if let Some(cell_xfs) = doc.descendants().find(|n| n.has_tag_name("cellXfs")) {
+            for xf in cell_xfs.children().filter(|n| n.has_tag_name("xf")) {
+                let get = |a: &str| xf.attribute(a).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
+                let (bold, italic, color) = fonts.get(get("fontId")).cloned().unwrap_or((false, false, None));
+                let id = get("numFmtId") as u32;
+                let align =
+                    xf.children().find(|c| c.has_tag_name("alignment")).and_then(|a| a.attribute("horizontal")).and_then(|h| {
+                        match h {
+                            "left" => Some(HAlign::Left),
+                            "center" | "centerContinuous" => Some(HAlign::Center),
+                            "right" => Some(HAlign::Right),
+                            _ => None,
+                        }
+                    });
+                xfs.push(Format {
+                    number: num_fmt(id, codes.get(&id).map(String::as_str)),
+                    bold,
+                    italic,
+                    align,
+                    fill: fills.get(get("fillId")).cloned().flatten(),
+                    color,
+                });
+            }
+        }
+    }
+
+    let mut out = Workbook { sheets: Vec::new(), active: 0 };
+    let mut truncated = false;
+    let mut dropped_rules = false;
+    for (name, path) in sheets.into_iter().take(MAX_SHEETS) {
+        let mut sheet = Sheet::new(&name);
+        sheet.header = false;
+        let Some(xml) = part(&mut zip, &path) else {
+            out.sheets.push(sheet);
+            continue;
+        };
+        let doc = roxmltree::Document::parse(&xml).with_context(|| format!("the sheet “{name}” is damaged"))?;
+        for col in doc.descendants().filter(|n| n.has_tag_name("col")) {
+            let (Some(min), Some(max), Some(width)) = (
+                col.attribute("min").and_then(|v| v.parse::<u32>().ok()),
+                col.attribute("max").and_then(|v| v.parse::<u32>().ok()),
+                col.attribute("width").and_then(|v| v.parse::<f64>().ok()),
+            ) else {
+                continue;
+            };
+            // The stored width already counts Excel's padding: 7 pixels a character.
+            if col.attribute("customWidth").is_none_or(|v| v == "0") && (width - 9.14).abs() < 0.5 {
+                continue;
+            }
+            for c in min.saturating_sub(1)..max.min(COLS) {
+                let px = (width * 7.0).round() as u32;
+                if px != COL_W {
+                    sheet.col_widths.insert(c, px.clamp(36, 800));
+                }
+            }
+        }
+        if doc.descendants().any(|n| {
+            n.has_tag_name("pane")
+                && n.attribute("ySplit").is_some_and(|y| y == "1")
+                && n.attribute("state").is_some_and(|s| s.starts_with("frozen"))
+        }) {
+            sheet.freeze = true;
+            sheet.header = true;
+        }
+        // Shared formulas: the first cell holds the text, the others say which one.
+        let mut shared_f: HashMap<String, (String, u32, u32)> = HashMap::new();
+        for row in doc.descendants().filter(|n| n.has_tag_name("row")) {
+            let ri = row.attribute("r").and_then(|v| v.parse::<u32>().ok()).map(|r| r.saturating_sub(1));
+            if let (Some(r), Some(ht)) = (ri, row.attribute("ht").and_then(|v| v.parse::<f64>().ok()))
+                && row.attribute("customHeight").is_some_and(|v| v == "1" || v == "true")
+                && r < ROWS
+            {
+                let px = (ht / 0.75).round() as u32;
+                if px != ROW_H {
+                    sheet.row_heights.insert(r, px.clamp(20, 400));
+                }
+            }
+            for c in row.children().filter(|n| n.has_tag_name("c")) {
+                let Some((r, col)) = c.attribute("r").and_then(formula::parse_cell) else { continue };
+                if r >= ROWS || col >= COLS {
+                    truncated = true;
+                    continue;
+                }
+                let format =
+                    c.attribute("s").and_then(|s| s.parse::<usize>().ok()).and_then(|i| xfs.get(i)).cloned().unwrap_or_default();
+                let value = c.children().find(|n| n.has_tag_name("v")).and_then(|v| v.text()).unwrap_or("");
+                let mut raw = String::new();
+                if let Some(f) = c.children().find(|n| n.has_tag_name("f")) {
+                    let text = f.text().unwrap_or("").trim();
+                    if f.attribute("t") == Some("shared")
+                        && let Some(si) = f.attribute("si")
+                    {
+                        if !text.is_empty() {
+                            shared_f.insert(si.to_string(), (text.to_string(), r, col));
+                            raw = format!("={text}");
+                        } else if let Some((base, br, bc)) = shared_f.get(si) {
+                            raw = formula::shift(&format!("={base}"), r as i64 - *br as i64, col as i64 - *bc as i64, ROWS, COLS);
+                        }
+                    } else if !text.is_empty() {
+                        raw = format!("={text}");
+                    }
+                    // Excel marks functions newer than 2007 (`_xlfn.TEXTJOIN`).
+                    raw = raw.replace("_xlfn._xlws.", "").replace("_xlfn.", "").replace("_xlws.", "");
+                }
+                if raw.is_empty() {
+                    raw = match c.attribute("t") {
+                        Some("s") => value.parse::<usize>().ok().and_then(|i| shared.get(i)).cloned().unwrap_or_default(),
+                        Some("inlineStr") => c.descendants().filter(|n| n.has_tag_name("t")).filter_map(|t| t.text()).collect(),
+                        Some("b") => if value == "1" { "TRUE" } else { "FALSE" }.into(),
+                        Some("str") | Some("e") => value.to_string(),
+                        _ => value.parse::<f64>().map(formula::general).unwrap_or_else(|_| value.to_string()),
+                    };
+                }
+                if raw.is_empty() && format == Format::default() {
+                    continue;
+                }
+                sheet.cells.insert((r, col), Cell { raw, format, comment: None });
+            }
+        }
+        for m in doc.descendants().filter(|n| n.has_tag_name("mergeCell")) {
+            if let Some(a) = m.attribute("ref").and_then(Area::parse)
+                && !a.is_cell()
+                && !sheet.merges.iter().any(|x| x.overlaps(&a))
+            {
+                sheet.merges.push(a);
+            }
+        }
+        // Rules come grouped by range; `priority` gives their order across the sheet.
+        let mut rules: Vec<(i64, Rule)> = Vec::new();
+        for cf in doc.descendants().filter(|n| n.has_tag_name("conditionalFormatting")) {
+            // "A1:A9 C1:C9": one rule per block.
+            let ranges: Vec<Area> = cf.attribute("sqref").unwrap_or("").split_whitespace().filter_map(Area::parse).collect();
+            for rule in cf.children().filter(|n| n.has_tag_name("cfRule")) {
+                let Some(test) = cf_test(rule) else {
+                    dropped_rules = true;
+                    continue;
+                };
+                let look = rule
+                    .attribute("dxfId")
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .and_then(|i| dxfs.get(i))
+                    .cloned()
+                    .unwrap_or_default();
+                let priority = rule.attribute("priority").and_then(|v| v.parse().ok()).unwrap_or(0);
+                for a in &ranges {
+                    rules.push((
+                        priority,
+                        Rule { range: a.name(), test: test.clone(), fill: look.fill.clone(), color: look.color.clone(), bold: look.bold },
+                    ));
+                }
+            }
+        }
+        rules.sort_by_key(|(p, _)| *p);
+        sheet.rules = rules.into_iter().map(|(_, r)| r).collect();
+        // Comments live in their own part, linked from the sheet.
+        let sheet_rels = relationships(&part(&mut zip, &rels_of(&path)).unwrap_or_default(), folder(&path));
+        for target in sheet_rels.values().filter(|t| t.contains("comments")) {
+            let Some(x) = part(&mut zip, target) else { continue };
+            let Ok(cdoc) = roxmltree::Document::parse(&x) else { continue };
+            let authors: Vec<&str> =
+                cdoc.descendants().filter(|n| n.has_tag_name("author")).map(|a| a.text().unwrap_or("")).collect();
+            for c in cdoc.descendants().filter(|n| n.has_tag_name("comment")) {
+                let Some((r, col)) = c.attribute("ref").and_then(formula::parse_cell) else { continue };
+                if r >= ROWS || col >= COLS {
+                    continue;
+                }
+                let text: String = c
+                    .descendants()
+                    .filter(|t| t.has_tag_name("t"))
+                    .filter_map(|t| t.text())
+                    .collect::<String>()
+                    .trim()
+                    .to_string();
+                // Excel starts a note with "Author:" on a line of its own.
+                let author = c.attribute("authorId").and_then(|i| i.parse::<usize>().ok()).and_then(|i| authors.get(i));
+                let text = match author.and_then(|a| text.strip_prefix(&format!("{a}:"))) {
+                    Some(rest) if !author.is_some_and(|a| a.is_empty()) => rest.trim().to_string(),
+                    _ => text,
+                };
+                if !text.is_empty() {
+                    sheet.cells.entry((r, col)).or_default().comment = Some(text);
+                }
+            }
+        }
+        out.sheets.push(sheet);
+    }
+    out.active = active.min(out.sheets.len().saturating_sub(1));
+    Ok(Opened { workbook: out, truncated, dropped_rules })
+}
+
+/// A conditional format's look, from styles.xml's `dxfs`.
+#[derive(Clone, Default)]
+struct Look {
+    fill: Option<String>,
+    color: Option<String>,
+    bold: bool,
+}
+
+/// The highlight test a `cfRule` stands for, when it's one Sheets has.
+fn cf_test(rule: roxmltree::Node) -> Option<Test> {
+    let formulas: Vec<f64> = rule
+        .children()
+        .filter(|n| n.has_tag_name("formula"))
+        .filter_map(|f| f.text().and_then(|t| t.trim().parse().ok()))
+        .collect();
+    let first = formulas.first().copied();
+    Some(match rule.attribute("type")? {
+        "cellIs" => match rule.attribute("operator")? {
+            "greaterThan" => Test::Greater { value: first? },
+            "lessThan" => Test::Less { value: first? },
+            "equal" => Test::Equal { value: first? },
+            "between" => Test::Between { low: first?, high: *formulas.get(1)? },
+            _ => return None,
+        },
+        "containsText" => Test::Contains { text: rule.attribute("text")?.to_string() },
+        "containsBlanks" => Test::Blank,
+        "containsErrors" => Test::Error,
+        "top10" if rule.attribute("bottom").is_none_or(|b| b == "0") && rule.attribute("percent").is_none_or(|p| p == "0") => {
+            Test::Top { count: rule.attribute("rank")?.parse().ok()? }
+        }
+        "aboveAverage" if rule.attribute("aboveAverage").is_none_or(|a| a == "1") && rule.attribute("equalAverage").is_none() => {
+            Test::AboveAverage
+        }
+        _ => return None,
+    })
+}
+
+// ---------- Writing ----------
+
+fn rgb_u32(hex: &str) -> u32 {
+    u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap_or(0)
+}
+
+fn xlsx_format(f: &Format) -> rust_xlsxwriter::Format {
+    use rust_xlsxwriter::{Color, Format as X, FormatAlign, FormatPattern};
+    let mut x = X::new().set_font_name("Noto Sans").set_font_size(11);
+    if f.bold {
+        x = x.set_bold();
+    }
+    if f.italic {
+        x = x.set_italic();
+    }
+    if let Some(c) = &f.color {
+        x = x.set_font_color(Color::RGB(rgb_u32(c)));
+    }
+    if let Some(c) = &f.fill {
+        x = x.set_pattern(FormatPattern::Solid).set_background_color(Color::RGB(rgb_u32(c)));
+    }
+    x = match f.align {
+        Some(HAlign::Left) => x.set_align(FormatAlign::Left),
+        Some(HAlign::Center) => x.set_align(FormatAlign::Center),
+        Some(HAlign::Right) => x.set_align(FormatAlign::Right),
+        None => x,
+    };
+    match f.number {
+        NumFmt::General => x,
+        NumFmt::Decimal => x.set_num_format("#,##0.00"),
+        NumFmt::Currency => x.set_num_format("$#,##0.00"),
+        NumFmt::Percent => x.set_num_format("0.0%"),
+        NumFmt::Date => x.set_num_format("yyyy-mm-dd"),
+    }
+}
+
+/// A highlight rule as an Excel conditional format.
+fn add_rule(ws: &mut rust_xlsxwriter::Worksheet, a: Area, rule: &Rule) -> Result<()> {
+    use rust_xlsxwriter::{
+        Color, ConditionalFormatAverage, ConditionalFormatBlank, ConditionalFormatCell, ConditionalFormatCellRule as C,
+        ConditionalFormatError, ConditionalFormatText, ConditionalFormatTextRule, ConditionalFormatTop,
+        ConditionalFormatTopRule, Format as X, FormatPattern,
+    };
+    let mut f = X::new();
+    if let Some(c) = &rule.fill {
+        f = f.set_pattern(FormatPattern::Solid).set_background_color(Color::RGB(rgb_u32(c)));
+    }
+    if let Some(c) = &rule.color {
+        f = f.set_font_color(Color::RGB(rgb_u32(c)));
+    }
+    if rule.bold {
+        f = f.set_bold();
+    }
+    let (r1, c1, r2, c2) = (a.top, a.left as u16, a.bottom, a.right as u16);
+    let cell = |r: C<f64>| ConditionalFormatCell::new().set_rule(r).set_format(f.clone());
+    match &rule.test {
+        Test::Greater { value } => ws.add_conditional_format(r1, c1, r2, c2, &cell(C::GreaterThan(*value)))?,
+        Test::Less { value } => ws.add_conditional_format(r1, c1, r2, c2, &cell(C::LessThan(*value)))?,
+        Test::Equal { value } => ws.add_conditional_format(r1, c1, r2, c2, &cell(C::EqualTo(*value)))?,
+        Test::Between { low, high } => ws.add_conditional_format(r1, c1, r2, c2, &cell(C::Between(*low, *high)))?,
+        Test::Contains { text } => ws.add_conditional_format(
+            r1,
+            c1,
+            r2,
+            c2,
+            &ConditionalFormatText::new().set_rule(ConditionalFormatTextRule::Contains(text.clone())).set_format(f),
+        )?,
+        Test::Blank => ws.add_conditional_format(r1, c1, r2, c2, &ConditionalFormatBlank::new().set_format(f))?,
+        Test::Error => ws.add_conditional_format(r1, c1, r2, c2, &ConditionalFormatError::new().set_format(f))?,
+        Test::Top { count } => ws.add_conditional_format(
+            r1,
+            c1,
+            r2,
+            c2,
+            &ConditionalFormatTop::new().set_rule(ConditionalFormatTopRule::Top((*count).min(1000) as u16)).set_format(f),
+        )?,
+        Test::AboveAverage => ws.add_conditional_format(r1, c1, r2, c2, &ConditionalFormatAverage::new().set_format(f))?,
+    };
+    Ok(())
+}
+
+/// The workbook as an .xlsx file, and what Excel can't hold (shown once to the user).
+pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
+    use rust_xlsxwriter::{Chart, ChartType, Workbook as X};
+    let mut book = X::new();
+    let mut lost = Vec::new();
+    for (si, s) in wb.sheets.iter().enumerate() {
+        let ws = book.add_worksheet();
+        ws.set_name(&s.name)?;
+        if si == wb.active {
+            ws.set_active(true);
+        }
+        for (c, w) in &s.col_widths {
+            ws.set_column_width_pixels(*c as u16, *w)?;
+        }
+        for (r, h) in &s.row_heights {
+            ws.set_row_height_pixels(*r, *h)?;
+        }
+        if s.freeze {
+            ws.set_freeze_panes(1, 0)?;
+        }
+        // Merges first: merging writes the top-left cell, which the cells below then fill in.
+        for m in &s.merges {
+            let fmt = xlsx_format(&s.format(m.top, m.left));
+            ws.merge_range(m.top, m.left as u16, m.bottom, m.right as u16, "", &fmt)?;
+        }
+        for ((r, c), cell) in &s.cells {
+            if let Some(text) = &cell.comment {
+                ws.insert_note(*r, *c as u16, &rust_xlsxwriter::Note::new(text).set_author("Nexus Sheets").add_author_prefix(false))?;
+            }
+        }
+        for rule in &s.rules {
+            if let Some(a) = Area::parse(&rule.range) {
+                add_rule(ws, a, rule)?;
+            }
+        }
+        for ((r, c), cell) in &s.cells {
+            let (r, c16) = (*r, *c as u16);
+            let fmt = xlsx_format(&cell.format);
+            let raw = cell.raw.as_str();
+            if let Some(src) = raw.strip_prefix('=') {
+                // Keep the value we worked out, so viewers that don't recalculate show it.
+                let shown = calc.value(wb, si, r, *c).text();
+                ws.write_formula_with_format(r, c16, rust_xlsxwriter::Formula::new(src).set_result(shown), &fmt)?;
+                continue;
+            }
+            match literal(raw) {
+                formula::Value::Empty => ws.write_blank(r, c16, &fmt)?,
+                formula::Value::Num(n) => {
+                    // A typed date becomes a real date.
+                    let fmt = if cell.format.number == NumFmt::General && formula::parse_date(raw).is_some() {
+                        xlsx_format(&Format { number: NumFmt::Date, ..cell.format.clone() })
+                    } else {
+                        fmt
+                    };
+                    ws.write_number_with_format(r, c16, n, &fmt)?
+                }
+                formula::Value::Bool(b) => ws.write_boolean_with_format(r, c16, b, &fmt)?,
+                _ => ws.write_string_with_format(r, c16, raw, &fmt)?,
+            };
+        }
+        if s.filter.is_some() && !lost.iter().any(|l: &String| l.contains("filter")) {
+            lost.push("the filter (every row is shown)".into());
+        }
+        if let Some(ch) = &s.chart
+            && let Some(((r1, c1), (r2, c2))) = formula::parse_range(&ch.range)
+        {
+            let kind = match ch.kind {
+                ChartKind::Bar => ChartType::Column,
+                ChartKind::Line => ChartType::Line,
+                ChartKind::Area => ChartType::Area,
+                ChartKind::Pie => ChartType::Pie,
+            };
+            let mut chart = Chart::new(kind);
+            let label_col = (c2 > c1).then_some(c1);
+            let first_value = if label_col.is_some() { c1 + 1 } else { c1 };
+            let named = (first_value..=c2).all(|c| matches!(calc.value(wb, si, r1, c), formula::Value::Text(_))) && r2 > r1;
+            let start = if named { r1 + 1 } else { r1 };
+            for c in (first_value..=c2).take(CHART_SERIES) {
+                let series = chart.add_series();
+                series.set_values((s.name.as_str(), start, c as u16, r2.min(r1 + CHART_ROWS), c as u16));
+                if let Some(lc) = label_col {
+                    series.set_categories((s.name.as_str(), start, lc as u16, r2.min(r1 + CHART_ROWS), lc as u16));
+                }
+                if named {
+                    series.set_name((s.name.as_str(), r1, c as u16));
+                }
+            }
+            // Beside the data.
+            let right = s.used().map(|(_, c)| c + 2).unwrap_or(c2 + 2);
+            ws.insert_chart(1, right.min(COLS) as u16, &chart)?;
+        }
+    }
+    Ok((book.save_to_buffer()?, lost))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_through_excel() {
+        let mut wb = Workbook::default();
+        wb.set(0, 0, "Item");
+        wb.set(0, 1, "Cost");
+        wb.set(1, 0, "Rent");
+        wb.set(1, 1, "1200");
+        wb.set(2, 0, "Food");
+        wb.set(2, 1, "300.5");
+        wb.set(3, 1, "=SUM(B2:B3)");
+        wb.set(4, 0, "2026-10-05");
+        wb.set(5, 0, "TRUE");
+        wb.set(6, 0, "=TEXTJOIN(\",\", TRUE, A2:A3)");
+        wb.format(Area::new(0, 0, 0, 1), |f| {
+            f.bold = true;
+            f.fill = Some("#eef1f5".into());
+        });
+        wb.format(Area::new(1, 1, 3, 1), |f| f.number = NumFmt::Currency);
+        wb.format(Area::new(1, 0, 1, 0), |f| {
+            f.italic = true;
+            f.color = Some("#c62828".into());
+            f.align = Some(HAlign::Center);
+        });
+        wb.set_col_w(0, 180);
+        wb.set_row_h(0, 40);
+        wb.sheet_mut().freeze = true;
+        wb.sheet_mut().chart = Some(Chart { range: "A1:B3".into(), kind: ChartKind::Bar });
+        wb.set(8, 0, "Merged");
+        wb.merge(Area::new(8, 0, 9, 2));
+        wb.set_comment(1, 1, "Due on the 1st");
+        wb.sheet_mut().rules = vec![
+            Rule {
+                range: "B2:B3".into(),
+                test: crate::sheets::rules::Test::Greater { value: 500.0 },
+                fill: Some("#fde2e1".into()),
+                color: Some("#9c1c1c".into()),
+                bold: true,
+            },
+            Rule {
+                range: "A2:A9".into(),
+                test: crate::sheets::rules::Test::Contains { text: "oo".into() },
+                fill: Some("#dcf3e0".into()),
+                color: None,
+                bold: false,
+            },
+            Rule { range: "B2:B3".into(), test: crate::sheets::rules::Test::Top { count: 1 }, fill: None, color: Some("#1d4a9c".into()), bold: false },
+        ];
+        wb.add_sheet();
+        wb.rename_sheet(1, "Notes").unwrap();
+        wb.set(0, 0, "='Sheet 1'!B4");
+        wb.active = 0;
+
+        let calc = Calc::new(&wb, 0.0);
+        let (bytes, lost) = write(&wb, &calc).unwrap();
+        assert!(lost.is_empty());
+        let back = read(&bytes).unwrap().workbook;
+        let s = back.sheet();
+        assert_eq!(back.sheets.len(), 2);
+        assert_eq!(back.sheets[1].name, "Notes");
+        assert_eq!(back.sheets[1].raw(0, 0), "='Sheet 1'!B4");
+        assert_eq!(s.raw(0, 0), "Item");
+        assert_eq!(s.raw(1, 1), "1200");
+        assert_eq!(s.raw(3, 1), "=SUM(B2:B3)");
+        assert_eq!(s.raw(5, 0), "TRUE");
+        // Written as `_xlfn.TEXTJOIN`, read back plain.
+        assert_eq!(s.raw(6, 0), "=TEXTJOIN(\",\", TRUE, A2:A3)");
+        assert_eq!(s.format(4, 0).number, NumFmt::Date);
+        assert!(s.format(0, 0).bold);
+        assert_eq!(s.format(0, 0).fill.as_deref(), Some("#eef1f5"));
+        assert_eq!(s.format(1, 1).number, NumFmt::Currency);
+        let f = s.format(1, 0);
+        assert!(f.italic);
+        assert_eq!(f.color.as_deref(), Some("#c62828"));
+        assert_eq!(f.align, Some(HAlign::Center));
+        assert_eq!(s.col_w(0), 180);
+        assert_eq!(s.row_h(0), 40);
+        assert!(s.freeze);
+        assert_eq!(s.merges, [Area::new(8, 0, 9, 2)]);
+        assert_eq!(s.raw(8, 0), "Merged");
+        assert_eq!(s.comment(1, 1), Some("Due on the 1st"));
+        // Excel groups rules by range; within a range the order holds, and only
+        // rules on the same cells compete.
+        let by_range = |rules: &[Rule]| {
+            let mut v = rules.to_vec();
+            v.sort_by(|a, b| a.range.cmp(&b.range));
+            v
+        };
+        assert_eq!(by_range(&s.rules), by_range(&wb.sheets[0].rules));
+    }
+
+    #[test]
+    fn expands_shared_formulas() {
+        // What Excel writes for a formula filled down: the text once, then references to it.
+        let sheet = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>
+            <row r="1"><c r="A1"><v>1</v></c><c r="B1"><f t="shared" ref="B1:B3" si="0">A1*2</f><v>2</v></c></row>
+            <row r="2"><c r="A2"><v>2</v></c><c r="B2"><f t="shared" si="0"/><v>4</v></c></row>
+            <row r="3"><c r="A3" t="s"><v>0</v></c><c r="B3"><f t="shared" si="0"/></c></row>
+        </sheetData></worksheet>"#;
+        let mut buf = Cursor::new(Vec::new());
+        {
+            use std::io::Write;
+            let mut z = zip::ZipWriter::new(&mut buf);
+            let o = zip::write::SimpleFileOptions::default();
+            let files = [
+                (
+                    "_rels/.rels",
+                    r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#,
+                ),
+                (
+                    "xl/workbook.xml",
+                    r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+                ),
+                (
+                    "xl/_rels/workbook.xml.rels",
+                    r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>"#,
+                ),
+                (
+                    "xl/sharedStrings.xml",
+                    r#"<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><r><t>hel</t></r><r><t>lo</t></r></si></sst>"#,
+                ),
+                ("xl/worksheets/sheet1.xml", sheet),
+            ];
+            for (n, t) in files {
+                z.start_file(n, o).unwrap();
+                z.write_all(t.as_bytes()).unwrap();
+            }
+            z.finish().unwrap();
+        }
+        let bytes = buf.into_inner();
+        let wb = read(&bytes).unwrap().workbook;
+        let s = wb.sheet();
+        assert_eq!(s.name, "Data");
+        assert_eq!(s.raw(1, 1), "=A2*2");
+        assert_eq!(s.raw(2, 1), "=A3*2");
+        assert_eq!(s.raw(2, 0), "hello");
+    }
+
+    #[test]
+    fn number_formats_map() {
+        assert_eq!(num_fmt(164, Some("\"$\"#,##0.00")), NumFmt::Currency);
+        assert_eq!(num_fmt(165, Some("dd/mm/yyyy")), NumFmt::Date);
+        assert_eq!(num_fmt(166, Some("0.0%")), NumFmt::Percent);
+        assert_eq!(num_fmt(167, Some("[Red]0.00")), NumFmt::Decimal);
+        assert_eq!(num_fmt(14, None), NumFmt::Date);
+    }
+}

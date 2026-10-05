@@ -1,71 +1,161 @@
 # Nexus Office Suite
 
-Nexus Office Suite is a home-focused office project for Linux. It consists of Nexus Write, Nexus Sheets, and Nexus Present, with a shared QML interface and Qt/C++ services.
+Three home office apps for [Omarchy](https://omarchy.org): **Nexus Write** for
+documents, **Nexus Sheets** for spreadsheets and **Nexus Present** for slides. They
+open and save Word, Excel and PowerPoint files, export PDF and print. The window takes
+its colors from your Omarchy theme and fits a half-screen tile; the page itself keeps
+its own colors, so what you see is what prints.
 
-## Current state
+## What they do
 
-The initial seven stages are implemented. The v2 stages add font and color controls in Write and Present, resizable Sheets rows and columns, Write page setup, undo, redo, recovery, nine starter templates, and basic DOCX, XLSX, and PPTX exchange in Write, Sheets, and Present. All three apps share a compact shell, window-size preferences, recent files, automatic Omarchy theme matching, and ten built-in themes. Nexus Write edits rich text, embeds images and tables, saves native `.nwrite` files, and exports PDF. Nexus Sheets edits spreadsheets with formulas, formatting, sorting, filtering, charts, and PDF export. Nexus Present edits slide text, images, movable text boxes, and notes with basic layouts and styles, plays full-screen slideshows, saves native `.npresent` files, and exports PDF.
+Every app starts on **Home**: a blank file, starter templates, and your recent files.
+Then:
 
-## Build and run
+- **Write**
+  - Paragraph styles (title, three headings, quote), font, size, bold, italic,
+    underline, strikethrough, text color and highlight, alignment.
+  - Bulleted and numbered lists with nested levels (<kbd>Tab</kbd> /
+    <kbd>Shift</kbd>+<kbd>Tab</kbd>), and indents.
+  - Pictures, sized with a slider; tables (right-click a cell to add or remove rows and
+    columns).
+  - Footnotes (<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd>): a number in the text, the
+    note at the foot of the page when printed.
+  - Comments on selected text (<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>M</kbd>), shown as
+    cards beside the page; edit, resolve or delete them there.
+  - A table of contents built from the headings, with page numbers in print and PDF.
+  - Page breaks (<kbd>Ctrl</kbd>+<kbd>Enter</kbd>), and two or three text columns.
+  - Spelling checked as you type (right-click a word for suggestions).
+  - Page setup: Letter or A4, margins, a header, a footer, page numbers and columns.
+  - The headings appear in the sidebar as an outline; click one to go there.
+  - Starter templates: a personal letter, a recipe and a journal.
+- **Sheets**
+  - Up to 10,000 rows and 104 columns per sheet, and up to 50 sheets, as tabs along
+    the bottom: click to switch, double-click to rename, drag to reorder, right-click to
+    copy, move or delete.
+  - Formulas with cell and range references, `$` absolute references and references to
+    other sheets (`'Sheet 2'!B4`). Click cells while typing a formula to put their
+    references in. Nearly 100 functions:
+    - Totals and counts: SUM, AVERAGE, MIN, MAX, COUNT, COUNTA, COUNTBLANK, PRODUCT,
+      SUMPRODUCT, COUNTIF(S), SUMIF(S), AVERAGEIF(S), MAXIFS, MINIFS.
+    - Statistics: MEDIAN, MODE, STDEV, VAR, LARGE, SMALL, RANK.
+    - Maths: ABS, SIGN, ROUND, ROUNDUP, ROUNDDOWN, TRUNC, INT, CEILING, FLOOR, MOD,
+      POWER, SQRT, EXP, LN, LOG, LOG10, PI, RAND, RANDBETWEEN.
+    - Logic: IF, IFS, SWITCH, IFERROR, IFNA, AND, OR, XOR, NOT, ISBLANK, ISNUMBER,
+      ISTEXT, ISERROR, ISNA.
+    - Lookup: VLOOKUP, HLOOKUP, XLOOKUP, INDEX, MATCH, CHOOSE.
+    - Text: CONCAT, TEXTJOIN, TEXT, LEN, LEFT, RIGHT, MID, FIND, SEARCH, SUBSTITUTE,
+      REPLACE, REPT, UPPER, LOWER, PROPER, TRIM, VALUE, EXACT.
+    - Dates: TODAY, NOW, DATE, YEAR, MONTH, DAY, HOUR, MINUTE, SECOND, DAYS, EDATE,
+      EOMONTH, WEEKDAY, WEEKNUM, NETWORKDAYS.
+  - Typed dates (`2026-10-05`, `10/5/2026`), money (`$12.50`), percentages and
+    thousands separators are understood as numbers.
+  - Number formats (two decimals, currency, percent, date), bold, italic, text and fill
+    colors, alignment, and column widths and row heights you drag.
+  - Merged cells, and comments on cells (a corner mark; rest the pointer on it to read).
+  - Highlight rules: color cells that are above or below a number, between two, equal
+    to one, contain some text, are blank or an error, are in the top few, or above
+    average.
+  - Copy, cut and paste (formulas follow the cells), drag the corner handle to fill,
+    <kbd>Ctrl</kbd>+<kbd>D</kbd> / <kbd>Ctrl</kbd>+<kbd>R</kbd> to fill down or right.
+  - Sort by a column, filter rows by what a column contains, keep the first row as a
+    header and in view while scrolling.
+  - Bar, line, area and pie charts of up to six series.
+  - The status bar shows the sum, average and count of the selected cells.
+  - Starter templates: a monthly budget, a home inventory and a trip budget.
+- **Present**
+  - Slides with four layouts (title, title and content, section, blank); edit the title
+    and text right on the slide, and write speaker notes under it.
+  - Ready-made looks, background and text colors, font, sizes, bold and italic.
+  - Text boxes, pictures, rectangles, ellipses, tables and charts (double-click a table
+    or chart to change what's in it): drag them, resize them by their corner, nudge
+    them with the arrow keys.
+  - <kbd>Shift</kbd>-click to select several; group them (<kbd>Ctrl</kbd>+<kbd>G</kbd>)
+    to move them as one; line them up, space them evenly or change which is in front.
+    Guides snap what you drag to the slide's middle and edges and to other objects
+    (hold <kbd>Alt</kbd> to move freely).
+  - Transitions between slides (fade, push, wipe, dissolve), and builds that bring
+    objects in one click at a time (appear, fade in, fly in).
+  - Thumbnails of every slide in the sidebar; right-click one to copy, move or delete it.
+  - **Present** with <kbd>F5</kbd> (or <kbd>Shift</kbd>+<kbd>F5</kbd> from the current
+    slide); the slideshow plays the transitions and builds. With a second screen connected, the slides go there and this screen shows
+    the current and next slide, your notes and a timer.
+  - Starter templates: a trip plan, a celebration and a story.
 
-Requirements: CMake, a C++17 compiler, libzip, and Qt 6.5+ with Core, Gui, Qml, Quick, Quick Controls 2, Dialogs, Svg, and Test modules. Enchant 2 and a spelling dictionary are optional for spelling suggestions.
+All three:
+
+- **Files:** their own formats (`.nwrite`, `.nsheets`, `.npresent`) keep everything.
+  Word (`.docx`), Excel (`.xlsx`) and PowerPoint (`.pptx`) files open and save in
+  place; the first time a file can't hold something (speaker notes in a PowerPoint
+  file, for instance), a note says what. Sheets also opens and saves CSV.
+- **Find and replace** (<kbd>Ctrl</kbd>+<kbd>F</kbd>, <kbd>Ctrl</kbd>+<kbd>H</kbd>).
+- **Export as PDF** (<kbd>Ctrl</kbd>+<kbd>E</kbd>) and **print** (<kbd>Ctrl</kbd>+<kbd>P</kbd>),
+  on Letter or A4 paper.
+- **Undo and redo**, and a copy of unsaved work every few seconds: if an app closes
+  unexpectedly, Home offers to bring the work back.
+
+Files made by the first release of Nexus Office open as before.
+
+## Install
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build
-./build/nexus-office --app write
-./build/nexus-office --app write --new-document
-./build/nexus-office --app write ~/Documents/notes.nwrite
-./build/nexus-office --app write ~/Documents/letter.docx
-./build/nexus-office --app sheets
-./build/nexus-office --app sheets --new-document
-./build/nexus-office --app sheets ~/Documents/budget.xlsx
-./build/nexus-office --app present
-./build/nexus-office --app present --new-document
-./build/nexus-office --app present ~/Documents/trip.pptx
-./build/nexus-office --app present ~/Documents/trip.npresent --export-pdf ~/Documents/trip.pdf
-ctest --test-dir build --output-on-failure
+curl -fsSL https://raw.githubusercontent.com/design-nexus/nexus-office-suite/main/install.sh | bash
 ```
 
-The shell uses `~/.local/state/omarchy/current/theme/colors.toml` when Appearance is set to automatic. It watches for changes and falls back to Catppuccin Mocha if Omarchy is unavailable. A manual theme selection persists across all three apps. `Ctrl+,` opens Appearance; `Ctrl+Q` quits.
+This installs GTK 4, GtkSourceView 5, libspelling and an English dictionary if they're
+missing, builds with Cargo, and installs `nexus-write`, `nexus-sheets` and
+`nexus-present` to `~/.local/bin` with launcher entries. Add `-s -- --default` after
+`bash` to also make them the default apps for their file types.
 
-In Write, click **Blank document** to start, or choose a personal letter, recipe, or journal template on Home or under File → New from template. The single top bar provides headings, font family, font size, text color, bold, italic, bullets, numbering, undo/redo, image and table insertion, and file actions. Font and color changes apply to selected text or the word at the cursor. Place the cursor on an image and choose **Image size and alignment** from the toolbar or Format menu to set its width and align its paragraph left, center, or right. Height follows the image's proportions. Images remain inline with text; text wrapping around floating images is not available yet. The app icon opens File, Edit, Format, and View menus. `Ctrl+N`, `Ctrl+O`, `Ctrl+S`, `Ctrl+Shift+S`, `Ctrl+B`, and `Ctrl+I` are available. Save creates a ZIP-based `.nwrite` file containing `manifest.json`, `document.html`, and any embedded PNG images. Edits are saved atomically; a recovery snapshot is written periodically while a document is modified, including images. On restart, Write offers to restore an available snapshot. Format → Page setup adjusts each page margin and adds optional repeating header, footer, and page numbers. The preview and letter-size PDF use these settings, which are retained in native `.nwrite` files and recovery snapshots. File → Export PDF creates a letter-size PDF. Right-click a word or use Format → Spelling suggestions to check it when Enchant and a dictionary are installed. Current spelling support provides suggestions on demand, without automatic underlines. File → Import DOCX opens paragraphs, headings, direct bold/italic/font/size/color formatting, simple tables, and common embedded inline images as a new unsaved document. File → Export DOCX writes those features and embedded PNG images to a separate file. Unsupported or missing DOCX images remain visible as “Image omitted” placeholders; floating image layout and advanced Word layout are outside this basic exchange stage. Save the imported document as `.nwrite` to keep editing with all Nexus Write features.
+To remove them, run the same line with `uninstall.sh` in place of `install.sh`. Add
+`-s -- --purge` to also remove their settings, recent file lists and copies of unsaved
+work. Your documents are never touched.
 
-The interface uses bundled [Lucide icons](https://lucide.dev/) with colors derived from the selected theme. The icon license is in `assets/icons/LICENSE` and is installed with the app.
+## Usage
 
-In Sheets, click **Blank spreadsheet** to open a 500-row, 52-column grid per worksheet, or start with a monthly budget, home inventory, or trip budget template. Click a cell to select it and start typing to edit; the text cursor appears only while editing. Enter commits and moves down one cell. Double-click or press F2 to edit an existing value, or use the formula field in the top bar. Cells support arithmetic, references such as `A1`, ranges, comparisons, quoted text, and `SUM`, `AVERAGE`, `MIN`, `MAX`, `COUNT`, `COUNTA`, `COUNTIF`, `SUMIF`, `IF`, `AND`, `OR`, `NOT`, `PRODUCT`, `MEDIAN`, `ABS`, `ROUND`, `SQRT`, `POWER`, `MOD`, and `INT`. Range summaries ignore blank and text cells where appropriate; errors cover invalid references, division by zero, cycles, and invalid square roots. The toolbar has icons for general, two-decimal, currency, and percent formats, bold, fill and text color, and horizontal alignment. The color icons open compact dropdowns with swatches, a hex field, and a clear option. These changes apply to a cell or selected range. Drag the right edge of a column header or the bottom edge of a row header to resize it; native files preserve those sizes. Undo and redo cover cell values, formulas, formatting, dimensions, sort, filter, and charts. Sort keeps the first row in place; filtering shows matching rows. Bar, line, area, and pie charts can use up to 30 rows and two columns; pie charts display positive numeric values. Use the tabs below the grid to add, select, rename, duplicate, or delete worksheets (up to 20). Drag across cells or Shift-click to select a range. The small bottom-right handle has a cross cursor and fills adjacent cells when dragged; the top-left grip has a hand cursor and moves the selected cells. Ctrl+C and Ctrl+V copy and paste ranges, and pasting into a larger selection repeats the copied pattern. Ctrl+D fills down and Ctrl+R fills right. Copied formulas adjust relative references. The File menu imports and exports XLSX, and exports PDF or CSV. Sheets keeps up to 50 undo steps and writes a recovery snapshot about every 15 seconds while edited; restart offers to restore an interrupted session.
+```
+nexus-write [OPTIONS] [FILE]
+nexus-sheets [OPTIONS] [FILE]
+nexus-present [OPTIONS] [FILE]
+```
 
-While entering a formula, click another cell to insert its reference at the cursor. Drag across cells to insert a range reference. This works in both the cell editor and the formula field. Press Esc to cancel formula entry and return to the grid.
+| Option | What |
+| --- | --- |
+| `FILE` | Open this file |
+| `--new [TEMPLATE]` | Start a blank file, or one from a template (`letter`, `recipe`, `journal`, `monthly-budget`, `home-inventory`, `trip-budget`, `trip-plan`, `celebration`, `story`) |
+| `--export-pdf OUT` | Export `FILE` as a PDF to `OUT` and quit, without opening a window |
 
-New spreadsheets save as `.nsheets` JSON files, which preserve formulas, formatting, charts, and view settings. CSV import/export preserves raw cell values and formulas, but CSV cannot store formatting, charts, or row and column sizes. A CSV opened for editing can still be saved back to CSV until formatting or a chart is added; then use Save As to create a native file. CSV input is limited to 5 MB and 500 by 52 cells. XLSX import and export preserve up to 20 worksheets with common cell text, numbers, formulas, bold, number formats, fill and text colors, horizontal alignment, and row/column sizes within the grid limits. Native `.nsheets` files also retain charts and view settings. Older single-sheet `.nsheets` files still open. CSV contains only the active grid, so use `.nsheets` when a workbook has multiple tabs.
+Launching an app again while it's running brings its window forward.
 
-In Present, click **Blank presentation** to start, or choose a trip plan, celebration, or story deck. Edit title and body text directly on each slide, and add speaker notes below. The top bar adds, duplicates, and deletes slides; its Layout and Style menus offer three layouts and three slide styles. Add an image, text box, rectangle, or ellipse from the top bar or Format menu. Click an image or shape to select and drag it; click a text box to edit it and use its drag handle to move it. Resize a selected object with its corner handle, align it to a slide edge or center with the alignment menu, and use its × control to remove it. Shapes also have a fill color picker. Up to 30 objects can be placed on a slide. Font family, title/body size, bold, italic, text color, and slide background color are available in the top bar and Format menu. Font and color choices apply to slide text, including text boxes. Undo and redo cover text, notes, formatting, objects, and slide changes. Edit in the app menu can also move slides up or down. Present saves `.npresent` JSON files with up to 200 slides, including embedded images. Press `F5` or click Play for a full-screen slideshow from the beginning; `Shift+F5` starts at the selected slide. Left and right arrows, Space, Page Up/Down, Home, and End navigate; `Esc` exits. Clicking the slide advances, and right-clicking goes back. The next action on the final slide exits. File → Export PDF creates 16:9 pages using the selected theme's accent color and includes images, text boxes, and shapes. File → Import PPTX opens slide titles, body text, images, text boxes, and basic rectangle and ellipse shapes; File → Export PPTX writes these elements to a separate file. Speaker notes stay in the native file and are not shown in the slideshow or exported PDF. Present keeps up to 50 undo steps, groups nearby typing into one step, and offers recovery after an interrupted session.
+| Key | What |
+| --- | --- |
+| <kbd>Ctrl</kbd>+<kbd>N</kbd> / <kbd>Ctrl</kbd>+<kbd>O</kbd> | New blank file / open a file |
+| <kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> | Save / save as (also as a Word, Excel or PowerPoint file) |
+| <kbd>Ctrl</kbd>+<kbd>E</kbd> / <kbd>Ctrl</kbd>+<kbd>P</kbd> | Export as PDF / print |
+| <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> | Undo / redo |
+| <kbd>Ctrl</kbd>+<kbd>F</kbd> / <kbd>Ctrl</kbd>+<kbd>H</kbd> | Find / find and replace |
+| <kbd>Ctrl</kbd>+<kbd>B</kbd> / <kbd>Ctrl</kbd>+<kbd>I</kbd> | Bold / italic |
+| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> | Collapse or expand the sidebar |
+| <kbd>Ctrl</kbd>+<kbd>,</kbd> | Settings |
+| <kbd>F11</kbd> | Fullscreen |
+| <kbd>F1</kbd> | All keyboard shortcuts, including each app's own |
+| <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit |
 
-Install the shared binary, app launchers, desktop entries, and native file type definitions with `cmake --install build --prefix ~/.local`. Then run `update-mime-database ~/.local/share/mime` and `update-desktop-database ~/.local/share/applications` so file managers recognize `.nwrite`, `.nsheets`, and `.npresent` files. This does not change Omarchy configuration.
+## Files
 
-This release targets home use and keeps full Nexus features in its native formats. Basic Microsoft Office exchange covers DOCX text, tables, and inline images, up to 20 XLSX worksheets with cell values, formulas, simple formatting, and row/column sizes, and PPTX slide text, images, text boxes, rectangles, and ellipses with basic font and color choices. Import creates an unsaved Nexus document; export writes a separate Office file. Advanced Office layout, Write page setup in DOCX, XLSX charts and view settings, speaker notes, transitions, and animations are not exchanged. Apple iWork files are not supported.
+| Path | What |
+| --- | --- |
+| `~/.config/nexus-office/settings.toml` | Settings, shared by the three apps |
+| `~/.config/nexus-office/themes/*.toml` | Your own themes |
+| `~/.local/share/nexus-office/recent-*.json` | Each app's recent files |
+| `~/.local/state/nexus-office/recovery/` | Copies of unsaved work |
 
-## Planned stages
+## Building
 
-1. Shared shell and themes (complete)
-2. Write core editing and native files (complete)
-3. Write images, tables, spelling suggestions, and PDF (complete)
-4. Sheets grid, formulas, and CSV (complete)
-5. Sheets formatting, sort/filter, charts, and PDF (complete)
-6. Present editor and native files (complete)
-7. Present slideshow, PDF, and suite release (complete)
-8. V2 editing controls: Sheets dimensions; Write and Present font and color (complete)
-9. V2 reliability: Sheets and Present undo, redo, and recovery (complete)
-10. V2 starter templates for all three apps (complete)
-11. V2 compatibility: basic DOCX import and export in Write (complete)
-12. V2 compatibility: basic XLSX import and export in Sheets (complete)
-13. V2 compatibility: basic PPTX import and export in Present (complete)
-14. V3 Sheets: multiple worksheet tabs and range clipboard (complete)
-15. V3 Write: page view, margins, headers, footers, and page numbers (complete)
-16. V3 Present: images and movable text boxes (complete)
-17. Present stage 1: basic shapes, shape fill, and slide alignment (complete)
-18. Sheets stage 2: more formulas and charts (complete)
-19. Write stage 3: image placement and DOCX image exchange (complete)
-20. Sheets enhancement stage 1: conditional formulas and range formatting (complete)
+```sh
+cargo build --release
+```
 
-Each stage is reviewed and tested before the next begins.
+Needs GTK 4, GtkSourceView 5 and libspelling (`pacman -S gtk4 gtksourceview5 libspelling`),
+plus a Hunspell dictionary for spelling (`hunspell-en_us`).
+
+Icons are from [Lucide](https://lucide.dev/) (ISC license, see `data/icons/LICENSE`).

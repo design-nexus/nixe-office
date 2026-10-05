@@ -1,9 +1,13 @@
 [Desktop Entry]
 Type=Application
 Name=Nexus Present
-Comment=Home presentations in Nexus Office Suite
+GenericName=Presentation
+Comment=Make and show slides; opens PowerPoint files
 Exec=nexus-present %f
 Icon=x-office-presentation
 Terminal=false
-Categories=Office;Presentation;
+Categories=Office;Presentation;GTK;
+Keywords=presentation;slides;slideshow;powerpoint;pptx;
 MimeType=application/x-nexus-present;application/vnd.openxmlformats-officedocument.presentationml.presentation;
+StartupNotify=true
+StartupWMClass=io.github.design_nexus.Present
