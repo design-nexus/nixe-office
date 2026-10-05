@@ -25,11 +25,13 @@ fn mix(a: (f64, f64, f64), b: (f64, f64, f64), t: f64) -> (f64, f64, f64) {
     (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t, a.2 + (b.2 - a.2) * t)
 }
 
-enum Hit {
+pub(super) enum Hit {
     Corner,
     ColHead(u32, bool),
     RowHead(u32, bool),
     Handle,
+    /// The edge of the selection: grab it to move the cells.
+    Edge,
     Cell(u32, u32),
     Outside,
 }
@@ -179,7 +181,7 @@ impl Sheets {
     }
 
     /// Where a block of on-screen cells is drawn: x, y, width, height.
-    fn area_rect(&self, a: Area) -> (f64, f64, f64, f64) {
+    pub(super) fn area_rect(&self, a: Area) -> (f64, f64, f64, f64) {
         let (y1, _) = self.row_rect(a.top);
         let (y2, h2) = self.row_rect(a.bottom);
         let (x1, _) = self.col_rect(a.left);
@@ -223,7 +225,7 @@ impl Sheets {
         (r, c)
     }
 
-    fn hit(&self, x: f64, y: f64) -> Hit {
+    pub(super) fn hit(&self, x: f64, y: f64) -> Hit {
         if x < HEAD_W && y < HEAD_H {
             return Hit::Corner;
         }
@@ -255,6 +257,18 @@ impl Sheets {
         let (by, bh) = self.row_rect(sel.bottom);
         if (x - (bx + bw)).abs() <= HANDLE && (y - (by + bh)).abs() <= HANDLE && !self.editing.get() {
             return Hit::Handle;
+        }
+        // On the selection's outline.
+        if !self.editing.get() {
+            let (x1, y1, w, h) = self.area_rect(sel);
+            let (x2, y2) = (x1 + w, y1 + h);
+            let within_x = x >= x1 - EDGE && x <= x2 + EDGE;
+            let within_y = y >= y1 - EDGE && y <= y2 + EDGE;
+            let on_side = within_y && ((x - x1).abs() <= EDGE || (x - x2).abs() <= EDGE);
+            let on_top = within_x && ((y - y1).abs() <= EDGE || (y - y2).abs() <= EDGE);
+            if (on_side || on_top) && x >= HEAD_W && y >= HEAD_H {
+                return Hit::Edge;
+            }
         }
         match (self.row_at(y), self.col_at(x)) {
             (Some(r), Some(c)) => Hit::Cell(r, c),
@@ -658,6 +672,18 @@ impl Sheets {
                 cr.set_dash(&[], 0.0);
             }
         }
+        // While dragging cells: where they'll land.
+        if matches!(self.drag.get(), Drag::MoveCells { .. })
+            && let Some((top, left)) = self.move_to.get()
+            && let Some((x, y, sw, sh)) = rect(&Area::new(top, left, top + sel.rows() - 1, left + sel.cols() - 1))
+        {
+            cr.set_source_rgb(accent.0, accent.1, accent.2);
+            cr.set_line_width(2.0);
+            cr.set_dash(&[6.0, 3.0], 0.0);
+            cr.rectangle(x + 1.0, y + 1.0, sw - 2.0, sh - 2.0);
+            cr.stroke().ok();
+            cr.set_dash(&[], 0.0);
+        }
         // While dragging the fill handle: where the fill will go.
         if self.drag.get() == Drag::Fill
             && let Some((x, y, sw, sh)) = rect(&self.fill_preview())
@@ -803,6 +829,7 @@ impl Sheets {
         let me = Rc::downgrade(self);
         drag.connect_drag_update(move |g, dx, dy| {
             let Some(s) = me.upgrade() else { return };
+            s.drag_copy.set(g.current_event_state().contains(gdk::ModifierType::CONTROL_MASK));
             if let Some((x0, y0)) = g.start_point() {
                 s.drag_to(x0 + dx, y0 + dy, dx, dy);
             }
@@ -844,14 +871,15 @@ impl Sheets {
                 return;
             }
             if let Some((_, corner)) = s.chart_hit(x, y) {
-                s.area.set_cursor_from_name(Some(if corner { "nwse-resize" } else { "move" }));
+                s.area.set_cursor_from_name(Some(if corner { "nwse-resize" } else { "grab" }));
                 return;
             }
             let name = match s.hit(x, y) {
                 Hit::ColHead(_, true) => "col-resize",
                 Hit::RowHead(_, true) => "row-resize",
                 Hit::Handle => "crosshair",
-                Hit::Cell(..) => "cell",
+                Hit::Edge => "grab",
+                Hit::Cell(..) => "default",
                 _ => "default",
             };
             s.area.set_cursor_from_name(Some(name));
@@ -872,7 +900,7 @@ impl Sheets {
         self.area.add_controller(scroll);
     }
 
-    fn press(&self, x: f64, y: f64, shift: bool) {
+    pub(super) fn press(&self, x: f64, y: f64, shift: bool) {
         // Picking a cell for a formula being typed keeps the editor's focus.
         if let Hit::Cell(r, c) = self.hit(x, y)
             && let Some((e, at)) = self.can_pick()
@@ -934,6 +962,20 @@ impl Sheets {
                 self.fill_to.set(None);
                 self.drag.set(Drag::Fill);
             }
+            Hit::Edge => {
+                if !self.merges_shown() {
+                    crate::window::toast("Clear the filter to drag cells.");
+                    return;
+                }
+                // Which cell of the selection was grabbed, so it stays under the pointer.
+                let sel = self.selection();
+                let (r, c) = self.cell_near(x, y);
+                let dr = r.clamp(sel.top, sel.bottom) - sel.top;
+                let dc = c.clamp(sel.left, sel.right) - sel.left;
+                self.move_to.set(None);
+                self.drag.set(Drag::MoveCells { dr, dc });
+                self.area.set_cursor_from_name(Some("grabbing"));
+            }
             Hit::Cell(r, c) => {
                 // A click on a checkbox ticks it.
                 let src = self.src_row(r);
@@ -961,10 +1003,10 @@ impl Sheets {
         self.area.queue_draw();
     }
 
-    fn drag_to(&self, x: f64, y: f64, dx: f64, dy: f64) {
+    pub(super) fn drag_to(&self, x: f64, y: f64, dx: f64, dy: f64) {
         // Past the edge, scroll along.
         let (w, h) = (self.area.width() as f64, self.area.height() as f64);
-        if matches!(self.drag.get(), Drag::Select | Drag::Fill | Drag::Pick { .. } | Drag::Rows | Drag::Cols) {
+        if matches!(self.drag.get(), Drag::Select | Drag::Fill | Drag::Pick { .. } | Drag::Rows | Drag::Cols | Drag::MoveCells { .. }) {
             if y > h - 8.0 {
                 self.vadj.set_value(self.vadj.value() + 20.0);
             } else if y < HEAD_H + 4.0 && self.vadj.value() > 0.0 {
@@ -1007,6 +1049,14 @@ impl Sheets {
                 self.relayout();
             }
             Drag::MoveChart { .. } | Drag::SizeChart { .. } => self.drag_chart(dx, dy),
+            Drag::MoveCells { dr, dc } => {
+                // The block keeps its shape and stays on the sheet.
+                let sel = self.selection();
+                let (r, c) = self.cell_near(x, y);
+                let top = r.saturating_sub(dr).min(ROWS - sel.rows());
+                let left = c.saturating_sub(dc).min(COLS - sel.cols());
+                self.move_to.set(Some((top, left)));
+            }
             Drag::ResizeRow { r, y0: _, h0 } => {
                 let nh = (h0 as f64 + dy).round().max(20.0) as u32;
                 let src = self.src_row(r);
@@ -1018,7 +1068,7 @@ impl Sheets {
         self.area.queue_draw();
     }
 
-    fn release(&self) {
+    pub(super) fn release(&self) {
         match self.drag.get() {
             Drag::Fill => {
                 if let Some(to) = self.fill_to.take() {
@@ -1037,6 +1087,25 @@ impl Sheets {
                     self.redo.borrow_mut().clear();
                     crate::doc::edited();
                 }
+            }
+            Drag::MoveCells { .. } => {
+                if let Some(to) = self.move_to.take() {
+                    let src = self.selection_src();
+                    if to != (src.top, src.left) {
+                        let dest = Area::new(to.0, to.1, to.0 + src.rows() - 1, to.1 + src.cols() - 1);
+                        if self.drag_copy.get() {
+                            // Ctrl: a copy, formulas following as when pasted.
+                            let clip = self.wb.borrow().copy(src);
+                            self.change(|wb| wb.paste(Area::cell(to.0, to.1), &clip));
+                        } else {
+                            self.change(|wb| {
+                                wb.move_area(src, to);
+                            });
+                        }
+                        self.select_src(dest);
+                    }
+                }
+                self.area.set_cursor_from_name(Some("grab"));
             }
             // Keep the pick open so a following click replaces it.
             Drag::Pick { .. } => return,

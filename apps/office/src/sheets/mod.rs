@@ -4,7 +4,7 @@ mod cells;
 pub mod chart;
 pub mod formula;
 mod functions;
-mod grid;
+pub(super) mod grid;
 pub mod model;
 mod pages;
 mod placed;
@@ -53,6 +53,11 @@ enum Drag {
     /// Selecting whole columns or rows from the headers.
     Cols,
     Rows,
+    /// Dragging the selection by its edge: the grabbed cell's place in it.
+    MoveCells {
+        dr: u32,
+        dc: u32,
+    },
     /// Moving or resizing a chart placed on the sheet: where it was.
     MoveChart {
         i: usize,
@@ -127,6 +132,9 @@ pub struct Sheets {
     tab_names: RefCell<Vec<String>>,
     /// The placed chart picked on the sheet, if any.
     chart_sel: Cell<Option<usize>>,
+    /// While dragging cells: where their top left would land, and whether Ctrl copies.
+    move_to: Cell<Option<(u32, u32)>>,
+    drag_copy: Cell<bool>,
 }
 
 thread_local! {
@@ -208,6 +216,8 @@ impl Sheets {
             found: RefCell::new(Vec::new()),
             tab_names: RefCell::new(Vec::new()),
             chart_sel: Cell::new(None),
+            move_to: Cell::new(None),
+            drag_copy: Cell::new(false),
         });
         *s.me.borrow_mut() = Rc::downgrade(&s);
         s.root.add_css_class("sheets-editor");
@@ -1498,6 +1508,7 @@ impl doc::Editor for Sheets {
             (&["Ctrl", "A"], "Select the whole sheet"),
             (&["Delete"], "Clear the selected cells"),
             (&["Ctrl", "C"], "Copy (Ctrl+X cuts, then paste moves)"),
+            (&["Drag", "Edge"], "Drag the selection by its edge to move it (hold Ctrl to copy)"),
             (&["Ctrl", "V"], "Paste; a larger selection repeats the copy"),
             (&["Ctrl", "D"], "Fill down"),
             (&["Ctrl", "R"], "Fill right"),
@@ -1619,6 +1630,35 @@ pub mod tests {
         assert_eq!(tabs(&s), [true, false]);
         Editor::undo(&*s);
         assert_eq!(tabs(&s).len(), 1);
+
+        // Dragging cells by the selection's edge moves them; with Ctrl, copies them.
+        s.change(|wb| wb.set(0, 4, "moved"));
+        // (No window here: keep the grid unscrolled so cells sit where they're drawn.)
+        s.hadj.set_value(0.0);
+        s.vadj.set_value(0.0);
+        s.anchor.set((0, 4));
+        s.cursor.set((0, 4));
+        let (x, y, w, _) = s.area_rect(Area::cell(0, 4));
+        assert!(matches!(s.hit(x + w / 2.0, y), grid::Hit::Edge));
+        s.press(x + w / 2.0, y + 1.0, false);
+        let (tx, ty, _, _) = s.area_rect(Area::cell(2, 5));
+        s.drag_to(tx + 5.0, ty + 5.0, 0.0, 0.0);
+        s.release();
+        assert_eq!(s.wb.borrow().sheet().raw(0, 4), "");
+        assert_eq!(s.wb.borrow().sheet().raw(2, 5), "moved");
+        assert_eq!(s.selection_src(), Area::cell(2, 5));
+        s.hadj.set_value(0.0);
+        s.vadj.set_value(0.0);
+        let (x, y, w, _) = s.area_rect(Area::cell(2, 5));
+        s.press(x + w / 2.0, y + 1.0, false);
+        s.drag_copy.set(true);
+        let (tx, ty, _, _) = s.area_rect(Area::cell(6, 5));
+        s.drag_to(tx + 5.0, ty + 5.0, 0.0, 0.0);
+        s.release();
+        s.drag_copy.set(false);
+        s.hadj.set_value(0.0);
+        s.vadj.set_value(0.0);
+        assert_eq!((s.wb.borrow().sheet().raw(2, 5).to_string(), s.wb.borrow().sheet().raw(6, 5).to_string()), ("moved".into(), "moved".into()));
 
         // A chart placed on the sheet: beside the selection, picked, removable.
         s.anchor.set((0, 0));

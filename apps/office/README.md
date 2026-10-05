@@ -66,7 +66,8 @@ Then:
   - Highlight rules: color cells that are above or below a number, between two, equal
     to one, contain some text, are blank or an error, are in the top few, or above
     average.
-  - Copy, cut and paste (formulas follow the cells), drag the corner handle to fill,
+  - Drag the selection by its edge to move it (hold <kbd>Ctrl</kbd> to copy); copy, cut
+    and paste (formulas follow the cells); drag the corner handle to fill,
     <kbd>Ctrl</kbd>+<kbd>D</kbd> / <kbd>Ctrl</kbd>+<kbd>R</kbd> to fill down or right.
   - Sort by a column, filter rows by what a column contains, keep the first row as a
     header and in view while scrolling.
