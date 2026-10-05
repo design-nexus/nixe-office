@@ -64,9 +64,18 @@ pub fn read_entry(archive: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> R
     if file.size() > MAX_ENTRY {
         bail!("{name} is too large");
     }
-    let mut out = Vec::with_capacity(file.size() as usize);
-    file.read_to_end(&mut out)?;
-    Ok(Some(out))
+    Ok(Some(read_capped(&mut file, MAX_ENTRY).with_context(|| format!("{name} is too large or damaged"))?))
+}
+
+/// Read at most `max` bytes, failing past that. A ZIP entry's stated size can't
+/// be trusted, so readers of untrusted archives go through this.
+pub fn read_capped(r: impl Read, max: u64) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    r.take(max + 1).read_to_end(&mut out)?;
+    if out.len() as u64 > max {
+        return Err(std::io::Error::other("too large"));
+    }
+    Ok(out)
 }
 
 pub fn read(bytes: &[u8], format: &str) -> Result<Container> {

@@ -5,7 +5,7 @@ use super::formula::{self, Cells, Value};
 pub use super::rules::Rule;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 pub const ROWS: u32 = 10_000;
 pub const COLS: u32 = 104;
@@ -169,6 +169,9 @@ pub struct Sheet {
     /// Pixels, only where they differ from the default.
     pub row_heights: BTreeMap<u32, u32>,
     pub col_widths: BTreeMap<u32, u32>,
+    /// Rows and columns hidden from view (and from print); they keep their size.
+    pub hidden_rows: BTreeSet<u32>,
+    pub hidden_cols: BTreeSet<u32>,
     pub filter: Option<Filter>,
     /// The first row names the columns: sort and filter leave it at the top.
     pub header: bool,
@@ -241,6 +244,8 @@ impl Sheet {
             cells: BTreeMap::new(),
             row_heights: BTreeMap::new(),
             col_widths: BTreeMap::new(),
+            hidden_rows: BTreeSet::new(),
+            hidden_cols: BTreeSet::new(),
             filter: None,
             header: true,
             freeze: false,
@@ -290,11 +295,22 @@ impl Sheet {
         self.cells.get(&(r, c)).map(|c| c.format.clone()).unwrap_or_default()
     }
 
+    /// A row's height as shown: nothing when it's hidden.
     pub fn row_h(&self, r: u32) -> u32 {
+        if self.hidden_rows.contains(&r) { 0 } else { self.size_of_row(r) }
+    }
+
+    /// A column's width as shown: nothing when it's hidden.
+    pub fn col_w(&self, c: u32) -> u32 {
+        if self.hidden_cols.contains(&c) { 0 } else { self.size_of_col(c) }
+    }
+
+    /// A row's own height, hidden or not.
+    pub fn size_of_row(&self, r: u32) -> u32 {
         self.row_heights.get(&r).copied().unwrap_or(ROW_H)
     }
 
-    pub fn col_w(&self, c: u32) -> u32 {
+    pub fn size_of_col(&self, c: u32) -> u32 {
         self.col_widths.get(&c).copied().unwrap_or(COL_W)
     }
 
@@ -326,6 +342,8 @@ impl Sheet {
         self.cells.values().any(|c| c.format != Format::default())
             || !self.row_heights.is_empty()
             || !self.col_widths.is_empty()
+            || !self.hidden_rows.is_empty()
+            || !self.hidden_cols.is_empty()
             || self.chart.is_some()
             || !self.merges.is_empty()
             || !self.rules.is_empty()
@@ -729,9 +747,11 @@ impl Workbook {
         Some(dest)
     }
 
+    /// Set a row's height; a hidden row dragged open shows again.
     pub fn set_row_h(&mut self, r: u32, h: u32) {
         let h = h.clamp(20, 400);
         let s = self.sheet_mut();
+        s.hidden_rows.remove(&r);
         if h == ROW_H {
             s.row_heights.remove(&r);
         } else {
@@ -742,10 +762,27 @@ impl Workbook {
     pub fn set_col_w(&mut self, c: u32, w: u32) {
         let w = w.clamp(36, 800);
         let s = self.sheet_mut();
+        s.hidden_cols.remove(&c);
         if w == COL_W {
             s.col_widths.remove(&c);
         } else {
             s.col_widths.insert(c, w);
+        }
+    }
+
+    /// Hide or show rows `top..=bottom` of the active sheet.
+    pub fn hide_rows(&mut self, top: u32, bottom: u32, hide: bool) {
+        let s = self.sheet_mut();
+        for r in top..=bottom.min(ROWS - 1) {
+            if hide { s.hidden_rows.insert(r) } else { s.hidden_rows.remove(&r) };
+        }
+    }
+
+    /// Hide or show columns `left..=right` of the active sheet.
+    pub fn hide_cols(&mut self, left: u32, right: u32, hide: bool) {
+        let s = self.sheet_mut();
+        for c in left..=right.min(COLS - 1) {
+            if hide { s.hidden_cols.insert(c) } else { s.hidden_cols.remove(&c) };
         }
     }
 
@@ -1048,6 +1085,10 @@ struct SheetFile {
     row_heights: Vec<(u32, u32)>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     col_widths: Vec<(u32, u32)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    hidden_rows: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    hidden_cols: Vec<u32>,
     #[serde(default)]
     filter: Option<Filter>,
     #[serde(default = "yes")]
@@ -1098,6 +1139,8 @@ impl Workbook {
                         .collect(),
                     row_heights: s.row_heights.iter().map(|(k, v)| (*k, *v)).collect(),
                     col_widths: s.col_widths.iter().map(|(k, v)| (*k, *v)).collect(),
+                    hidden_rows: s.hidden_rows.iter().copied().collect(),
+                    hidden_cols: s.hidden_cols.iter().copied().collect(),
                     filter: s.filter.clone(),
                     header: s.header,
                     freeze: s.freeze,
@@ -1124,6 +1167,8 @@ impl Workbook {
             }
             s.row_heights = sf.row_heights.into_iter().filter(|(r, _)| *r < ROWS).collect();
             s.col_widths = sf.col_widths.into_iter().filter(|(c, _)| *c < COLS).collect();
+            s.hidden_rows = sf.hidden_rows.into_iter().filter(|r| *r < ROWS).collect();
+            s.hidden_cols = sf.hidden_cols.into_iter().filter(|c| *c < COLS).collect();
             s.filter = sf.filter.filter(|x| x.col < COLS);
             s.header = sf.header;
             s.freeze = sf.freeze;

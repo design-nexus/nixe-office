@@ -43,6 +43,9 @@ struct Fmt {
     italic: bool,
     underline: bool,
     strike: bool,
+    superscript: bool,
+    subscript: bool,
+    link: Option<String>,
     font: Option<String>,
     size: Option<f64>,
     color: Option<String>,
@@ -232,6 +235,9 @@ pub fn from_html(html: &str) -> Document {
                     "i" | "em" => f.italic = true,
                     "u" => f.underline = true,
                     "s" | "del" => f.strike = true,
+                    "sup" => (f.superscript, f.subscript) = (true, false),
+                    "sub" => (f.superscript, f.subscript) = (false, true),
+                    "a" => f.link = attr(&attrs, "href").filter(|h| !h.is_empty()).map(String::from),
                     _ => {}
                 }
                 match name.as_str() {
@@ -344,6 +350,9 @@ pub fn from_html(html: &str) -> Document {
                     italic: f.italic,
                     underline: f.underline,
                     strike: f.strike,
+                    superscript: f.superscript,
+                    subscript: f.subscript,
+                    link: f.link,
                     font: f.font,
                     size: f.size,
                     color: f.color,

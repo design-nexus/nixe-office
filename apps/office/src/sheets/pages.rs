@@ -42,14 +42,16 @@ impl SheetPages {
         let mut pages = Vec::new();
         for (si, s) in wb.sheets.iter().enumerate() {
             let Some((lr, lc)) = s.used() else { continue };
-            let rows: Vec<u32> = wb.view_rows(si, calc).into_iter().filter(|r| *r <= lr).collect();
+            // Hidden rows and columns don't print.
+            let rows: Vec<u32> =
+                wb.view_rows(si, calc).into_iter().filter(|r| *r <= lr && !s.hidden_rows.contains(r)).collect();
             let header = s.header && rows.first() == Some(&0) && rows.len() > 1;
             let body: Vec<u32> = if header { rows[1..].to_vec() } else { rows.clone() };
             let head_h = if header { s.row_h(0) as f64 * PT } else { 0.0 };
             // Columns that fit across a page.
             let mut col_groups: Vec<Vec<u32>> = vec![Vec::new()];
             let mut x = 0.0;
-            for c in 0..=lc {
+            for c in (0..=lc).filter(|c| !s.hidden_cols.contains(c)) {
                 let w = (s.col_w(c) as f64 * PT).min(cw);
                 if x + w > cw && !col_groups.last().is_some_and(|g| g.is_empty()) {
                     col_groups.push(Vec::new());

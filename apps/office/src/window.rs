@@ -139,6 +139,8 @@ fn install_icons() {
         "columns-2",
         "separator-horizontal",
         "superscript",
+        "subscript",
+        "link",
         "message-square-plus",
         "align-center",
         "align-left",

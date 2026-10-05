@@ -7,7 +7,10 @@ use super::pptx_more as more;
 use anyhow::{Context, Result, bail};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Write};
+
+/// The largest video or audio clip taken from a PowerPoint file.
+const MAX_CLIP: u64 = 512 * 1024 * 1024;
 
 /// English Metric Units per point.
 const EMU: f64 = 12700.0;
@@ -451,11 +454,10 @@ fn read_media(
         .or_else(|| attr_ns(&file, "link"))?;
     let (_, target) = srels.get(rid)?;
     let mut f = zip.by_name(target.trim_start_matches('/')).ok()?;
-    if f.size() > 1024 * 1024 * 1024 {
+    if f.size() > MAX_CLIP {
         return None;
     }
-    let mut bytes = Vec::new();
-    f.read_to_end(&mut bytes).ok()?;
+    let bytes = crate::container::read_capped(&mut f, MAX_CLIP).ok()?;
     let ext = target.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_else(|| "mp4".into());
     let name = format!("clip-{}.{ext}", media.len() + 1);
     media.insert(name.clone(), bytes);
@@ -530,9 +532,7 @@ fn part(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Option<Vec<u8>>
     if f.size() > 64 * 1024 * 1024 {
         return None;
     }
-    let mut v = Vec::new();
-    f.read_to_end(&mut v).ok()?;
-    Some(v)
+    crate::container::read_capped(&mut f, 64 * 1024 * 1024).ok()
 }
 
 fn text_part(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Option<String> {

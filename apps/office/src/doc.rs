@@ -244,6 +244,40 @@ pub fn guard(then: impl FnOnce() + 'static) {
     save_b.grab_focus();
 }
 
+/// Run `then` if `path` is free, or once the user agrees to replace it. For
+/// names we added an extension to, which the file chooser never checked.
+fn confirm_replace(path: &Path, then: impl FnOnce() + 'static) {
+    if !path.exists() {
+        then();
+        return;
+    }
+    let (dialog, card) = widgets::dialog(&format!("Replace “{}”?", file_name(path)), 440);
+    let d = widgets::label("A file with this name already exists. Replacing it overwrites what's in it.", "dim");
+    d.set_wrap(true);
+    card.append(&d);
+    let buttons = widgets::hbox(8);
+    buttons.set_halign(gtk::Align::End);
+    buttons.set_margin_top(6);
+    let cancel = gtk::Button::with_label("Cancel");
+    let replace = gtk::Button::with_label("Replace");
+    replace.add_css_class("destructive-action");
+    buttons.append(&cancel);
+    buttons.append(&replace);
+    card.append(&buttons);
+    let dl = dialog.clone();
+    cancel.connect_clicked(move |_| dl.close());
+    let dl = dialog.clone();
+    let then = RefCell::new(Some(then));
+    replace.connect_clicked(move |_| {
+        dl.close();
+        if let Some(f) = then.borrow_mut().take() {
+            f();
+        }
+    });
+    dialog.present();
+    cancel.grab_focus();
+}
+
 // ---------- New and open ----------
 
 pub fn new_document(template: Option<&'static str>) {
@@ -380,13 +414,20 @@ fn save_as_then(then: impl FnOnce() + 'static) {
             .extension()
             .map(|e| e.to_string_lossy().to_lowercase())
             .is_some_and(|e| kind.save_formats().iter().any(|(_, x)| *x == e));
-        if !known {
-            let name = format!("{}.{}", file_name(&p), kind.native_ext());
-            p.set_file_name(name);
+        if known {
+            if write_to(&p) {
+                then();
+            }
+            return;
         }
-        if write_to(&p) {
-            then();
-        }
+        let name = format!("{}.{}", file_name(&p), kind.native_ext());
+        p.set_file_name(name);
+        let target = p.clone();
+        confirm_replace(&target, move || {
+            if write_to(&p) {
+                then();
+            }
+        });
     });
 }
 
@@ -456,14 +497,18 @@ pub fn export_pdf_dialog() {
     dialog.save(window::window().as_ref(), gio::Cancellable::NONE, move |res| {
         let Ok(file) = res else { return };
         let Some(mut p) = file.path() else { return };
-        if !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")) {
-            let name = format!("{}.pdf", file_name(&p));
-            p.set_file_name(name);
-        }
-        match print::export_pdf(ed.pages().as_ref(), &p) {
+        let export = move |p: PathBuf| match print::export_pdf(ed.pages().as_ref(), &p) {
             Ok(()) => window::toast(&format!("Exported {}.", file_name(&p))),
             Err(e) => window::toast(&format!("Couldn't export the PDF: {e:#}")),
+        };
+        if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")) {
+            export(p);
+            return;
         }
+        let name = format!("{}.pdf", file_name(&p));
+        p.set_file_name(name);
+        let target = p.clone();
+        confirm_replace(&target, move || export(p));
     });
 }
 

@@ -213,7 +213,9 @@ pub fn call(name: &str, args: &[Expr], cells: &dyn Cells) -> Option<Value> {
             }
         }
         "REPT" if n == 2 => match (text(&args[0], cells), num(&args[1], cells)) {
-            (Ok(t), Ok(k)) if k >= 0.0 && t.len() * k as usize <= 32_767 => Value::Text(t.repeat(k as usize)),
+            (Ok(t), Ok(k)) if k >= 0.0 && t.len().checked_mul(k as usize).is_some_and(|n| n <= 32_767) => {
+                Value::Text(t.repeat(k as usize))
+            }
             (Ok(_), Ok(_)) => Value::Err("#VALUE!"),
             (Err(e), _) | (_, Err(e)) => Value::Err(e),
         },
@@ -735,6 +737,7 @@ mod tests {
         assert_eq!(ev("=SUBSTITUTE(\"a-b-c\", \"-\", \"+\", 2)"), t("a-b+c"));
         assert_eq!(ev("=REPLACE(\"abcdef\", 2, 3, \"X\")"), t("aXef"));
         assert_eq!(ev("=REPT(\"ab\", 3)"), t("ababab"));
+        assert_eq!(ev("=REPT(\"abcd\", 4611686018427387904)"), Value::Err("#VALUE!"));
         assert_eq!(ev("=PROPER(\"hello wORLD-wide\")"), t("Hello World-Wide"));
         assert_eq!(ev("=VALUE(\"1,250.5\")"), n(1250.5));
         assert_eq!(ev("=TEXTJOIN(\", \", TRUE, B1:B3, \"\", \"z\")"), t("a, b, c, z"));

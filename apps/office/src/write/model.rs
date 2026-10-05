@@ -332,6 +332,15 @@ pub struct TextRun {
     pub underline: bool,
     #[serde(skip_serializing_if = "is_false")]
     pub strike: bool,
+    /// Raised and smaller (never with `subscript`).
+    #[serde(skip_serializing_if = "is_false")]
+    pub superscript: bool,
+    /// Lowered and smaller.
+    #[serde(skip_serializing_if = "is_false")]
+    pub subscript: bool,
+    /// The web address or file this text links to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub font: Option<String>,
     /// Points.
@@ -365,6 +374,9 @@ impl TextRun {
             && self.italic == o.italic
             && self.underline == o.underline
             && self.strike == o.strike
+            && self.superscript == o.superscript
+            && self.subscript == o.subscript
+            && self.link == o.link
             && self.font == o.font
             && self.size == o.size
             && self.color == o.color

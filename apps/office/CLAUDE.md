@@ -48,6 +48,10 @@
   the end. `Block::Section` sets the columns from there on (the pager keeps a
   section's top on the page); Word keeps a section's settings at its end, so
   `docx.rs` shifts them by one each way. The editor stays the first section's width.
+  Links are `link:<address>` tags (`links.rs`: the Ctrl+K dialog, Ctrl+click, the
+  hover tooltip); in Word they're `w:hyperlink` with an external relationship, in a
+  PDF a cairo `Link` tag per line. Superscript and subscript are the `sup`/`sub` flags.
+  Typing at the end of a link or comment doesn't extend it (`pick_up_format`).
   Shapes and charts in the text are `Run::Drawing` (`figure.rs`: a paintable drawn
   with Cairo, reusing Present's shapes and Sheets' charts); in Word they're `wps`
   shapes and chart parts.
@@ -68,10 +72,18 @@
   margins. `xlsx.rs` reads with roxmltree (styles, merges, notes and conditional
   formats included) and writes with rust_xlsxwriter. Sheets are tabs under the grid;
   Sheets has no sidebar group, so `window.rs` hides the sidebar on its document page.
+  Inserting and deleting rows and columns is `structure.rs` (`Workbook::restructure`:
+  rewrites references on every sheet, `$` ones too, and moves merges, rules, charts,
+  tables and the filter); the grid's right-click menu is `menu.rs`. Rows can't be
+  inserted or deleted while a filter is on. Hidden rows and columns
+  (`Sheet.hidden_rows`/`hidden_cols`) are zero-sized through `row_h`/`col_w`
+  (`size_of_row`/`size_of_col` give their own size); the grid skips them in drawing
+  and `past_hidden` keeps the cursor off them; print leaves them out.
   Charts placed on the sheet (`Sheet.charts`, pixels from the cells' top left) and
   table regions (`Sheet.tables`, styled through `Calc::look`) live in `placed.rs`;
   in Excel they're drawing anchors and tables (the cells a chart spans get explicit
-  sizes, as Excel's defaults differ).
+  sizes, as Excel's defaults differ). Formulas parse with a depth limit
+  (`formula::MAX_DEPTH`) and `^` works left to right, as in Excel.
 - **Present** (`present/`): slides are 960 × 540 (points; PowerPoint's 16:9 page).
   `render.rs` draws a slide for the canvas, thumbnails, slideshow, presenter view and
   PDF alike. Text is edited in an overlay `TextView` styled to the slide's font at the

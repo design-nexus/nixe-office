@@ -18,6 +18,8 @@ enum Item {
         x: f64,
         top: f64,
         marker: Option<Rc<pango::Layout>>,
+        /// Linked text in the layout, made clickable in a PDF.
+        links: Rc<Vec<LinkSpan>>,
     },
     Picture {
         surface: cairo::ImageSurface,
@@ -60,6 +62,9 @@ pub struct Rendered {
     /// The page (from 1) each heading starts on, by block index.
     heading_pages: HashMap<usize, usize>,
 }
+
+/// A link's text, by byte range in its layout, and its address.
+type LinkSpan = (u32, u32, String);
 
 /// A piece of a paragraph's text: a run, or a footnote's number.
 #[derive(Clone)]
@@ -116,14 +121,15 @@ fn text_layout(ctx: &pango::Context, runs: &[&TextRun], style: Style, align: Ali
     pieces_layout(ctx, &pieces, style, align, width).0
 }
 
-/// A layout for runs and footnote marks; also where each mark is: (byte index, number).
+/// A layout for runs and footnote marks; also where each mark is: (byte index,
+/// number), and where the links are.
 fn pieces_layout(
     ctx: &pango::Context,
     pieces: &[Piece],
     style: Style,
     align: Align,
     width: f64,
-) -> (pango::Layout, Vec<(usize, usize)>) {
+) -> (pango::Layout, Vec<(usize, usize)>, Vec<LinkSpan>) {
     let layout = pango::Layout::new(ctx);
     let (size, _, _, bold, italic) = style.look();
     let mut font = pango::FontDescription::from_string(DEFAULT_FONT);
@@ -146,6 +152,7 @@ fn pieces_layout(
     let mut text = String::new();
     let attrs = pango::AttrList::new();
     let mut marks = Vec::new();
+    let mut links: Vec<LinkSpan> = Vec::new();
     for piece in pieces {
         let r = match piece {
             Piece::Text(r) => r,
@@ -192,10 +199,24 @@ fn pieces_layout(
         if let Some(f) = &r.font {
             add(pango::AttrString::new_family(f).into());
         }
-        if let Some(s) = r.size {
+        let run_size = r.size.unwrap_or(size);
+        if r.superscript || r.subscript {
+            let rise = if r.superscript { super::buffer::SUPER_RISE } else { super::buffer::SUB_RISE };
+            add(pango::AttrSize::new((run_size * super::buffer::SCRIPT_SCALE * pango::SCALE as f64) as i32).into());
+            add(pango::AttrInt::new_rise((run_size * rise * pango::SCALE as f64) as i32).into());
+        } else if let Some(s) = r.size {
             add(pango::AttrSize::new((s * pango::SCALE as f64) as i32).into());
         }
-        let color = r.color.as_deref().or(if style == Style::Quote { Some("#4a5060") } else { None });
+        if let Some(uri) = &r.link {
+            add(pango::AttrInt::new_underline(pango::Underline::Single).into());
+            match links.last_mut() {
+                Some((_, e, u)) if *e == start && u == uri => *e = end,
+                _ => links.push((start, end, uri.clone())),
+            }
+        }
+        let quote = if style == Style::Quote { Some("#4a5060") } else { None };
+        let link = r.link.as_ref().map(|_| super::buffer::LINK_INK);
+        let color = r.color.as_deref().or(link).or(quote);
         if let Some((cr, cg, cb)) = color.and_then(rgb) {
             add(pango::AttrColor::new_foreground(cr, cg, cb).into());
         }
@@ -217,7 +238,7 @@ fn pieces_layout(
     }
     layout.set_text(&text);
     layout.set_attributes(Some(&attrs));
-    (layout, marks)
+    (layout, marks, links)
 }
 
 /// The top of each line and the layout's whole height, in points.
@@ -463,7 +484,7 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
                             {
                                 let narrow = width - left - fw - WRAP_GAP;
                                 let nx = if side == Side::Left { left + fw + WRAP_GAP } else { left };
-                                let (l, _) = pieces_layout(&ctx, &parts[0].0, p.style, p.align, narrow);
+                                let (l, ..) = pieces_layout(&ctx, &parts[0].0, p.style, p.align, narrow);
                                 let (tops, _) = line_tops(&l);
                                 let beside = tops.iter().take_while(|t| **t < fh).count();
                                 let at = l.line(beside as i32).map(|line| line.start_index() as usize);
@@ -480,8 +501,9 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
                             }
                             for (pi, (pieces, left, text_w)) in parts.into_iter().enumerate() {
                                 let first_part = pi == 0;
-                                let (layout, marks) = pieces_layout(&ctx, &pieces, p.style, p.align, text_w);
+                                let (layout, marks, links) = pieces_layout(&ctx, &pieces, p.style, p.align, text_w);
                                 let layout = Rc::new(layout);
+                                let links = Rc::new(links);
                                 let marker = match (first && first_part, p.list) {
                                     (true, Some(list)) => {
                                         let label = list_label(list, p.indent, numbers[bi]);
@@ -552,6 +574,7 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
                                         x: left,
                                         top: pg.y,
                                         marker: m,
+                                        links: links.clone(),
                                     });
                                     pg.y += bottom - base;
                                     for line in &line_notes[start..end] {
@@ -647,7 +670,7 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
                 if pg.room() < h * 3.0 && pg.y > 0.0 {
                     pg.next_column();
                 }
-                pg.push(Item::Lines { layout: l, lines: 0..1, x: 0.0, top: pg.y, marker: None });
+                pg.push(Item::Lines { layout: l, lines: 0..1, x: 0.0, top: pg.y, marker: None, links: Rc::default() });
                 pg.y += h + below;
                 for (level, text, hb) in doc.headings() {
                     let indent = level.saturating_sub(1) as f64 * 14.0;
@@ -664,7 +687,7 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
                         pg.next_column();
                     }
                     let lines = 0..l.line_count().max(1) as usize;
-                    pg.push(Item::Lines { layout: Rc::new(l), lines, x: indent, top: pg.y, marker: None });
+                    pg.push(Item::Lines { layout: Rc::new(l), lines, x: indent, top: pg.y, marker: None, links: Rc::default() });
                     pg.y += h;
                 }
                 pg.space(12.0);
@@ -703,19 +726,43 @@ impl Rendered {
     }
 }
 
-fn draw_lines(cr: &cairo::Context, layout: &pango::Layout, lines: &std::ops::Range<usize>, x: f64, top: f64) {
+fn draw_lines(cr: &cairo::Context, layout: &pango::Layout, lines: &std::ops::Range<usize>, x: f64, top: f64, links: &[LinkSpan]) {
     let mut it = layout.iter();
     let mut i = 0;
     let mut base_top = None;
+    let pt = |v: i32| v as f64 / pango::SCALE as f64;
     loop {
         if lines.contains(&i) {
             let (_, logical) = it.line_extents();
-            let line_top = logical.y() as f64 / pango::SCALE as f64;
+            let line_top = pt(logical.y());
             let t = *base_top.get_or_insert(line_top);
-            let baseline = it.baseline() as f64 / pango::SCALE as f64;
+            let baseline = pt(it.baseline());
             if let Some(line) = it.line_readonly() {
-                cr.move_to(x + logical.x() as f64 / pango::SCALE as f64, top + baseline - t);
+                let lx = x + pt(logical.x());
+                cr.move_to(lx, top + baseline - t);
                 pangocairo::functions::show_layout_line(cr, &line);
+                // Links: an area over their text on this line (a PDF keeps it; paper ignores it).
+                let (ls, le) = (line.start_index(), line.start_index() + line.length());
+                for (s, e, uri) in links {
+                    let (s, e) = ((*s as i32).max(ls), (*e as i32).min(le));
+                    if s >= e {
+                        continue;
+                    }
+                    let ranges = line.x_ranges(s, e);
+                    for pair in ranges.chunks(2) {
+                        let [a, b] = pair else { continue };
+                        let rect = format!(
+                            "rect=[{:.2} {:.2} {:.2} {:.2}] uri='{}'",
+                            lx + pt(*a),
+                            top + line_top - t,
+                            pt(b - a),
+                            pt(logical.height()),
+                            uri.replace('\\', "\\\\").replace('\'', "\\'")
+                        );
+                        cr.tag_begin("Link", &rect);
+                        cr.tag_end("Link");
+                    }
+                }
             }
         }
         i += 1;
@@ -780,7 +827,7 @@ impl Pages for Rendered {
         for item in &page.items {
             cr.set_source_rgb(INK.0, INK.1, INK.2);
             match item {
-                Item::Lines { layout, lines, x, top, marker } => {
+                Item::Lines { layout, lines, x, top, marker, links } => {
                     if let Some(m) = marker {
                         let mw = INDENT_STEP * 0.7;
                         // Line the marker's baseline up with the first line's.
@@ -790,7 +837,7 @@ impl Pages for Rendered {
                         pangocairo::functions::show_layout(cr, m);
                     }
                     cr.set_source_rgb(INK.0, INK.1, INK.2);
-                    draw_lines(cr, layout, lines, *x, *top);
+                    draw_lines(cr, layout, lines, *x, *top, links);
                 }
                 Item::Picture { surface, x, top, w, h } => {
                     let _ = cr.save();

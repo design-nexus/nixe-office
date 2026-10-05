@@ -7,6 +7,7 @@ mod docx;
 mod figure;
 mod layout;
 mod legacy;
+mod links;
 mod marks;
 pub mod model;
 mod picture;
@@ -50,6 +51,8 @@ struct Controls {
     italic: gtk::ToggleButton,
     underline: gtk::ToggleButton,
     strike: gtk::ToggleButton,
+    superscript: gtk::ToggleButton,
+    subscript: gtk::ToggleButton,
     color: Rc<color::ColorButton>,
     highlight: Rc<color::ColorButton>,
     align: Vec<(Align, gtk::ToggleButton)>,
@@ -219,6 +222,7 @@ impl Writer {
         root.append(&w.scroll);
         w.connect_buffer();
         w.connect_view();
+        w.connect_links();
         w.apply_page();
         w.attach_spelling();
         WRITER.with(|x| *x.borrow_mut() = Some(w.clone()));
@@ -354,9 +358,19 @@ impl Writer {
         let italic = toggle("nxo-italic-symbolic", "Italic (Ctrl+I)", |w| w.toggle_flag(|r| &mut r.italic));
         let underline = toggle("nxo-underline-symbolic", "Underline (Ctrl+U)", |w| w.toggle_flag(|r| &mut r.underline));
         let strike = toggle("nxo-strikethrough-symbolic", "Strikethrough", |w| w.toggle_flag(|r| &mut r.strike));
-        for b in [&bold, &italic, &underline, &strike] {
+        let superscript = toggle("nxo-superscript-symbolic", "Superscript (Ctrl+Shift+=)", |w| w.toggle_script(true));
+        let subscript = toggle("nxo-subscript-symbolic", "Subscript (Ctrl+=)", |w| w.toggle_script(false));
+        for b in [&bold, &italic, &underline, &strike, &superscript, &subscript] {
             g.append(b);
         }
+        let me = Rc::downgrade(self);
+        let link = widgets::bar_button("nxo-link-symbolic", "Add or edit a link (Ctrl+K)");
+        link.connect_clicked(move |_| {
+            if let Some(w) = me.upgrade() {
+                w.link_dialog();
+            }
+        });
+        g.append(&link);
         let me = Rc::downgrade(self);
         let color = color::button("nxo-baseline-symbolic", "Text color", color::TEXT, "Automatic", move |c| {
             if let Some(w) = me.upgrade() {
@@ -511,6 +525,8 @@ impl Writer {
             italic,
             underline,
             strike,
+            superscript,
+            subscript,
             color,
             highlight,
             align,
@@ -589,6 +605,8 @@ impl Writer {
             c.italic.set_active(r.italic);
             c.underline.set_active(r.underline);
             c.strike.set_active(r.strike);
+            c.superscript.set_active(r.superscript);
+            c.subscript.set_active(r.subscript);
             c.color.set_current(Some(r.color.as_deref().unwrap_or(DEFAULT_COLOR)));
             c.highlight.set_current(r.highlight.as_deref());
             for (a, b) in &c.align {
@@ -762,10 +780,12 @@ impl Writer {
         } else {
             buffer::char_format(&before)
         };
-        // Typing extends a comment only inside it, not at its end.
-        let comment = r.comment.filter(|c| buffer::char_format(&it).comment == Some(*c));
+        // Typing extends a comment or a link only inside it, not at its end.
+        let after = buffer::char_format(&it);
+        let comment = r.comment.filter(|c| after.comment == Some(*c));
+        let link = r.link.clone().filter(|l| after.link.as_ref() == Some(l));
         // Typed text is never deleted text; while tracking it's marked as added.
-        let mut typing = TextRun { text: String::new(), comment, ..r };
+        let mut typing = TextRun { text: String::new(), comment, link, ..r };
         self.tracked_typing(&mut typing, &it);
         *self.typing.borrow_mut() = typing;
     }
@@ -1136,26 +1156,8 @@ impl Writer {
     }
 
     fn apply_char(&self, f: impl Fn(&mut TextRun)) {
-        let b = self.tb();
         match self.target() {
-            Some((s, e)) => {
-                self.checkpoint();
-                let (so, eo) = (s.offset(), e.offset());
-                // Each stretch keeps its other formatting.
-                let mut at = so;
-                while at < eo {
-                    let it = b.iter_at_offset(at);
-                    let mut next = it;
-                    next.forward_to_tag_toggle(None::<&gtk::TextTag>);
-                    let end = next.offset().min(eo).max(at + 1);
-                    let mut r = buffer::char_format(&it);
-                    f(&mut r);
-                    buffer::set_format(b, &it, &b.iter_at_offset(end), &r);
-                    at = end;
-                }
-                self.pick_up_format();
-                self.edited();
-            }
+            Some((s, e)) => self.apply_char_range(s.offset(), e.offset(), &f),
             None => {
                 f(&mut self.typing.borrow_mut());
                 self.sync_controls();
@@ -1164,25 +1166,49 @@ impl Writer {
         self.view.grab_focus();
     }
 
-    fn toggle_flag(&self, field: fn(&mut TextRun) -> &mut bool) {
-        // On if any of the target is off, else off.
-        let on = match self.target() {
+    /// Change the formatting of characters `so..eo`, as one undo step.
+    fn apply_char_range(&self, so: i32, eo: i32, f: &dyn Fn(&mut TextRun)) {
+        let b = self.tb();
+        self.checkpoint();
+        // Each stretch keeps its other formatting.
+        let mut at = so;
+        while at < eo {
+            let it = b.iter_at_offset(at);
+            let mut next = it;
+            next.forward_to_tag_toggle(None::<&gtk::TextTag>);
+            let end = next.offset().min(eo).max(at + 1);
+            let mut r = buffer::char_format(&it);
+            f(&mut r);
+            buffer::set_format(b, &it, &b.iter_at_offset(end), &r);
+            at = end;
+        }
+        self.pick_up_format();
+        self.edited();
+        self.view.grab_focus();
+    }
+
+    /// Whether all of the target (or the typing format, with none) has `test`.
+    fn all_have(&self, test: &dyn Fn(&TextRun) -> bool) -> bool {
+        match self.target() {
             Some((s, e)) => {
-                let mut any_off = false;
                 let mut it = s;
                 while it < e {
-                    if !*field(&mut buffer::char_format(&it)) {
-                        any_off = true;
-                        break;
+                    if !test(&buffer::char_format(&it)) {
+                        return false;
                     }
                     if !it.forward_to_tag_toggle(None::<&gtk::TextTag>) {
                         break;
                     }
                 }
-                any_off
+                true
             }
-            None => !*field(&mut self.typing.borrow_mut().clone()),
-        };
+            None => test(&self.typing.borrow()),
+        }
+    }
+
+    fn toggle_flag(&self, field: fn(&mut TextRun) -> &mut bool) {
+        // On if any of the target is off, else off.
+        let on = !self.all_have(&|r| *field(&mut r.clone()));
         self.apply_char(move |r| *field(r) = on);
     }
 
@@ -1739,6 +1765,8 @@ impl doc::Editor for Writer {
             (&["Tab"], "In a list: indent (Shift+Tab: outdent)"),
             (&["Ctrl", "Shift", "L"], "Align left (E center, R right, J justify)"),
             (&["Ctrl", "Space"], "Clear character formatting"),
+            (&["Ctrl", "K"], "Add or edit a link (Ctrl+click opens one)"),
+            (&["Ctrl", "Shift", "="], "Superscript (Ctrl+=: subscript)"),
             (&["Ctrl", "Enter"], "Page break"),
             (&["Ctrl", "Alt", "F"], "Footnote (Ctrl+Alt+D: endnote)"),
             (&["Ctrl", "Alt", "M"], "Comment on the selection"),
@@ -1777,6 +1805,7 @@ impl doc::Editor for Writer {
                 gdk::Key::e => self.set_align(Align::Center),
                 gdk::Key::r => self.set_align(Align::Right),
                 gdk::Key::j => self.set_align(Align::Justify),
+                gdk::Key::plus | gdk::Key::equal => self.toggle_script(true),
                 _ => return false,
             }
             return true;
@@ -1786,13 +1815,21 @@ impl doc::Editor for Writer {
                 gdk::Key::b => self.toggle_flag(|r| &mut r.bold),
                 gdk::Key::i => self.toggle_flag(|r| &mut r.italic),
                 gdk::Key::u => self.toggle_flag(|r| &mut r.underline),
+                gdk::Key::k => self.link_dialog(),
+                gdk::Key::equal => self.toggle_script(false),
                 gdk::Key::_0 => self.set_style(Style::Normal),
                 gdk::Key::_1 => self.set_style(Style::H1),
                 gdk::Key::_2 => self.set_style(Style::H2),
                 gdk::Key::_3 => self.set_style(Style::H3),
-                // Clearing formatting keeps the text's comment.
+                // Clearing formatting keeps the text's comment and link.
                 gdk::Key::space => self.apply_char(|r| {
-                    *r = TextRun { comment: r.comment, inserted: r.inserted, deleted: r.deleted, ..Default::default() }
+                    *r = TextRun {
+                        comment: r.comment,
+                        link: r.link.clone(),
+                        inserted: r.inserted,
+                        deleted: r.deleted,
+                        ..Default::default()
+                    }
                 }),
                 gdk::Key::Return | gdk::Key::KP_Enter => self.insert_mark_block(marks::MarkKind::PageBreak),
                 _ => return false,
@@ -1963,6 +2000,34 @@ pub mod tests {
         assert!(matches!(&para(&w.document(), 0).runs[0], Run::Text(t) if t.bold && t.text == "Hello there"));
         w.redo();
         assert!(matches!(&para(&w.document(), 0).runs[0], Run::Text(t) if !t.bold));
+
+        // A link on "there"; typing at its end isn't linked, and the link is found whole.
+        w.end_group();
+        w.set_link(6, 11, Some("https://example.com".into()));
+        let mut at = line_end(&w, 0);
+        w.tb().place_cursor(&at);
+        w.tb().insert(&mut at, "!");
+        let linked: Vec<(String, bool)> = para(&w.document(), 0)
+            .runs
+            .iter()
+            .filter_map(|r| if let Run::Text(t) = r { Some((t.text.clone(), t.link.is_some())) } else { None })
+            .collect();
+        assert_eq!(linked, [("Hello".into(), false), (" ".into(), false), ("there".into(), true), ("!".into(), false)]);
+        let (s, e, uri) = w.link_at(&w.tb().iter_at_offset(8)).expect("a link");
+        assert_eq!((s.offset(), e.offset(), uri.as_str()), (6, 11, "https://example.com"));
+        // Superscript, then subscript in its place.
+        w.end_group();
+        w.tb().select_range(&w.tb().iter_at_offset(0), &w.tb().iter_at_offset(1));
+        w.toggle_script(true);
+        assert!(matches!(&para(&w.document(), 0).runs[0], Run::Text(t) if t.superscript && t.text == "H"));
+        w.toggle_script(false);
+        assert!(matches!(&para(&w.document(), 0).runs[0], Run::Text(t) if t.subscript && !t.superscript));
+        for _ in 0..4 {
+            w.undo();
+        }
+        let p = para(&w.document(), 0);
+        assert_eq!(p.plain_text(), "Hello there");
+        assert!(p.runs.iter().all(|r| matches!(r, Run::Text(t) if t.link.is_none() && !t.superscript && !t.subscript)));
 
         // Enter after a heading starts normal text; Enter in a list continues it.
         let d = Document {

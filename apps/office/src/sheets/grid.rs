@@ -88,6 +88,7 @@ impl Sheets {
             true
         });
         self.connect_mouse();
+        self.connect_menu();
         self.connect_keys();
         self.connect_entry();
         col.upcast()
@@ -336,7 +337,34 @@ impl Sheets {
             -1 => m.left as i64 - 1,
             _ => c as i64,
         };
-        (nr.max(0) as u32, nc.max(0) as u32)
+        self.past_hidden(nr.max(0) as u32, nc.max(0) as u32, dr, dc)
+    }
+
+    /// (r, c), moved on along (dr, dc) past hidden rows and columns; where the
+    /// cursor is when there's nothing shown that way.
+    pub(super) fn past_hidden(&self, r: u32, c: u32, dr: i64, dc: i64) -> (u32, u32) {
+        let rows = self.view.borrow().len() as i64;
+        let wb = self.wb.borrow();
+        let s = wb.sheet();
+        let row_hidden = |r: i64| s.hidden_rows.contains(&self.src_row(r as u32));
+        let col_hidden = |c: i64| s.hidden_cols.contains(&(c as u32));
+        let along = |v: i64, d: i64, limit: i64, hidden: &dyn Fn(i64) -> bool| -> Option<i64> {
+            // Without a direction, look forward, then back.
+            for d in if d == 0 { vec![1, -1] } else { vec![d] } {
+                let mut w = v;
+                while w >= 0 && w < limit && hidden(w) {
+                    w += d;
+                }
+                if w >= 0 && w < limit {
+                    return Some(w);
+                }
+            }
+            None
+        };
+        let (cr, cc) = self.cursor.get();
+        let nr = along(r as i64, dr, rows, &row_hidden).unwrap_or(cr as i64);
+        let nc = along(c as i64, dc, COLS as i64, &col_hidden).unwrap_or(cc as i64);
+        (nr as u32, nc as u32)
     }
 
     /// Ctrl+arrow: to the edge of the block of data, or the next data across a gap.
@@ -377,7 +405,7 @@ impl Sheets {
                 }
             }
         }
-        (rr.clamp(0, rows - 1) as u32, cc.clamp(0, COLS as i64 - 1) as u32)
+        self.past_hidden(rr.clamp(0, rows - 1) as u32, cc.clamp(0, COLS as i64 - 1) as u32, dr, dc)
     }
 
     // ---------- Drawing ----------
@@ -408,6 +436,11 @@ impl Sheets {
             visible.retain(|r| *r != 0);
             visible.insert(0, 0);
         }
+        // Hidden rows and columns take no room and draw nothing.
+        let row_hidden = |vi: u32| self.view.borrow().get(vi as usize).is_some_and(|r| s.hidden_rows.contains(r));
+        let hidden_here: Vec<u32> = visible.iter().copied().filter(|vi| row_hidden(*vi)).collect();
+        visible.retain(|vi| !row_hidden(*vi));
+        let shown_cols: Vec<u32> = (first_col..=last_col).filter(|c| !s.hidden_cols.contains(c)).collect();
 
         let layout = a.create_pango_layout(None);
         let base_font = pango::FontDescription::from_string("Noto Sans 10");
@@ -429,7 +462,7 @@ impl Sheets {
             cr.rectangle(HEAD_W, clip_top, w - HEAD_W, h - clip_top);
             cr.clip();
             // Fills, highlights and gridlines.
-            for c in first_col..=last_col {
+            for &c in &shown_cols {
                 let (x, cw) = self.col_rect(c);
                 let f = calc.look(&wb, wb.active, src, c);
                 if let Some(fill) = &f.fill {
@@ -446,7 +479,7 @@ impl Sheets {
             }
             cr.set_source_rgb(LINES.0, LINES.1, LINES.2);
             cr.set_line_width(1.0);
-            for c in first_col..=last_col {
+            for &c in &shown_cols {
                 let (x, cw) = self.col_rect(c);
                 cr.move_to((x + cw).floor() - 0.5, y);
                 cr.line_to((x + cw).floor() - 0.5, y + rh);
@@ -455,7 +488,7 @@ impl Sheets {
             cr.line_to(w, (y + rh).floor() - 0.5);
             cr.stroke().ok();
             // Cell borders, darker than the gridlines.
-            for c in first_col..=last_col {
+            for &c in &shown_cols {
                 let b = calc.look(&wb, wb.active, src, c).borders;
                 if b != 0 && !in_merge(src, c) {
                     let (x, cw) = self.col_rect(c);
@@ -464,7 +497,7 @@ impl Sheets {
             }
 
             // Text. Words that don't fit run on into empty cells to their right.
-            for c in first_col..=last_col {
+            for &c in &shown_cols {
                 let raw = s.raw(src, c);
                 if self.editing.get() && (vi, c) == self.cursor.get() || in_merge(src, c) {
                     continue;
@@ -706,7 +739,7 @@ impl Sheets {
         let small = pango::FontDescription::from_string("JetBrains Mono 8.5");
         layout.set_font_description(Some(&small));
         let active_head = mix(bg, accent, 0.18);
-        for c in first_col..=last_col {
+        for &c in &shown_cols {
             let (x, cw) = self.col_rect(c);
             if c >= sel.left && c <= sel.right {
                 cr.set_source_rgb(active_head.0, active_head.1, active_head.2);
@@ -749,6 +782,24 @@ impl Sheets {
             cr.move_to(HEAD_W - 8.0 - tw as f64, y + (rh - th as f64) / 2.0);
             pangocairo::functions::show_layout(cr, &layout);
         }
+        // Where rows or columns are hidden: a mark across the heading's edge.
+        cr.set_source_rgb(accent.0, accent.1, accent.2);
+        cr.set_line_width(2.0);
+        for c in (first_col..=last_col).filter(|c| s.hidden_cols.contains(c)) {
+            let (x, _) = self.col_rect(c);
+            if x > HEAD_W {
+                cr.move_to(x, 5.0);
+                cr.line_to(x, HEAD_H - 5.0);
+            }
+        }
+        for &vi in &hidden_here {
+            let (y, _) = self.row_rect(vi);
+            if y > HEAD_H {
+                cr.move_to(8.0, y);
+                cr.line_to(HEAD_W - 8.0, y);
+            }
+        }
+        cr.stroke().ok();
         cr.set_source_rgb(head_bg.0, head_bg.1, head_bg.2);
         cr.rectangle(0.0, 0.0, HEAD_W, HEAD_H);
         cr.fill().ok();

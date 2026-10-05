@@ -306,10 +306,15 @@ struct Parser<'a> {
     s: &'a [u8],
     src: &'a str,
     i: usize,
+    /// How deep in brackets, function calls and signs we are.
+    depth: usize,
 }
 
+/// Deeper formulas are refused rather than risk running out of stack.
+const MAX_DEPTH: usize = 200;
+
 pub fn parse(src: &str) -> Expr {
-    let mut p = Parser { s: src.as_bytes(), src, i: 0 };
+    let mut p = Parser { s: src.as_bytes(), src, i: 0, depth: 0 };
     let e = p.comparison();
     p.ws();
     if p.i != p.s.len() {
@@ -394,16 +399,28 @@ impl Parser<'_> {
         }
     }
 
+    /// `^` works left to right, as in spreadsheets: 2^3^2 is 64.
     fn power(&mut self) -> Expr {
-        let base = self.unary();
-        if self.eat(b'^') {
-            let exp = self.power();
-            return Expr::Bin('^', Box::new(base), Box::new(exp));
+        let mut left = self.unary();
+        while self.eat(b'^') {
+            let exp = self.unary();
+            left = Expr::Bin('^', Box::new(left), Box::new(exp));
         }
-        base
+        left
     }
 
     fn unary(&mut self) -> Expr {
+        if self.depth >= MAX_DEPTH {
+            // Stop here; the rest of the text stays unread, so the formula is an error.
+            return Expr::Error("#ERROR!");
+        }
+        self.depth += 1;
+        let e = self.unary_inner();
+        self.depth -= 1;
+        e
+    }
+
+    fn unary_inner(&mut self) -> Expr {
         if self.eat(b'-') {
             return Expr::Neg(Box::new(self.unary()));
         }
@@ -1156,7 +1173,12 @@ mod tests {
         let g = grid(&[("A1", n(2.0)), ("A2", n(3.0))]);
         assert_eq!(ev("1+2*3", &g), n(7.0));
         assert_eq!(ev("(1+2)*3", &g), n(9.0));
-        assert_eq!(ev("2^3^2", &g), n(512.0));
+        assert_eq!(ev("2^3^2", &g), n(64.0));
+        assert_eq!(ev("-2^2", &g), n(4.0));
+        assert_eq!(ev("2^-1", &g), n(0.5));
+        let deep = format!("{}1{}", "(".repeat(100_000), ")".repeat(100_000));
+        assert!(matches!(ev(&deep, &g), Value::Err(_)));
+        assert!(matches!(ev(&"-".repeat(100_000), &g), Value::Err(_)));
         assert_eq!(ev("-A1+A2", &g), n(1.0));
         assert_eq!(ev("A1/0", &g), Value::Err("#DIV/0!"));
         assert_eq!(ev("50%*A1", &g), n(1.0));

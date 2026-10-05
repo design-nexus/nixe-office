@@ -5,7 +5,7 @@ use super::model::*;
 use anyhow::{Context, Result, bail};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Write};
 
 const W_NS: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const R_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -49,6 +49,9 @@ fn style_id(s: Style) -> Option<&'static str> {
 
 fn run_props(r: &TextRun) -> String {
     let mut p = String::new();
+    if r.link.is_some() {
+        p.push_str(r#"<w:rStyle w:val="Hyperlink"/>"#);
+    }
     if let Some(f) = &r.font {
         let _ = write!(p, r#"<w:rFonts w:ascii="{0}" w:hAnsi="{0}" w:cs="{0}"/>"#, esc(f));
     }
@@ -73,6 +76,11 @@ fn run_props(r: &TextRun) -> String {
     if let Some(c) = &r.highlight {
         // Any colour, as shading (Word's own highlight has only a few names).
         let _ = write!(p, r#"<w:shd w:val="clear" w:color="auto" w:fill="{}"/>"#, c.trim_start_matches('#').to_uppercase());
+    }
+    if r.superscript {
+        p.push_str(r#"<w:vertAlign w:val="superscript"/>"#);
+    } else if r.subscript {
+        p.push_str(r#"<w:vertAlign w:val="subscript"/>"#);
     }
     if p.is_empty() { p } else { format!("<w:rPr>{p}</w:rPr>") }
 }
@@ -251,7 +259,27 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
                 if !ppr.is_empty() {
                     let _ = write!(body, "<w:pPr>{ppr}</w:pPr>");
                 }
+                // The link open in this paragraph, if any.
+                let mut link: Option<&str> = None;
                 for r in &p.runs {
+                    let wanted = if let Run::Text(t) = r { t.link.as_deref() } else { None };
+                    if wanted != link {
+                        if link.take().is_some() {
+                            body.push_str("</w:hyperlink>");
+                        }
+                        if let Some(uri) = wanted {
+                            let rid = match rels.iter().find(|(_, k, t)| k == "hyperlink" && t == uri) {
+                                Some((id, ..)) => id.clone(),
+                                None => {
+                                    let id = format!("rId{}", rels.len() + 1);
+                                    rels.push((id.clone(), "hyperlink".into(), uri.to_string()));
+                                    id
+                                }
+                            };
+                            let _ = write!(body, r#"<w:hyperlink r:id="{rid}" w:history="1">"#);
+                            link = Some(uri);
+                        }
+                    }
                     match r {
                         Run::Text(t) => {
                             if t.comment != open {
@@ -312,6 +340,9 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
                             );
                         }
                     }
+                }
+                if link.is_some() {
+                    body.push_str("</w:hyperlink>");
                 }
                 // A comment running on into the next paragraph stays open.
                 if open.is_some() && first_comment(doc.blocks.get(bi + 1)) != open {
@@ -547,6 +578,11 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
             r#"<w:style w:type="paragraph" w:styleId="{id}"><w:name w:val="{name}"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/>{extra}</w:style>"#
         );
     }
+    let _ = write!(
+        styles,
+        r#"<w:style w:type="character" w:styleId="Hyperlink"><w:name w:val="Hyperlink"/><w:rPr><w:color w:val="{}"/><w:u w:val="single"/></w:rPr></w:style>"#,
+        super::buffer::LINK_INK.trim_start_matches('#').to_uppercase()
+    );
     styles.push_str("</w:styles>");
 
     // Numbering: one bullet list and one numbered list definition, nine levels each.
@@ -582,7 +618,11 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
 
     let mut doc_rels = format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="{PKG}">"#);
     for (id, kind, target) in &rels {
-        let _ = write!(doc_rels, r#"<Relationship Id="{id}" Type="{R_NS}/{kind}" Target="{target}"/>"#);
+        if kind == "hyperlink" {
+            let _ = write!(doc_rels, r#"<Relationship Id="{id}" Type="{R_NS}/{kind}" Target="{}" TargetMode="External"/>"#, esc(target));
+        } else {
+            let _ = write!(doc_rels, r#"<Relationship Id="{id}" Type="{R_NS}/{kind}" Target="{target}"/>"#);
+        }
     }
     doc_rels.push_str("</Relationships>");
     let mut types = String::from(
@@ -628,9 +668,7 @@ fn part(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Option<Vec<u8>>
     if f.size() > 64 * 1024 * 1024 {
         return None;
     }
-    let mut v = Vec::new();
-    f.read_to_end(&mut v).ok()?;
-    Some(v)
+    crate::container::read_capped(&mut f, 64 * 1024 * 1024).ok()
 }
 
 fn text_part(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Option<String> {
@@ -687,6 +725,11 @@ fn run_format(rpr: Option<roxmltree::Node>) -> TextRun {
     r.bold = on(&rpr, "b");
     r.italic = on(&rpr, "i");
     r.strike = on(&rpr, "strike") || on(&rpr, "dstrike");
+    match child(&rpr, "vertAlign").and_then(|v| wattr(&v, "val")) {
+        Some("superscript") => r.superscript = true,
+        Some("subscript") => r.subscript = true,
+        _ => {}
+    }
     r.underline = child(&rpr, "u").is_some_and(|u| wattr(&u, "val").is_some_and(|v| v != "none"));
     r.font = child(&rpr, "rFonts")
         .and_then(|f| wattr(&f, "ascii").or(wattr(&f, "hAnsi")))
@@ -731,6 +774,8 @@ struct Reader<'z, 'b> {
     break_before: bool,
     break_after: bool,
     rels: HashMap<String, String>,
+    /// Links' relationship ids → their addresses.
+    links: HashMap<String, String>,
     /// numId → levels' formats (bullet or not).
     numbering: HashMap<String, Vec<bool>>,
     /// Paragraph style id → our style.
@@ -876,11 +921,21 @@ impl Reader<'_, '_> {
                 continue;
             }
             let mut fmt = run_format(child(&r, "rPr"));
+            // Inside a link to a web address or file (not to a place in the document).
+            fmt.link = r
+                .ancestors()
+                .skip(1)
+                .find(|a| a.has_tag_name((W_NS, "hyperlink")))
+                .and_then(|h| h.attributes().find(|a| a.name() == "id").map(|a| a.value()))
+                .and_then(|rid| self.links.get(rid).cloned());
             fmt.comment = self.open_comment;
-            // Tracked changes: the run sits inside w:ins or w:del.
-            if let Some(change) = r.ancestors().skip(1).find(|a| a.has_tag_name((W_NS, "ins")) || a.has_tag_name((W_NS, "del"))) {
+            // Tracked changes: the run sits inside w:ins or w:del. Moved text is
+            // a w:moveFrom where it was and a w:moveTo where it went: a deletion
+            // and an insertion, so it isn't read twice.
+            let is = |a: &roxmltree::Node, names: &[&str]| names.iter().any(|n| a.has_tag_name((W_NS, *n)));
+            if let Some(change) = r.ancestors().skip(1).find(|a| is(a, &["ins", "del", "moveTo", "moveFrom"])) {
                 let id = self.revision_id(&change);
-                if change.has_tag_name((W_NS, "ins")) {
+                if is(&change, &["ins", "moveTo"]) {
                     fmt.inserted = Some(id);
                 } else {
                     fmt.deleted = Some(id);
@@ -1077,17 +1132,18 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
     let base = doc_path.rsplit_once('/').map(|(a, _)| a.to_string()).unwrap_or_default();
     let xml = text_part(&mut zip, &doc_path).context("the document is missing")?;
     let rels_path = format!("{base}/_rels/{}.rels", doc_path.rsplit('/').next().unwrap_or("document.xml"));
-    let rels: HashMap<String, String> = text_part(&mut zip, &rels_path)
-        .and_then(|x| {
-            let d = roxmltree::Document::parse(&x).ok()?;
-            Some(
-                d.descendants()
-                    .filter(|n| n.has_tag_name("Relationship"))
-                    .filter_map(|n| Some((n.attribute("Id")?.to_string(), resolve(&base, n.attribute("Target")?))))
-                    .collect(),
-            )
-        })
-        .unwrap_or_default();
+    let rels_xml = text_part(&mut zip, &rels_path).unwrap_or_default();
+    let rels_doc = roxmltree::Document::parse(&rels_xml).ok();
+    let rel_nodes = || rels_doc.iter().flat_map(|d| d.descendants()).filter(|n| n.has_tag_name("Relationship"));
+    let external = |n: &roxmltree::Node| n.attribute("TargetMode") == Some("External");
+    let rels: HashMap<String, String> = rel_nodes()
+        .filter(|n| !external(n))
+        .filter_map(|n| Some((n.attribute("Id")?.to_string(), resolve(&base, n.attribute("Target")?))))
+        .collect();
+    let links: HashMap<String, String> = rel_nodes()
+        .filter(|n| external(n) && n.attribute("Type").is_some_and(|t| t.ends_with("/hyperlink")))
+        .filter_map(|n| Some((n.attribute("Id")?.to_string(), n.attribute("Target")?.to_string())))
+        .collect();
 
     // Which numbering instances are bullets, level by level.
     let mut numbering = HashMap::new();
@@ -1207,6 +1263,7 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
         break_before: false,
         break_after: false,
         rels,
+        links,
         numbering,
         styles,
         media: BTreeMap::new(),
@@ -1451,6 +1508,50 @@ mod tests {
             .collect();
         assert_eq!(marks, [("Keep ".into(), false, false), ("new".into(), true, false), ("old".into(), false, true)]);
         assert_eq!(back.revisions[0].author, "Ann");
+
+        // Moved text: deleted where it was, added where it went.
+        let moved = format!(
+            r#"<w:document xmlns:w="{W_NS}"><w:body><w:p><w:moveFrom w:id="1" w:author="Ann"><w:r><w:t>Moved</w:t></w:r></w:moveFrom><w:r><w:t> stays </w:t></w:r><w:moveTo w:id="2" w:author="Ann"><w:r><w:t>Moved</w:t></w:r></w:moveTo></w:p></w:body></w:document>"#
+        );
+        let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        z.start_file("word/document.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        z.write_all(moved.as_bytes()).unwrap();
+        let bytes = z.finish().unwrap().into_inner();
+        let (back, _) = read(&bytes).unwrap();
+        let Block::Paragraph(p) = &back.blocks[0] else { panic!() };
+        let marks: Vec<(String, bool, bool)> = p
+            .runs
+            .iter()
+            .filter_map(|r| if let Run::Text(t) = r { Some((t.text.clone(), t.inserted.is_some(), t.deleted.is_some())) } else { None })
+            .collect();
+        assert_eq!(marks, [("Moved".into(), false, true), (" stays ".into(), false, false), ("Moved".into(), true, false)]);
+
+        // Links, superscript and subscript.
+        let url = "https://example.com/a?b=1&c='2'";
+        let linked = Document {
+            blocks: vec![para(vec![
+                Run::text("H"),
+                Run::styled("2", |r| r.subscript = true),
+                Run::text("O and E = mc"),
+                Run::styled("2", |r| r.superscript = true),
+                Run::text(", see "),
+                Run::styled("the site", |r| r.link = Some(url.into())),
+                Run::styled(" again", |r| {
+                    r.link = Some(url.into());
+                    r.bold = true;
+                }),
+                Run::text("."),
+            ])],
+            ..Default::default()
+        };
+        let (bytes, _) = write(&linked, &BTreeMap::new()).unwrap();
+        let (back, _) = read(&bytes).unwrap();
+        let Block::Paragraph(p) = &back.blocks[0] else { panic!() };
+        let runs: Vec<&TextRun> = p.runs.iter().filter_map(|r| if let Run::Text(t) = r { Some(t) } else { None }).collect();
+        assert!(runs[1].subscript && runs[3].superscript);
+        assert_eq!(runs[5].link.as_deref(), Some(url));
+        assert_eq!(runs[6].link.as_deref(), Some(url));
+        assert!(runs[7].link.is_none());
 
         // Shapes and charts in the text.
         let drawn = Document {

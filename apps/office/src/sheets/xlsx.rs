@@ -7,7 +7,7 @@ use super::model::*;
 use super::rules::Test;
 use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
 const MAX_PART: u64 = 64 * 1024 * 1024;
 
@@ -16,9 +16,7 @@ fn part(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Option<String> 
     if f.size() > MAX_PART {
         return None;
     }
-    let mut s = String::new();
-    f.read_to_string(&mut s).ok()?;
-    Some(s)
+    String::from_utf8(crate::container::read_capped(&mut f, MAX_PART).ok()?).ok()
 }
 
 /// Relationship id → target, resolved against `base` (the folder of the part).
@@ -278,6 +276,15 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
         };
         let doc = roxmltree::Document::parse(&xml).with_context(|| format!("the sheet “{name}” is damaged"))?;
         for col in doc.descendants().filter(|n| n.has_tag_name("col")) {
+            let hidden = col.attribute("hidden").is_some_and(|v| v == "1" || v == "true");
+            if hidden
+                && let (Some(min), Some(max)) = (
+                    col.attribute("min").and_then(|v| v.parse::<u32>().ok()),
+                    col.attribute("max").and_then(|v| v.parse::<u32>().ok()),
+                )
+            {
+                sheet.hidden_cols.extend(min.saturating_sub(1)..max.min(COLS));
+            }
             let (Some(min), Some(max), Some(width)) = (
                 col.attribute("min").and_then(|v| v.parse::<u32>().ok()),
                 col.attribute("max").and_then(|v| v.parse::<u32>().ok()),
@@ -286,7 +293,7 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
                 continue;
             };
             // The stored width already counts Excel's padding: 7 pixels a character.
-            if col.attribute("customWidth").is_none_or(|v| v == "0") && (width - 9.14).abs() < 0.5 {
+            if (col.attribute("customWidth").is_none_or(|v| v == "0") && (width - 9.14).abs() < 0.5) || width < 0.5 {
                 continue;
             }
             for c in min.saturating_sub(1)..max.min(COLS) {
@@ -308,9 +315,16 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
         let mut shared_f: HashMap<String, (String, u32, u32)> = HashMap::new();
         for row in doc.descendants().filter(|n| n.has_tag_name("row")) {
             let ri = row.attribute("r").and_then(|v| v.parse::<u32>().ok()).map(|r| r.saturating_sub(1));
+            if let Some(r) = ri
+                && r < ROWS
+                && row.attribute("hidden").is_some_and(|v| v == "1" || v == "true")
+            {
+                sheet.hidden_rows.insert(r);
+            }
             if let (Some(r), Some(ht)) = (ri, row.attribute("ht").and_then(|v| v.parse::<f64>().ok()))
                 && row.attribute("customHeight").is_some_and(|v| v == "1" || v == "true")
                 && r < ROWS
+                && ht >= 0.5
             {
                 let px = (ht / 0.75).round() as u32;
                 if px != ROW_H {
@@ -825,11 +839,17 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
             let (last_col, _) = cell_at(right, |c| s.col_w(c), COLS);
             let (last_row, _) = cell_at(bottom, |r| s.row_h(r), ROWS);
             for c in 0..=last_col {
-                ws.set_column_width_pixels(c as u16, s.col_w(c))?;
+                ws.set_column_width_pixels(c as u16, s.size_of_col(c))?;
             }
             for r in 0..=last_row {
-                ws.set_row_height_pixels(r, s.row_h(r))?;
+                ws.set_row_height_pixels(r, s.size_of_row(r))?;
             }
+        }
+        for c in &s.hidden_cols {
+            ws.set_column_hidden(*c as u16)?;
+        }
+        for r in &s.hidden_rows {
+            ws.set_row_hidden(*r)?;
         }
         for pc in &s.charts {
             let Some(mut chart) = excel_chart(wb, calc, si, &pc.range, pc.kind) else { continue };
@@ -908,6 +928,8 @@ mod tests {
         wb.rename_sheet(1, "Notes").unwrap();
         wb.set(0, 0, "='Sheet 1'!B4");
         wb.active = 0;
+        wb.hide_rows(6, 7, true);
+        wb.hide_cols(3, 3, true);
 
         let calc = Calc::new(&wb, 0.0);
         let (bytes, lost) = write(&wb, &calc).unwrap();
@@ -933,6 +955,9 @@ mod tests {
         assert_eq!(f.align, Some(HAlign::Center));
         assert_eq!(s.col_w(0), 180);
         assert_eq!(s.row_h(0), 40);
+        assert_eq!(s.hidden_rows.iter().copied().collect::<Vec<_>>(), [6, 7]);
+        assert_eq!(s.hidden_cols.iter().copied().collect::<Vec<_>>(), [3]);
+        assert_eq!((s.row_h(6), s.size_of_row(6)), (0, ROW_H));
         assert!(s.freeze);
         assert_eq!(s.merges, [Area::new(8, 0, 9, 2)]);
         assert_eq!(s.raw(8, 0), "Merged");

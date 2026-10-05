@@ -7,8 +7,10 @@ mod functions;
 pub(super) mod grid;
 pub mod model;
 mod pages;
+mod menu;
 mod placed;
 mod rules;
+mod structure;
 mod summary;
 mod templates;
 mod xlsx;
@@ -1510,6 +1512,11 @@ impl doc::Editor for Sheets {
             (&["Ctrl", "C"], "Copy (Ctrl+X cuts, then paste moves)"),
             (&["Drag", "Edge"], "Drag the selection by its edge to move it (hold Ctrl to copy)"),
             (&["Ctrl", "V"], "Paste; a larger selection repeats the copy"),
+            (&["Ctrl", "+"], "Insert rows above (columns, when whole columns are selected)"),
+            (&["Ctrl", "−"], "Delete the selected rows (or whole columns)"),
+            (&["Right-click"], "Cut, copy, paste, insert, delete, hide or show rows and columns"),
+            (&["Ctrl", "9"], "Hide the selected rows (Ctrl+Shift+9 shows them)"),
+            (&["Ctrl", "0"], "Hide the selected columns (Ctrl+Shift+0 shows them)"),
             (&["Ctrl", "D"], "Fill down"),
             (&["Ctrl", "R"], "Fill right"),
             (&["Ctrl", "B"], "Bold"),
@@ -1543,6 +1550,16 @@ impl doc::Editor for Sheets {
                 let on = !self.wb.borrow().sheet().format(self.src_row(self.cursor.get().0), self.cursor.get().1).italic;
                 self.format_selection(move |f| f.italic = on);
             }
+            // Whole columns selected: columns; otherwise rows.
+            gdk::Key::plus | gdk::Key::equal | gdk::Key::KP_Add => {
+                if self.whole_cols(self.selection()) { self.insert_cols(false) } else { self.insert_rows(false) }
+            }
+            gdk::Key::minus | gdk::Key::KP_Subtract => {
+                if self.whole_cols(self.selection()) { self.delete_cols() } else { self.delete_rows() }
+            }
+            // As in other spreadsheets: Ctrl+9 hides rows, Ctrl+0 columns; with Shift, shows them.
+            gdk::Key::_9 | gdk::Key::parenleft => self.hide_rows(!mods.contains(gdk::ModifierType::SHIFT_MASK)),
+            gdk::Key::_0 | gdk::Key::parenright => self.hide_cols(!mods.contains(gdk::ModifierType::SHIFT_MASK)),
             gdk::Key::Page_Down | gdk::Key::Page_Up => {
                 let (n, i) = (self.wb.borrow().sheets.len(), self.wb.borrow().active);
                 let j = if key == gdk::Key::Page_Down { (i + 1) % n } else { (i + n - 1) % n };
@@ -1612,6 +1629,41 @@ pub mod tests {
         s.fill_down_or_right(true);
         assert_eq!(s.wb.borrow().sheet().raw(3, 0), "=A3*2");
         assert_eq!(shown(&s, 3, 0), "40");
+
+        // Insert a row above row 2: the formula below follows A1, then undo.
+        s.anchor.set((1, 0));
+        s.cursor.set((1, 0));
+        s.insert_rows(false);
+        assert_eq!(s.wb.borrow().sheet().raw(2, 0), "=A1*2");
+        assert_eq!(s.wb.borrow().sheet().raw(1, 0), "");
+        assert_eq!(s.selection(), Area::new(1, 0, 1, 0));
+        s.delete_rows();
+        assert_eq!(s.wb.borrow().sheet().raw(1, 0), "=A1*2");
+        s.anchor.set((0, 0));
+        s.cursor.set((0, 0));
+        s.insert_cols(false);
+        assert_eq!(s.wb.borrow().sheet().raw(1, 1), "=B1*2");
+        Editor::undo(&*s);
+        assert_eq!(s.wb.borrow().sheet().raw(1, 0), "=A1*2");
+
+        // Hide row 2: stepping down from row 1 lands on row 3; showing it again.
+        s.anchor.set((1, 0));
+        s.cursor.set((1, COLS - 1));
+        s.hide_rows(true);
+        assert!(s.wb.borrow().sheet().hidden_rows.contains(&1));
+        assert_eq!(s.cursor.get().0, 2);
+        s.move_to(0, 0, false);
+        assert_eq!(s.step(1, 0), (2, 0));
+        assert_eq!(shown(&s, 1, 0), "10", "hidden cells still calculate");
+        s.anchor.set((0, 0));
+        s.cursor.set((2, COLS - 1));
+        s.hide_rows(false);
+        assert!(s.wb.borrow().sheet().hidden_rows.is_empty());
+        // Hiding every column is refused.
+        s.anchor.set((0, 0));
+        s.cursor.set((0, COLS - 1));
+        s.hide_cols(true);
+        assert!(s.wb.borrow().sheet().hidden_cols.is_empty());
 
         // A tab per sheet, the active one marked; adding a sheet adds a tab.
         let tabs = |s: &Sheets| {

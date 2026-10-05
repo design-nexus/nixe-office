@@ -13,7 +13,10 @@ Then:
 
 - **Write**
   - Paragraph styles (title, three headings, quote), font, size, bold, italic,
-    underline, strikethrough, text color and highlight, alignment.
+    underline, strikethrough, superscript and subscript, text color and highlight,
+    alignment.
+  - Links (<kbd>Ctrl</kbd>+<kbd>K</kbd>) to web pages, email addresses or files;
+    <kbd>Ctrl</kbd>+click opens one. They stay links in Word files and exported PDFs.
   - Bulleted and numbered lists with nested levels (<kbd>Tab</kbd> /
     <kbd>Shift</kbd>+<kbd>Tab</kbd>), and indents.
   - Shapes and charts in the text (a chart's numbers are edited in a small table).
@@ -40,6 +43,13 @@ Then:
   - Up to 10,000 rows and 104 columns per sheet, and up to 50 sheets, as tabs along
     the bottom: click to switch, double-click to rename, drag to reorder, right-click to
     copy, move or delete.
+  - Insert and delete rows and columns (right-click a cell or a heading, or
+    <kbd>Ctrl</kbd>+<kbd>+</kbd> / <kbd>Ctrl</kbd>+<kbd>-</kbd>); formulas on every sheet,
+    merged cells, charts, tables and highlight rules follow the cells they point at.
+  - Hide rows and columns (right-click their headings, or <kbd>Ctrl</kbd>+<kbd>9</kbd> /
+    <kbd>Ctrl</kbd>+<kbd>0</kbd>) and show them again (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>9</kbd>
+    / <kbd>0</kbd>, or drag the heading's edge open). Hidden cells still count in
+    formulas, but don't print. Excel files keep them hidden.
   - Formulas with cell and range references, `$` absolute references and references to
     other sheets (`'Sheet 2'!B4`). Click cells while typing a formula to put their
     references in. Nearly 100 functions:

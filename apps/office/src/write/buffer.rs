@@ -1,7 +1,8 @@
 //! The text buffer and the document model, each made from the other.
 //!
-//! Formatting lives in tags. Character tags: `b`, `i`, `u`, `s`, `font:<family>`,
-//! `size:<points>`, `fg:#rrggbb`, `bg:#rrggbb`, `cm:<comment id>`, and tracked
+//! Formatting lives in tags. Character tags: `b`, `i`, `u`, `s`, `sup`, `sub`,
+//! `font:<family>`, `size:<points>`, `fg:#rrggbb`, `bg:#rrggbb`, `link:<address>`,
+//! `cm:<comment id>`, and tracked
 //! changes `ins:<revision id>` / `del:<revision id>`. Paragraph tags cover a whole line,
 //! newline included: `style:<id>`, `align:<id>`, `list:<bullet|number>`,
 //! `indent:<n>`, and `lm:<px>` (the left margin those add up to). The buffer
@@ -17,8 +18,16 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 pub const PARA_PREFIXES: [&str; 5] = ["style:", "align:", "list:", "indent:", "lm:"];
-pub const CHAR_PREFIXES: [&str; 7] = ["font:", "size:", "fg:", "bg:", "cm:", "ins:", "del:"];
-pub const CHAR_FLAGS: [&str; 4] = ["b", "i", "u", "s"];
+pub const CHAR_PREFIXES: [&str; 8] = ["font:", "size:", "fg:", "bg:", "link:", "cm:", "ins:", "del:"];
+pub const CHAR_FLAGS: [&str; 6] = ["b", "i", "u", "s", "sup", "sub"];
+
+/// How linked text looks, on screen and in print.
+pub const LINK_INK: &str = "#1a5fb4";
+/// Superscript and subscript: their size against the text's, and how far they
+/// move, as a share of the text's size.
+pub const SCRIPT_SCALE: f64 = 0.65;
+pub const SUPER_RISE: f64 = 0.35;
+pub const SUB_RISE: f64 = -0.15;
 
 /// The table widgets in the text, by their anchor.
 pub type Tables = Rc<std::cell::RefCell<Vec<(gtk::TextChildAnchor, Rc<TableWidget>)>>>;
@@ -70,6 +79,13 @@ pub fn setup_tags(buffer: &gtk::TextBuffer) {
     let s = gtk::TextTag::new(Some("s"));
     s.set_strikethrough(true);
     table.add(&s);
+    // The rise is for body text; Pango units are device units, so scale by PX.
+    for (name, rise) in [("sup", SUPER_RISE), ("sub", SUB_RISE)] {
+        let t = gtk::TextTag::new(Some(name));
+        t.set_scale(SCRIPT_SCALE);
+        t.set_rise((rise * DEFAULT_SIZE * PX * gtk::pango::SCALE as f64) as i32);
+        table.add(&t);
+    }
     // Find matches: drawn over everything, never saved.
     let f = gtk::TextTag::new(Some("find"));
     f.set_background(Some("#ffe066"));
@@ -99,6 +115,9 @@ pub fn tag(buffer: &gtk::TextBuffer, name: &str) -> gtk::TextTag {
         t.set_right_margin(v.parse().unwrap_or(0));
     } else if let Some(v) = name.strip_prefix("wb:") {
         t.set_pixels_below_lines(v.parse().unwrap_or(0));
+    } else if name.starts_with("link:") {
+        t.set_foreground(Some(LINK_INK));
+        t.set_underline(gtk::pango::Underline::Single);
     } else if name.starts_with("cm:") {
         // Commented text: a soft yellow, under any highlight of its own.
         t.set_background(Some("#fff1b8"));
@@ -245,6 +264,8 @@ pub fn char_format(iter: &gtk::TextIter) -> TextRun {
             "i" => r.italic = true,
             "u" => r.underline = true,
             "s" => r.strike = true,
+            "sup" => r.superscript = true,
+            "sub" => r.subscript = true,
             n => {
                 if let Some(v) = n.strip_prefix("font:") {
                     r.font = Some(v.into());
@@ -254,6 +275,8 @@ pub fn char_format(iter: &gtk::TextIter) -> TextRun {
                     r.color = Some(v.into());
                 } else if let Some(v) = n.strip_prefix("bg:") {
                     r.highlight = Some(v.into());
+                } else if let Some(v) = n.strip_prefix("link:") {
+                    r.link = Some(v.into());
                 } else if let Some(v) = n.strip_prefix("cm:") {
                     r.comment = v.parse().ok();
                 } else if let Some(v) = n.strip_prefix("ins:") {
@@ -270,7 +293,7 @@ pub fn char_format(iter: &gtk::TextIter) -> TextRun {
 /// The tag names that give a run its formatting.
 pub fn format_tags(r: &TextRun) -> Vec<String> {
     let mut out = Vec::new();
-    for (on, name) in [(r.bold, "b"), (r.italic, "i"), (r.underline, "u"), (r.strike, "s")] {
+    for (on, name) in [(r.bold, "b"), (r.italic, "i"), (r.underline, "u"), (r.strike, "s"), (r.superscript, "sup"), (r.subscript, "sub")] {
         if on {
             out.push(name.to_string());
         }
@@ -286,6 +309,9 @@ pub fn format_tags(r: &TextRun) -> Vec<String> {
     }
     if let Some(c) = &r.highlight {
         out.push(format!("bg:{c}"));
+    }
+    if let Some(l) = &r.link {
+        out.push(format!("link:{l}"));
     }
     if let Some(c) = r.comment {
         out.push(format!("cm:{c}"));
