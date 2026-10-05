@@ -283,7 +283,7 @@ pub fn from_html(html: &str) -> Document {
                         if let Some(src) = attr(&attrs, "src") {
                             let name = src.trim_start_matches("media/").to_string();
                             let width = attr(&attrs, "width").and_then(|w| w.parse::<f64>().ok()).unwrap_or(300.0);
-                            para.get_or_insert_with(Paragraph::default).runs.push(Run::Image(Image { image: name, width }));
+                            para.get_or_insert_with(Paragraph::default).runs.push(Run::Image(Image { image: name, width, wrap: None }));
                         }
                     }
                     _ => {}
@@ -349,6 +349,8 @@ pub fn from_html(html: &str) -> Document {
                     color: f.color,
                     highlight: f.highlight,
                     comment: None,
+                    inserted: None,
+                    deleted: None,
                 };
                 para.get_or_insert_with(Paragraph::default).runs.push(Run::Text(run));
             }

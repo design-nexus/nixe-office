@@ -3,7 +3,8 @@
 
 use super::buffer::{ParaProps, para_props};
 use super::model::{INDENT_STEP, List, list_label, numbering};
-use super::picture::PX;
+use super::model::Side;
+use super::picture::{PX, Picture};
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
@@ -29,6 +30,7 @@ mod imp {
             self.parent_snapshot_layer(layer, snapshot.clone());
             if layer == gtk::TextViewLayer::BelowText {
                 self.obj().draw_markers(&snapshot);
+                self.obj().draw_wrapped(&snapshot);
             }
         }
     }
@@ -43,6 +45,31 @@ glib::wrapper! {
 impl PageView {
     pub fn new(buffer: &impl IsA<gtk::TextBuffer>) -> PageView {
         glib::Object::builder().property("buffer", buffer).build()
+    }
+
+    /// Pictures with text wrapped beside them: drawn at the side of their
+    /// paragraph, which keeps room for them with a margin.
+    fn draw_wrapped(&self, snapshot: &gtk::Snapshot) {
+        let buffer = self.buffer();
+        let visible = self.visible_rect();
+        let width = visible.width() as f32;
+        for (line, pic) in wrapped_pictures(&buffer) {
+            let Some(start) = buffer.iter_at_line(line) else { continue };
+            let loc = self.iter_location(&start);
+            let (w, h) = ((pic.width_pt() * PX) as f32, (pic.height_pt() * PX) as f32);
+            if loc.y() as f32 + h < visible.y() as f32 || loc.y() > visible.y() + visible.height() {
+                continue;
+            }
+            let base = para_props(&buffer, &start).margin_px() as f32;
+            let x = match pic.wrap() {
+                Some(Side::Right) => width - w,
+                _ => base,
+            };
+            snapshot.save();
+            snapshot.translate(&gtk::graphene::Point::new(x, loc.y() as f32 + 4.0));
+            pic.draw(snapshot.upcast_ref(), w as f64, h as f64);
+            snapshot.restore();
+        }
     }
 
     fn draw_markers(&self, snapshot: &gtk::Snapshot) {
@@ -87,4 +114,23 @@ impl PageView {
             snapshot.restore();
         }
     }
+}
+
+/// Each paragraph's first wrapped picture: (buffer line, picture).
+pub fn wrapped_pictures(buffer: &gtk::TextBuffer) -> Vec<(i32, Picture)> {
+    let mut out = Vec::new();
+    let mut it = buffer.start_iter();
+    // Pictures are the placeholder character; jump from one to the next.
+    loop {
+        if let Some(pic) = it.paintable().and_downcast::<Picture>()
+            && pic.wrap().is_some()
+            && !out.iter().any(|(l, _)| *l == it.line())
+        {
+            out.push((it.line(), pic));
+        }
+        if !it.forward_find_char(|c| c == '\u{FFFC}', None) {
+            break;
+        }
+    }
+    out
 }

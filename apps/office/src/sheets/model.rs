@@ -54,7 +54,19 @@ pub struct Format {
     /// Text colour, `#rrggbb`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// Lines on the cell's edges: `TOP | BOTTOM | LEFT | RIGHT`.
+    #[serde(skip_serializing_if = "is_default")]
+    pub borders: u8,
+    /// Long text wraps onto more lines inside the cell.
+    #[serde(skip_serializing_if = "is_default")]
+    pub wrap: bool,
 }
+
+/// Border edges, for `Format::borders`.
+pub const TOP: u8 = 1;
+pub const BOTTOM: u8 = 2;
+pub const LEFT: u8 = 4;
+pub const RIGHT: u8 = 8;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Cell {
@@ -69,6 +81,15 @@ impl Cell {
     fn is_blank(&self) -> bool {
         self.raw.is_empty() && self.format == Format::default() && self.comment.is_none()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Borders {
+    All,
+    Outside,
+    Top,
+    Bottom,
+    None,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -633,6 +654,26 @@ impl Workbook {
         }
     }
 
+    /// Put lines around cells: `kind` is all, outside, top, bottom or none.
+    pub fn set_borders(&mut self, area: Area, kind: Borders) {
+        let s = self.sheet_mut();
+        for (r, c) in area.iter() {
+            let mut cell = s.cells.get(&(r, c)).cloned().unwrap_or_default();
+            let edges = (if r == area.top { TOP } else { 0 })
+                | (if r == area.bottom { BOTTOM } else { 0 })
+                | (if c == area.left { LEFT } else { 0 })
+                | (if c == area.right { RIGHT } else { 0 });
+            cell.format.borders = match kind {
+                Borders::All => TOP | BOTTOM | LEFT | RIGHT,
+                Borders::Outside => edges,
+                Borders::Top => cell.format.borders | (edges & TOP),
+                Borders::Bottom => cell.format.borders | (edges & BOTTOM),
+                Borders::None => 0,
+            };
+            s.put(r, c, cell);
+        }
+    }
+
     // ---------- Merges and comments ----------
 
     /// Merge `area` into one cell. Merges it overlaps are replaced; content
@@ -1011,6 +1052,7 @@ impl Workbook {
                     },
                     fill: clean_color(&gs("fillColor")),
                     color: clean_color(&gs("textColor")),
+                    ..Default::default()
                 };
                 s.put(r as u32, c as u32, Cell { raw: gs("raw"), format, comment: None });
             }

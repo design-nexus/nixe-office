@@ -5,6 +5,7 @@ use gtk::gdk;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
+use super::model::Side;
 use std::cell::{Cell, RefCell};
 
 /// Screen pixels per point.
@@ -19,6 +20,9 @@ mod imp {
         pub name: RefCell<String>,
         /// Width on the page, in points.
         pub width: Cell<f64>,
+        /// Wrapped beside its paragraph: the page view draws it in the margin,
+        /// so in the line it takes no room.
+        pub wrap: Cell<Option<Side>>,
     }
 
     #[glib::object_subclass]
@@ -32,12 +36,21 @@ mod imp {
 
     impl PaintableImpl for Picture {
         fn intrinsic_width(&self) -> i32 {
+            if self.wrap.get().is_some() {
+                return 1;
+            }
             (self.width.get() * PX).round() as i32
         }
         fn intrinsic_height(&self) -> i32 {
+            if self.wrap.get().is_some() {
+                return 1;
+            }
             (self.obj().height_pt() * PX).round() as i32
         }
         fn snapshot(&self, snapshot: &gdk::Snapshot, width: f64, height: f64) {
+            if self.wrap.get().is_some() {
+                return;
+            }
             if let Some(t) = self.texture.borrow().as_ref() {
                 t.snapshot(snapshot, width, height);
             }
@@ -74,6 +87,23 @@ impl Picture {
 
     pub fn pixel_size(&self) -> (i32, i32) {
         self.imp().texture.borrow().as_ref().map(|t| (t.width(), t.height())).unwrap_or((0, 0))
+    }
+
+    pub fn wrap(&self) -> Option<Side> {
+        self.imp().wrap.get()
+    }
+
+    pub fn set_wrap(&self, wrap: Option<Side>) {
+        self.imp().wrap.set(wrap);
+        self.invalidate_size();
+        self.invalidate_contents();
+    }
+
+    /// Draw the picture whole, wherever it's set (wrapped pictures draw here).
+    pub fn draw(&self, snapshot: &gdk::Snapshot, width: f64, height: f64) {
+        if let Some(t) = self.imp().texture.borrow().as_ref() {
+            t.snapshot(snapshot, width, height);
+        }
     }
 
     pub fn set_width_pt(&self, w: f64) {

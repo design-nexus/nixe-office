@@ -97,6 +97,22 @@ fn install_icons() {
         };
     }
     const ICONS: &[(&str, &str)] = icons![
+        "grid-2x2",
+        "wrap-text",
+        "sigma",
+        "rotate-cw",
+        "rotate-ccw",
+        "triangle",
+        "diamond",
+        "star",
+        "hexagon",
+        "arrow-big-right",
+        "squircle",
+        "pen-line",
+        "layers-2",
+        "file-pen-line",
+        "check-check",
+        "x-circle",
         "table-cells-merge",
         "message-square-text",
         "highlighter",

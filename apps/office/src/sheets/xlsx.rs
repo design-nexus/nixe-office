@@ -196,6 +196,28 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
                     .collect()
             })
             .unwrap_or_default();
+        // Which edges each border style draws.
+        let borders: Vec<u8> = doc
+            .descendants()
+            .find(|n| n.has_tag_name("borders"))
+            .map(|bs| {
+                bs.children()
+                    .filter(|n| n.has_tag_name("border"))
+                    .map(|b| {
+                        let has = |tag: &str| {
+                            b.children().any(|c| {
+                                (c.has_tag_name(tag) || (tag == "left" && c.has_tag_name("start")) || (tag == "right" && c.has_tag_name("end")))
+                                    && c.attribute("style").is_some_and(|s| s != "none")
+                            })
+                        };
+                        (if has("top") { TOP } else { 0 })
+                            | (if has("bottom") { BOTTOM } else { 0 })
+                            | (if has("left") { LEFT } else { 0 })
+                            | (if has("right") { RIGHT } else { 0 })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         if let Some(list) = doc.descendants().find(|n| n.has_tag_name("dxfs")) {
             for d in list.children().filter(|n| n.has_tag_name("dxf")) {
                 let font = d.children().find(|c| c.has_tag_name("font"));
@@ -218,8 +240,10 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
                 let get = |a: &str| xf.attribute(a).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
                 let (bold, italic, color) = fonts.get(get("fontId")).cloned().unwrap_or((false, false, None));
                 let id = get("numFmtId") as u32;
+                let alignment = xf.children().find(|c| c.has_tag_name("alignment"));
+                let wrap = alignment.and_then(|a| a.attribute("wrapText")).is_some_and(|v| v == "1" || v == "true");
                 let align =
-                    xf.children().find(|c| c.has_tag_name("alignment")).and_then(|a| a.attribute("horizontal")).and_then(|h| {
+                    alignment.and_then(|a| a.attribute("horizontal")).and_then(|h| {
                         match h {
                             "left" => Some(HAlign::Left),
                             "center" | "centerContinuous" => Some(HAlign::Center),
@@ -234,6 +258,8 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
                     align,
                     fill: fills.get(get("fillId")).cloned().flatten(),
                     color,
+                    borders: borders.get(get("borderId")).copied().unwrap_or(0),
+                    wrap,
                 });
             }
         }
@@ -461,6 +487,24 @@ fn xlsx_format(f: &Format) -> rust_xlsxwriter::Format {
     if let Some(c) = &f.fill {
         x = x.set_pattern(FormatPattern::Solid).set_background_color(Color::RGB(rgb_u32(c)));
     }
+    {
+        use rust_xlsxwriter::FormatBorder::Thin;
+        if f.borders & TOP != 0 {
+            x = x.set_border_top(Thin).set_border_top_color(Color::RGB(0x5a606b));
+        }
+        if f.borders & BOTTOM != 0 {
+            x = x.set_border_bottom(Thin).set_border_bottom_color(Color::RGB(0x5a606b));
+        }
+        if f.borders & LEFT != 0 {
+            x = x.set_border_left(Thin).set_border_left_color(Color::RGB(0x5a606b));
+        }
+        if f.borders & RIGHT != 0 {
+            x = x.set_border_right(Thin).set_border_right_color(Color::RGB(0x5a606b));
+        }
+    }
+    if f.wrap {
+        x = x.set_text_wrap();
+    }
     x = match f.align {
         Some(HAlign::Left) => x.set_align(FormatAlign::Left),
         Some(HAlign::Center) => x.set_align(FormatAlign::Center),
@@ -650,6 +694,8 @@ mod tests {
         wb.set(8, 0, "Merged");
         wb.merge(Area::new(8, 0, 9, 2));
         wb.set_comment(1, 1, "Due on the 1st");
+        wb.set_borders(Area::new(2, 0, 3, 1), Borders::Outside);
+        wb.format(Area::cell(4, 0), |f| f.wrap = true);
         wb.sheet_mut().rules = vec![
             Rule {
                 range: "B2:B3".into(),
@@ -700,6 +746,9 @@ mod tests {
         assert_eq!(s.merges, [Area::new(8, 0, 9, 2)]);
         assert_eq!(s.raw(8, 0), "Merged");
         assert_eq!(s.comment(1, 1), Some("Due on the 1st"));
+        assert_eq!(s.format(2, 0).borders, TOP | LEFT);
+        assert_eq!(s.format(3, 1).borders, BOTTOM | RIGHT);
+        assert!(s.format(4, 0).wrap);
         // Excel groups rules by range; within a range the order holds, and only
         // rules on the same cells compete.
         let by_range = |rules: &[Rule]| {

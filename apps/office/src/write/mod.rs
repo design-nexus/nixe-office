@@ -1,6 +1,7 @@
 //! Nexus Write: the word processor.
 
 mod buffer;
+mod changes;
 mod comments;
 mod docx;
 mod layout;
@@ -11,6 +12,7 @@ mod picture;
 mod table;
 mod templates;
 mod view;
+mod wrap;
 
 use crate::doc::{self, Find, SidebarGroup, Template};
 use crate::print::{Pages, Paper};
@@ -54,6 +56,8 @@ struct Controls {
     number: gtk::ToggleButton,
     picture: gtk::Box,
     picture_width: gtk::Scale,
+    picture_wrap: gtk::DropDown,
+    track: gtk::ToggleButton,
 }
 
 pub struct Writer {
@@ -68,6 +72,9 @@ pub struct Writer {
     tables: Tables,
     marks: marks::Marks,
     comments: RefCell<Vec<Comment>>,
+    revisions: RefCell<Vec<Revision>>,
+    /// New edits are tracked as changes.
+    tracking: Cell<bool>,
     /// The comment cards beside the page.
     comment_panel: gtk::Box,
     controls: RefCell<Option<Controls>>,
@@ -178,6 +185,8 @@ impl Writer {
             tables: Rc::new(RefCell::new(Vec::new())),
             marks: Rc::new(RefCell::new(Vec::new())),
             comments: RefCell::new(Vec::new()),
+            revisions: RefCell::new(Vec::new()),
+            tracking: Cell::new(false),
             comment_panel: widgets::vbox(10),
             controls: RefCell::new(None),
             outline,
@@ -416,6 +425,10 @@ impl Writer {
         let f = act(|w| w.add_comment());
         comment.connect_clicked(move |_| f());
         g.append(&comment);
+        let (track, review) = self.changes_buttons();
+        let review_group = group();
+        review_group.append(&track);
+        review_group.append(&review);
         let toc = widgets::bar_button("nxo-list-tree-symbolic", "Insert a table of contents");
         let f = act(|w| w.insert_mark_block(true));
         toc.connect_clicked(move |_| f());
@@ -425,6 +438,7 @@ impl Writer {
         brk.connect_clicked(move |_| f());
         g.append(&brk);
         flow.append(&g);
+        flow.append(&review_group);
 
         // Shown while the cursor is beside a picture.
         let picture = group();
@@ -441,6 +455,21 @@ impl Writer {
             }
         });
         picture.append(&picture_width);
+        let wrap = gtk::DropDown::from_strings(&["In line", "Wrap, left", "Wrap, right"]);
+        wrap.set_tooltip_text(Some("In the line, or at the side of the paragraph with the text wrapping beside it"));
+        let me = Rc::downgrade(self);
+        wrap.connect_selected_notify(move |d| {
+            if let Some(w) = me.upgrade()
+                && !w.syncing.get()
+            {
+                w.set_picture_wrap(match d.selected() {
+                    1 => Some(Side::Left),
+                    2 => Some(Side::Right),
+                    _ => None,
+                });
+            }
+        });
+        picture.append(&wrap);
         picture.set_visible(false);
         flow.append(&picture);
 
@@ -469,6 +498,8 @@ impl Writer {
             number,
             picture,
             picture_width,
+            picture_wrap: wrap,
+            track,
         });
         bar
     }
@@ -545,6 +576,11 @@ impl Writer {
             c.picture.set_visible(pic.is_some());
             if let Some(pic) = pic {
                 c.picture_width.set_value((pic.width_pt() / self.setup.borrow().content_width() * 100.0).round());
+                c.picture_wrap.set_selected(match pic.wrap() {
+                    Some(Side::Left) => 1,
+                    Some(Side::Right) => 2,
+                    None => 0,
+                });
             }
         }
         self.syncing.set(false);
@@ -703,7 +739,10 @@ impl Writer {
         };
         // Typing extends a comment only inside it, not at its end.
         let comment = r.comment.filter(|c| buffer::char_format(&it).comment == Some(*c));
-        *self.typing.borrow_mut() = TextRun { text: String::new(), comment, ..r };
+        // Typed text is never deleted text; while tracking it's marked as added.
+        let mut typing = TextRun { text: String::new(), comment, ..r };
+        self.tracked_typing(&mut typing, &it);
+        *self.typing.borrow_mut() = typing;
     }
 
     fn after_change(&self) {
@@ -810,6 +849,8 @@ impl Writer {
             page: self.setup.borrow().clone(),
             blocks: buffer::read(self.tb(), &self.tables, &self.marks),
             comments: self.comments.borrow().clone(),
+            revisions: self.revisions.borrow().clone(),
+            tracking: self.tracking.get(),
         };
         d.prune_comments();
         d
@@ -848,6 +889,8 @@ impl Writer {
         *self.setup.borrow_mut() = d.page.clone();
         *self.media.borrow_mut() = media.clone();
         *self.comments.borrow_mut() = d.comments.clone();
+        *self.revisions.borrow_mut() = d.revisions.clone();
+        self.tracking.set(d.tracking);
         let make = self.make_table();
         let make_mark = self.make_mark();
         buffer::Loader {
@@ -865,6 +908,7 @@ impl Writer {
         self.attach_spelling();
         self.renumber_notes();
         self.refresh_comments();
+        self.refresh_changes();
         self.apply_page();
         self.pick_up_format();
         self.sync_controls();
@@ -1180,6 +1224,9 @@ impl Writer {
         self.begin_edit();
         pic.set_width_pt(self.setup.borrow().content_width() * share.clamp(0.1, 1.0));
         self.view.queue_resize();
+        if pic.wrap().is_some() {
+            self.apply_wraps();
+        }
         doc::edited();
         self.schedule_pages();
     }
@@ -1328,6 +1375,7 @@ impl Writer {
             self.outline.append(&l);
         }
         self.refresh_contents();
+        self.apply_wraps();
     }
 
     fn schedule_pages(&self) {
@@ -1632,6 +1680,9 @@ impl doc::Editor for Writer {
             let n = b.text(&s, &e, false).split_whitespace().count();
             return format!("{} selected · {words} · {pages} · {}", crate::fmt::count(n, "word", "words"), paper.name());
         }
+        if self.tracking.get() {
+            return format!("{words} · {pages} · {} · Tracking changes", paper.name());
+        }
         let cols = self.setup.borrow().columns();
         if cols > 1 {
             return format!("{words} · {pages} · {} · {cols} columns", paper.name());
@@ -1666,6 +1717,7 @@ impl doc::Editor for Writer {
             (&["Ctrl", "Enter"], "Page break"),
             (&["Ctrl", "Alt", "F"], "Footnote"),
             (&["Ctrl", "Alt", "M"], "Comment on the selection"),
+            (&["Ctrl", "Shift", "T"], "Track changes on or off"),
         ]
     }
 
@@ -1676,6 +1728,13 @@ impl doc::Editor for Writer {
         let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
         let shift = mods.contains(gdk::ModifierType::SHIFT_MASK);
         let k = key.to_lower();
+        if ctrl && shift && k == gdk::Key::t {
+            self.set_tracking(!self.tracking.get());
+            return true;
+        }
+        if self.tracked_key(key, ctrl) {
+            return true;
+        }
         if ctrl && mods.contains(gdk::ModifierType::ALT_MASK) {
             match k {
                 gdk::Key::f => self.insert_note(),
@@ -1706,7 +1765,9 @@ impl doc::Editor for Writer {
                 gdk::Key::_2 => self.set_style(Style::H2),
                 gdk::Key::_3 => self.set_style(Style::H3),
                 // Clearing formatting keeps the text's comment.
-                gdk::Key::space => self.apply_char(|r| *r = TextRun { comment: r.comment, ..Default::default() }),
+                gdk::Key::space => self.apply_char(|r| {
+                    *r = TextRun { comment: r.comment, inserted: r.inserted, deleted: r.deleted, ..Default::default() }
+                }),
                 gdk::Key::Return | gdk::Key::KP_Enter => self.insert_mark_block(false),
                 _ => return false,
             }
@@ -1770,7 +1831,23 @@ pub fn write_sample(path: &Path) {
         ..Default::default()
     }));
     d.comments.push(Comment { id: 1, author: "Ken".into(), text: "Does this still bake well?".into(), ..Default::default() });
-    let (bytes, _) = docx::write(&d, &BTreeMap::new()).expect("a docx");
+    d.blocks.push(Block::Paragraph(Paragraph {
+        runs: vec![
+            Run::Image(Image { image: "dot.png".into(), width: 110.0, wrap: Some(Side::Right) }),
+            Run::text("Serve warm with a spoon of cream. Leftovers keep for three days in the fridge and "),
+            Run::styled("reheat well in a low oven", |r| r.inserted = Some(1)),
+            Run::styled(" can be microwaved", |r| r.deleted = Some(1)),
+            Run::text(". This paragraph runs on long enough to show the text wrapping beside the picture and then carrying on below it at the full width of the page."),
+        ],
+        ..Default::default()
+    }));
+    d.revisions.push(Revision { id: 1, author: "Ken".into(), date: "2026-10-05T10:00:00Z".into() });
+    let dot = crate::present::model::base64(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    )
+    .expect("a png");
+    let media: BTreeMap<String, Vec<u8>> = [("dot.png".to_string(), dot)].into();
+    let (bytes, _) = docx::write(&d, &media).expect("a docx");
     std::fs::write(path, bytes).expect("written");
 }
 
@@ -1961,6 +2038,63 @@ pub mod tests {
         w.tb().place_cursor(&at);
         w.insert_mark_block(false);
         assert!(matches!(w.document().blocks[2], Block::PageBreak));
+        // Tracked changes: typing is marked as added, deleting marks old text.
+        w.load_fresh(&Document { blocks: vec![Block::Paragraph(Paragraph::text(Style::Normal, "one two"))], ..Default::default() }, &BTreeMap::new());
+        w.set_tracking(true);
+        w.end_group();
+        let mut at = line_end(&w, 0);
+        w.tb().place_cursor(&at);
+        w.pick_up_format();
+        w.tb().insert(&mut at, " three");
+        let mark = |w: &Writer| -> Vec<(String, bool, bool)> {
+            para(&w.document(), 0)
+                .runs
+                .iter()
+                .filter_map(|r| if let Run::Text(t) = r { Some((t.text.clone(), t.inserted.is_some(), t.deleted.is_some())) } else { None })
+                .collect()
+        };
+        assert_eq!(mark(&w), [("one two".into(), false, false), (" three".into(), true, false)]);
+        // Backspace on added text removes it; on old text it marks it.
+        assert!(w.tracked_key(gdk::Key::BackSpace, false));
+        assert_eq!(mark(&w)[1].0, " thre");
+        w.tb().place_cursor(&w.tb().iter_at_offset(3));
+        assert!(w.tracked_key(gdk::Key::BackSpace, false));
+        assert_eq!(
+            mark(&w),
+            [("on".into(), false, false), ("e".into(), false, true), (" two".into(), false, false), (" thre".into(), true, false)]
+        );
+        // Undoable, then accept all: the deletion goes, the addition stays plain.
+        Editor::undo(&*w);
+        assert_eq!(mark(&w).len(), 2);
+        Editor::redo(&*w);
+        w.settle(true, None);
+        assert_eq!(mark(&w), [("on two thre".into(), false, false)]);
+        assert!(w.document().revisions.is_empty());
+        w.set_tracking(false);
+
+        // A picture wrapped at the left: kept, and its paragraph makes room.
+        let png = crate::present::model::base64(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+        )
+        .unwrap();
+        let mut media = BTreeMap::new();
+        media.insert("p.png".to_string(), png);
+        let wrapped = Document {
+            blocks: vec![Block::Paragraph(Paragraph {
+                runs: vec![Run::Image(Image { image: "p.png".into(), width: 120.0, wrap: Some(Side::Left) }), Run::text("Beside it")],
+                ..Default::default()
+            })],
+            ..Default::default()
+        };
+        w.load_fresh(&wrapped, &media);
+        assert_eq!(w.document().blocks, wrapped.blocks);
+        w.apply_wraps();
+        let names: Vec<String> = w.tb().start_iter().tags().iter().filter_map(|t| t.name().map(|n| n.to_string())).collect();
+        assert!(names.iter().any(|n| n.starts_with("wl:")), "{names:?}");
+        w.tb().place_cursor(&w.tb().start_iter());
+        w.set_picture_wrap(None);
+        assert!(matches!(para(&w.document(), 0).runs[0], Run::Image(Image { wrap: None, .. })));
+
         // Deleting the commented text drops its comment.
         w.load_fresh(&rich, &BTreeMap::new());
         let (mut s, mut e) = (w.tb().iter_at_line(2).unwrap(), w.tb().iter_at_line(2).unwrap());

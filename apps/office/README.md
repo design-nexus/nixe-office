@@ -16,14 +16,18 @@ Then:
     underline, strikethrough, text color and highlight, alignment.
   - Bulleted and numbered lists with nested levels (<kbd>Tab</kbd> /
     <kbd>Shift</kbd>+<kbd>Tab</kbd>), and indents.
-  - Pictures, sized with a slider; tables (right-click a cell to add or remove rows and
-    columns).
+  - Pictures, sized with a slider, in the line or at the left or right of a paragraph
+    with the text wrapping beside them; tables (right-click a cell to add or remove rows
+    and columns).
   - Footnotes (<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd>): a number in the text, the
     note at the foot of the page when printed.
   - Comments on selected text (<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>M</kbd>), shown as
     cards beside the page; edit, resolve or delete them there.
   - A table of contents built from the headings, with page numbers in print and PDF.
   - Page breaks (<kbd>Ctrl</kbd>+<kbd>Enter</kbd>), and two or three text columns.
+  - Track changes (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd>): added text is
+    underlined in green, deleted text stays struck through in red; go through them and
+    accept or reject each one, or all at once.
   - Spelling checked as you type (right-click a word for suggestions).
   - Page setup: Letter or A4, margins, a header, a footer, page numbers and columns.
   - The headings appear in the sidebar as an outline; click one to go there.
@@ -51,7 +55,10 @@ Then:
     thousands separators are understood as numbers.
   - Number formats (two decimals, currency, percent, date), bold, italic, text and fill
     colors, alignment, and column widths and row heights you drag.
-  - Merged cells, and comments on cells (a corner mark; rest the pointer on it to read).
+  - Merged cells, cell borders, text that wraps inside its cell (the row grows to fit),
+    and comments on cells (a corner mark; rest the pointer on it to read).
+  - Summarize: totals, counts, averages, largest or smallest by group (and optionally
+    split across a second column) on a new sheet, with formulas that stay up to date.
   - Highlight rules: color cells that are above or below a number, between two, equal
     to one, contain some text, are blank or an error, are in the top few, or above
     average.
@@ -66,9 +73,11 @@ Then:
   - Slides with four layouts (title, title and content, section, blank); edit the title
     and text right on the slide, and write speaker notes under it.
   - Ready-made looks, background and text colors, font, sizes, bold and italic.
-  - Text boxes, pictures, rectangles, ellipses, tables and charts (double-click a table
-    or chart to change what's in it): drag them, resize them by their corner, nudge
-    them with the arrow keys.
+  - Text boxes, pictures, tables, charts (double-click a table or chart to change
+    what's in it) and eight shapes (rectangle, rounded rectangle, ellipse, triangle,
+    diamond, hexagon, star, arrow): drag them, resize them by their corner, turn them by
+    the round handle above, nudge them with the arrow keys; give them a border and a
+    drop shadow.
   - <kbd>Shift</kbd>-click to select several; group them (<kbd>Ctrl</kbd>+<kbd>G</kbd>)
     to move them as one; line them up, space them evenly or change which is in front.
     Guides snap what you drag to the slide's middle and edges and to other objects

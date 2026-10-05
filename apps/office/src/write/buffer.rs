@@ -1,7 +1,8 @@
 //! The text buffer and the document model, each made from the other.
 //!
 //! Formatting lives in tags. Character tags: `b`, `i`, `u`, `s`, `font:<family>`,
-//! `size:<points>`, `fg:#rrggbb`, `bg:#rrggbb`, `cm:<comment id>`. Paragraph tags cover a whole line,
+//! `size:<points>`, `fg:#rrggbb`, `bg:#rrggbb`, `cm:<comment id>`, and tracked
+//! changes `ins:<revision id>` / `del:<revision id>`. Paragraph tags cover a whole line,
 //! newline included: `style:<id>`, `align:<id>`, `list:<bullet|number>`,
 //! `indent:<n>`, and `lm:<px>` (the left margin those add up to). The buffer
 //! always ends with a newline, so every paragraph, even an empty last one, has a
@@ -16,7 +17,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 pub const PARA_PREFIXES: [&str; 5] = ["style:", "align:", "list:", "indent:", "lm:"];
-pub const CHAR_PREFIXES: [&str; 5] = ["font:", "size:", "fg:", "bg:", "cm:"];
+pub const CHAR_PREFIXES: [&str; 7] = ["font:", "size:", "fg:", "bg:", "cm:", "ins:", "del:"];
 pub const CHAR_FLAGS: [&str; 4] = ["b", "i", "u", "s"];
 
 /// The table widgets in the text, by their anchor.
@@ -92,16 +93,35 @@ pub fn tag(buffer: &gtk::TextBuffer, name: &str) -> gtk::TextTag {
         t.set_background(Some(v));
     } else if let Some(v) = name.strip_prefix("lm:") {
         t.set_left_margin(v.parse().unwrap_or(0));
+    } else if let Some(v) = name.strip_prefix("wl:") {
+        t.set_left_margin(v.parse().unwrap_or(0));
+    } else if let Some(v) = name.strip_prefix("wr:") {
+        t.set_right_margin(v.parse().unwrap_or(0));
+    } else if let Some(v) = name.strip_prefix("wb:") {
+        t.set_pixels_below_lines(v.parse().unwrap_or(0));
     } else if name.starts_with("cm:") {
         // Commented text: a soft yellow, under any highlight of its own.
         t.set_background(Some("#fff1b8"));
+    } else if name.starts_with("ins:") {
+        t.set_foreground(Some(INSERTED_INK));
+        t.set_underline(gtk::pango::Underline::Single);
+    } else if name.starts_with("del:") {
+        t.set_foreground(Some(DELETED_INK));
+        t.set_strikethrough(true);
     }
     table.add(&t);
     if name.starts_with("cm:") {
         t.set_priority(0);
+    } else if ["ins:", "del:", "wl:", "wr:", "wb:"].iter().any(|p| name.starts_with(p)) {
+        // Changes show over the text's own colour.
+        t.set_priority(table.size() - 1);
     }
     t
 }
+
+/// How tracked changes look, on screen and in print.
+pub const INSERTED_INK: &str = "#1a7f37";
+pub const DELETED_INK: &str = "#b42318";
 
 fn tag_names(iter: &gtk::TextIter) -> Vec<String> {
     iter.tags().iter().filter_map(|t| t.name().map(|n| n.to_string())).collect()
@@ -122,7 +142,7 @@ impl ParaProps {
         ParaProps { style: p.style, align: p.align, list: p.list, indent: p.indent }
     }
     /// The left margin in pixels: indent steps, plus room for a list marker or a quote.
-    fn margin_px(&self) -> i32 {
+    pub fn margin_px(&self) -> i32 {
         let steps = self.indent as f64 + if self.list.is_some() || self.style == Style::Quote { 1.0 } else { 0.0 };
         (steps * INDENT_STEP * PX).round() as i32
     }
@@ -236,6 +256,10 @@ pub fn char_format(iter: &gtk::TextIter) -> TextRun {
                     r.highlight = Some(v.into());
                 } else if let Some(v) = n.strip_prefix("cm:") {
                     r.comment = v.parse().ok();
+                } else if let Some(v) = n.strip_prefix("ins:") {
+                    r.inserted = v.parse().ok();
+                } else if let Some(v) = n.strip_prefix("del:") {
+                    r.deleted = v.parse().ok();
                 }
             }
         }
@@ -265,6 +289,12 @@ pub fn format_tags(r: &TextRun) -> Vec<String> {
     }
     if let Some(c) = r.comment {
         out.push(format!("cm:{c}"));
+    }
+    if let Some(c) = r.inserted {
+        out.push(format!("ins:{c}"));
+    }
+    if let Some(c) = r.deleted {
+        out.push(format!("del:{c}"));
     }
     out
 }
@@ -349,6 +379,7 @@ impl Loader<'_> {
                                 if let Some(bytes) = self.media.get(&img.image)
                                     && let Some(pic) = Picture::new(&img.image, bytes, img.width)
                                 {
+                                    pic.set_wrap(img.wrap);
                                     let mut end = b.end_iter();
                                     b.insert_paintable(&mut end, &pic);
                                 }
@@ -442,7 +473,7 @@ pub fn read(buffer: &gtk::TextBuffer, tables: &Tables, marks: &Marks) -> Vec<Blo
                         if !chunk.is_empty() {
                             p.runs.push(Run::Text(TextRun { text: std::mem::take(&mut chunk), ..format.clone() }));
                         }
-                        p.runs.push(Run::Image(Image { image: pic.name(), width: pic.width_pt() }));
+                        p.runs.push(Run::Image(Image { image: pic.name(), width: pic.width_pt(), wrap: pic.wrap() }));
                     } else if let Some(anchor) = at.child_anchor()
                         && let Some(Mark::Note(n)) = marks.borrow().iter().find(|(a, _, _)| *a == anchor).map(|(_, m, _)| m)
                     {

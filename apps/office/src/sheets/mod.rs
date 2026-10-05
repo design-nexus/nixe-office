@@ -8,6 +8,7 @@ mod grid;
 pub mod model;
 mod pages;
 mod rules;
+mod summary;
 mod templates;
 mod xlsx;
 
@@ -64,6 +65,7 @@ struct Controls {
     color: Rc<color::ColorButton>,
     fill: Rc<color::ColorButton>,
     filter: gtk::MenuButton,
+    wrap: gtk::ToggleButton,
 }
 
 struct ChartPane {
@@ -309,6 +311,9 @@ impl Sheets {
         });
         g.append(&color.button);
         g.append(&fill.button);
+        g.append(&self.borders_button());
+        let wrap = toggle("nxo-wrap-text-symbolic", "Wrap text in the cell", |s, on| s.set_wrap(on));
+        g.append(&wrap);
         flow.append(&g);
 
         let g = group();
@@ -341,6 +346,7 @@ impl Sheets {
         g.append(&button("nxo-table-cells-merge-symbolic", "Merge the selected cells, or unmerge them", |s| s.merge_cells()));
         g.append(&button("nxo-message-square-text-symbolic", "Comment on this cell (Ctrl+Alt+M)", |s| s.edit_comment()));
         g.append(&button("nxo-highlighter-symbolic", "Highlight cells that meet a rule", |s| s.highlight_dialog()));
+        g.append(&button("nxo-sigma-symbolic", "Summarize: totals by group, on a new sheet", |s| s.summarize_dialog()));
         flow.append(&g);
 
         let g = group();
@@ -365,7 +371,7 @@ impl Sheets {
         flow.append(&g);
 
         bar.append(&doc::file_menu(Vec::new()));
-        *self.controls.borrow_mut() = Some(Controls { bold, italic, numbers, align, header, freeze, chart, color, fill, filter });
+        *self.controls.borrow_mut() = Some(Controls { bold, italic, numbers, align, header, freeze, chart, color, fill, filter, wrap });
         bar
     }
 
@@ -1143,6 +1149,7 @@ impl Sheets {
         }
         if let Some(ctl) = self.controls.borrow().as_ref() {
             ctl.bold.set_active(f.bold);
+            ctl.wrap.set_active(f.wrap);
             ctl.italic.set_active(f.italic);
             for (n, b) in &ctl.numbers {
                 b.set_active(*n == f.number);

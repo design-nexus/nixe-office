@@ -16,6 +16,21 @@ pub struct Document {
     /// Comments on spans of text; runs point at them by id.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub comments: Vec<Comment>,
+    /// Who made each tracked change, and when; runs point at them by id.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub revisions: Vec<Revision>,
+    /// New edits are tracked as changes.
+    #[serde(skip_serializing_if = "is_false")]
+    pub tracking: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Revision {
+    pub id: u32,
+    pub author: String,
+    /// `YYYY-MM-DDTHH:MM:SSZ` (empty if unknown).
+    pub date: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -267,6 +282,12 @@ pub struct TextRun {
     /// The comment this text is part of.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comment: Option<u32>,
+    /// Added while tracking changes: the revision's id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inserted: Option<u32>,
+    /// Deleted while tracking changes: still shown, struck through, until accepted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted: Option<u32>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -285,6 +306,8 @@ impl TextRun {
             && self.color == o.color
             && self.highlight == o.highlight
             && self.comment == o.comment
+            && self.inserted == o.inserted
+            && self.deleted == o.deleted
     }
 }
 
@@ -294,6 +317,17 @@ pub struct Image {
     pub image: String,
     /// Width on the page, in points. Height follows the picture's proportions.
     pub width: f64,
+    /// Set at this side of its paragraph with the text wrapping beside it;
+    /// otherwise the picture sits in the line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrap: Option<Side>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Side {
+    Left,
+    Right,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -361,6 +395,14 @@ impl Document {
             .filter_map(|r| if let Run::Text(t) = r { t.comment } else { None })
             .collect();
         self.comments.retain(|c| used.contains(&c.id));
+        let changed: Vec<u32> = self
+            .blocks
+            .iter()
+            .filter_map(|b| if let Block::Paragraph(p) = b { Some(p) } else { None })
+            .flat_map(|p| p.runs.iter())
+            .filter_map(|r| if let Run::Text(t) = r { t.inserted.or(t.deleted) } else { None })
+            .collect();
+        self.revisions.retain(|r| changed.contains(&r.id));
     }
 
     /// Merge neighbouring runs with the same formatting and drop empty ones.
@@ -498,7 +540,7 @@ mod tests {
                     list: Some(List::Number),
                     runs: vec![
                         Run::styled("x", |r| r.color = Some("#ff0000".into())),
-                        Run::Image(Image { image: "a.png".into(), width: 100.0 }),
+                        Run::Image(Image { image: "a.png".into(), width: 100.0, wrap: Some(Side::Left) }),
                     ],
                     ..Default::default()
                 }),
@@ -515,6 +557,7 @@ mod tests {
             ],
             comments: vec![Comment { id: 1, author: "Ken".into(), text: "Check".into(), ..Default::default() }],
             page: PageSetup { columns: 2, ..Default::default() },
+            ..Default::default()
         };
         let text = serde_json::to_string(&d).unwrap();
         let back: Document = serde_json::from_str(&text).unwrap();

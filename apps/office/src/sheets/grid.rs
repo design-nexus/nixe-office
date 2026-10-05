@@ -440,6 +440,14 @@ impl Sheets {
             cr.move_to(HEAD_W, (y + rh).floor() - 0.5);
             cr.line_to(w, (y + rh).floor() - 0.5);
             cr.stroke().ok();
+            // Cell borders, darker than the gridlines.
+            for c in first_col..=last_col {
+                let b = s.format(src, c).borders;
+                if b != 0 && !in_merge(src, c) {
+                    let (x, cw) = self.col_rect(c);
+                    stroke_borders(cr, b, (x, y, cw, rh));
+                }
+            }
 
             // Text. Words that don't fit run on into empty cells to their right.
             for c in first_col..=last_col {
@@ -461,13 +469,14 @@ impl Sheets {
                     font.set_style(pango::Style::Italic);
                 }
                 layout.set_font_description(Some(&font));
+                let (x, cw) = self.col_rect(c);
+                let pad = 6.0;
+                set_wrap(&layout, f.wrap, cw - 2.0 * pad);
                 layout.set_text(&shown);
                 let (tw, th) = layout.pixel_size();
-                let (x, cw) = self.col_rect(c);
                 let align = f.align.unwrap_or(if right { HAlign::Right } else { HAlign::Left });
-                let pad = 6.0;
                 let mut room = cw;
-                if align == HAlign::Left && tw as f64 > cw - 2.0 * pad && !matches!(v, formula::Value::Num(_)) {
+                if align == HAlign::Left && !f.wrap && tw as f64 > cw - 2.0 * pad && !matches!(v, formula::Value::Num(_)) {
                     let mut n = c + 1;
                     while n < COLS && s.raw(src, n).is_empty() && n <= last_col + 1 {
                         room += self.col_rect(n).1;
@@ -488,12 +497,21 @@ impl Sheets {
                     _ => INK,
                 };
                 cr.set_source_rgb(r, g, b);
-                cr.move_to(tx, y + (rh - th as f64) / 2.0);
+                // Wrapped text that doesn't fit starts at the top of the cell.
+                let ty = if f.wrap && th as f64 > rh - 4.0 { y + 3.0 } else { y + (rh - th as f64) / 2.0 };
+                let tx = if f.wrap {
+                    align_lines(&layout, align);
+                    x + pad
+                } else {
+                    tx
+                };
+                cr.move_to(tx, ty);
                 pangocairo::functions::show_layout(cr, &layout);
                 cr.restore().ok();
             }
             cr.restore().ok();
         }
+        set_wrap(&layout, false, 0.0);
 
         // Merged blocks: one cell's fill, outline and text over the whole block.
         for m in &merges {
@@ -521,13 +539,20 @@ impl Sheets {
                     font.set_style(pango::Style::Italic);
                 }
                 layout.set_font_description(Some(&font));
+                let pad = 6.0;
+                set_wrap(&layout, f.wrap, mw - 2.0 * pad);
                 layout.set_text(&shown);
                 let (tw, th) = layout.pixel_size();
-                let pad = 6.0;
-                let tx = match f.align.unwrap_or(if right { HAlign::Right } else { HAlign::Left }) {
-                    HAlign::Left => x + pad,
-                    HAlign::Center => x + (mw - tw as f64) / 2.0,
-                    HAlign::Right => x + mw - pad - tw as f64,
+                let align = f.align.unwrap_or(if right { HAlign::Right } else { HAlign::Left });
+                let tx = if f.wrap {
+                    align_lines(&layout, align);
+                    x + pad
+                } else {
+                    match align {
+                        HAlign::Left => x + pad,
+                        HAlign::Center => x + (mw - tw as f64) / 2.0,
+                        HAlign::Right => x + mw - pad - tw as f64,
+                    }
                 };
                 cr.rectangle(x + 1.0, y, mw - 2.0, mh);
                 cr.clip();
@@ -537,8 +562,15 @@ impl Sheets {
                     _ => INK,
                 };
                 cr.set_source_rgb(r, g, b);
-                cr.move_to(tx, y + (mh - th as f64) / 2.0);
+                cr.move_to(tx, y + ((mh - th as f64) / 2.0).max(3.0));
                 pangocairo::functions::show_layout(cr, &layout);
+                set_wrap(&layout, false, 0.0);
+            }
+            if f.borders != 0 {
+                cr.reset_clip();
+                cr.rectangle(HEAD_W, clip_top, w - HEAD_W, h - clip_top);
+                cr.clip();
+                stroke_borders(cr, f.borders, (x, y, mw, mh));
             }
             cr.restore().ok();
         }
@@ -1195,6 +1227,40 @@ impl Sheets {
         });
         self.entry.add_controller(keys);
     }
+}
+
+/// Draw the edges `b` names around a cell box.
+fn stroke_borders(cr: &cairo::Context, b: u8, (x, y, w, h): (f64, f64, f64, f64)) {
+    cr.set_source_rgb(0.35, 0.38, 0.42);
+    cr.set_line_width(1.0);
+    let (l, r) = (x.floor() - 0.5, (x + w).floor() - 0.5);
+    let (t, bo) = (y.floor() - 0.5, (y + h).floor() - 0.5);
+    for (edge, (x1, y1, x2, y2)) in [(TOP, (l, t, r, t)), (BOTTOM, (l, bo, r, bo)), (LEFT, (l, t, l, bo)), (RIGHT, (r, t, r, bo))] {
+        if b & edge != 0 {
+            cr.move_to(x1, y1);
+            cr.line_to(x2, y2);
+        }
+    }
+    cr.stroke().ok();
+}
+
+/// Wrap a cell's text at `width` pixels, or set it on one line.
+fn set_wrap(layout: &pango::Layout, wrap: bool, width: f64) {
+    if wrap {
+        layout.set_width((width.max(1.0) * pango::SCALE as f64) as i32);
+        layout.set_wrap(pango::WrapMode::WordChar);
+    } else {
+        layout.set_width(-1);
+    }
+}
+
+/// Wrapped lines line up inside the cell through the layout's own alignment.
+fn align_lines(layout: &pango::Layout, align: HAlign) {
+    layout.set_alignment(match align {
+        HAlign::Left => pango::Alignment::Left,
+        HAlign::Center => pango::Alignment::Center,
+        HAlign::Right => pango::Alignment::Right,
+    });
 }
 
 fn widgets_hbox() -> gtk::Box {

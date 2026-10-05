@@ -53,10 +53,39 @@ pub struct Rendered {
 }
 
 /// A piece of a paragraph's text: a run, or a footnote's number.
-enum Piece<'a> {
-    Text(&'a TextRun),
+#[derive(Clone)]
+enum Piece {
+    Text(TextRun),
     Mark(usize),
 }
+
+/// Split pieces at a byte offset of the text they lay out to.
+fn split_pieces(pieces: &[Piece], at: usize) -> (Vec<Piece>, Vec<Piece>) {
+    let (mut head, mut tail) = (Vec::new(), Vec::new());
+    let mut pos = 0;
+    for p in pieces {
+        let len = match p {
+            Piece::Text(r) => r.text.len(),
+            Piece::Mark(n) => n.to_string().len(),
+        };
+        if pos + len <= at {
+            head.push(p.clone());
+        } else if pos >= at {
+            tail.push(p.clone());
+        } else if let Piece::Text(r) = p {
+            let cut = at - pos;
+            head.push(Piece::Text(TextRun { text: r.text[..cut].to_string(), ..r.clone() }));
+            tail.push(Piece::Text(TextRun { text: r.text[cut..].to_string(), ..r.clone() }));
+        } else {
+            tail.push(p.clone());
+        }
+        pos += len;
+    }
+    (head, tail)
+}
+
+/// Room between a wrapped picture and the text beside it.
+const WRAP_GAP: f64 = 12.0;
 
 const NOTE_SIZE: f64 = 9.0;
 /// Room for the rule above a column's footnotes.
@@ -73,7 +102,7 @@ fn rgb(hex: &str) -> Option<(u16, u16, u16)> {
 
 /// A Pango layout for some text runs in a paragraph of `style`.
 fn text_layout(ctx: &pango::Context, runs: &[&TextRun], style: Style, align: Align, width: f64) -> pango::Layout {
-    let pieces: Vec<Piece> = runs.iter().map(|r| Piece::Text(r)).collect();
+    let pieces: Vec<Piece> = runs.iter().map(|r| Piece::Text((*r).clone())).collect();
     pieces_layout(ctx, &pieces, style, align, width).0
 }
 
@@ -109,7 +138,7 @@ fn pieces_layout(
     let mut marks = Vec::new();
     for piece in pieces {
         let r = match piece {
-            Piece::Text(r) => *r,
+            Piece::Text(r) => r,
             Piece::Mark(n) => {
                 // A small raised number.
                 let start = text.len() as u32;
@@ -157,6 +186,18 @@ fn pieces_layout(
         let color = r.color.as_deref().or(if style == Style::Quote { Some("#4a5060") } else { None });
         if let Some((cr, cg, cb)) = color.and_then(rgb) {
             add(pango::AttrColor::new_foreground(cr, cg, cb).into());
+        }
+        // Tracked changes print as they show: added text underlined, deleted struck through.
+        if r.inserted.is_some() || r.deleted.is_some() {
+            let ink = if r.inserted.is_some() { super::buffer::INSERTED_INK } else { super::buffer::DELETED_INK };
+            if let Some((cr, cg, cb)) = rgb(ink) {
+                add(pango::AttrColor::new_foreground(cr, cg, cb).into());
+            }
+            if r.inserted.is_some() {
+                add(pango::AttrInt::new_underline(pango::Underline::Single).into());
+            } else {
+                add(pango::AttrInt::new_strikethrough(true).into());
+            }
         }
         if let Some((cr, cg, cb)) = r.highlight.as_deref().and_then(rgb) {
             add(pango::AttrColor::new_background(cr, cg, cb).into());
@@ -286,12 +327,14 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
                 let mut notes_here: Vec<(usize, &str)> = Vec::new();
                 for r in &p.runs {
                     let piece = match r {
-                        Run::Text(t) => Piece::Text(t),
+                        Run::Text(t) => Piece::Text(t.clone()),
                         Run::Note(n) => {
                             note_n += 1;
                             notes_here.push((note_n, n.note.as_str()));
                             Piece::Mark(note_n)
                         }
+                        // A wrapped picture is placed beside the text, below.
+                        Run::Image(i) if i.wrap.is_some() => continue,
                         Run::Image(i) => {
                             segments.push(Err(i));
                             continue;
@@ -306,85 +349,132 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
                 if segments.is_empty() {
                     segments.push(Ok(Vec::new()));
                 }
+                // A picture wrapped at one side: placed first, at the paragraph's top.
+                let mut float: Option<(f64, f64, f64, Side, usize, usize)> = None;
+                if let Some(img) = p.runs.iter().find_map(|r| if let Run::Image(i) = r { i.wrap.map(|s| (i, s)) } else { None })
+                    && let Some(surface) = media.get(&img.0.image).and_then(|b| picture_surface(b))
+                {
+                    let (img, side) = img;
+                    let w = img.width.min((width - left) * 0.7).max(16.0);
+                    let h = (w * surface.height() as f64 / surface.width().max(1) as f64).min(setup.content_height());
+                    if pg.room() < h && pg.y > 0.0 {
+                        pg.next_column();
+                    }
+                    let x = if side == Side::Left { left } else { width - w };
+                    pg.push(Item::Picture { surface, x, top: pg.y, w, h });
+                    float = Some((pg.y, w, h, side, pg.pages.len(), pg.col));
+                }
                 let mut first = true;
                 for seg in segments {
                     match seg {
                         Ok(pieces) => {
-                            let (layout, marks) = pieces_layout(&ctx, &pieces, p.style, p.align, width - left);
-                            let layout = Rc::new(layout);
-                            let marker = match (first, p.list) {
-                                (true, Some(list)) => {
-                                    let label = list_label(list, p.indent, numbers[bi]);
-                                    let first_size = pieces
-                                        .iter()
-                                        .find_map(|x| if let Piece::Text(r) = x { Some(r.size) } else { None })
-                                        .flatten()
-                                        .unwrap_or(size);
-                                    Some(Rc::new(text_layout(
-                                        &ctx,
-                                        &[&TextRun { text: label, size: Some(first_size), ..Default::default() }],
-                                        Style::Normal,
-                                        Align::Right,
-                                        INDENT_STEP * 0.7,
-                                    )))
-                                }
-                                _ => None,
-                            };
-                            first = false;
-                            let (tops, height) = line_tops(&layout);
-                            // Each footnote's layout and height, by the line its mark is on.
-                            let mut line_notes: Vec<Vec<(Rc<pango::Layout>, f64)>> = vec![Vec::new(); tops.len()];
-                            for (idx, n) in &marks {
-                                let text = notes_here.iter().find(|(k, _)| k == n).map(|(_, t)| *t).unwrap_or("");
-                                let nl = note_layout(&ctx, *n, text, width);
-                                let h = line_tops(&nl).1 + 2.0;
-                                let (line, _) = layout.index_to_line_x(*idx as i32, false);
-                                if let Some(v) = line_notes.get_mut(line.max(0) as usize) {
-                                    v.push((Rc::new(nl), h));
-                                }
-                            }
-                            // Keep a heading with the start of what follows it.
-                            if p.style.is_heading() && pg.room() < height + 3.0 * DEFAULT_SIZE && pg.y > 0.0 {
-                                pg.next_column();
-                            }
-                            let mut start = 0;
-                            while start < tops.len() {
-                                let base = tops[start];
-                                let mut end = start;
-                                let mut notes_h = 0.0;
-                                let rule = |pg: &Pager| {
-                                    let has = pg.pages.last().is_some_and(|p| p.notes.iter().any(|(c, _)| *c == pg.col));
-                                    if has { 0.0 } else { NOTE_RULE }
+                            // Beside a wrapped picture, the first lines are set narrower.
+                            let mut parts: Vec<(Vec<Piece>, f64, f64)> = vec![(pieces, left, width - left)];
+                            if first
+                                && let Some((_, fw, fh, side, _, _)) = float
+                                && width - left - fw - WRAP_GAP >= 72.0
+                            {
+                                let narrow = width - left - fw - WRAP_GAP;
+                                let nx = if side == Side::Left { left + fw + WRAP_GAP } else { left };
+                                let (l, _) = pieces_layout(&ctx, &parts[0].0, p.style, p.align, narrow);
+                                let (tops, _) = line_tops(&l);
+                                let beside = tops.iter().take_while(|t| **t < fh).count();
+                                let at = l.line(beside as i32).map(|line| line.start_index() as usize);
+                                let all = std::mem::take(&mut parts[0].0);
+                                parts = match at {
+                                    Some(at) if beside > 0 => {
+                                        let (head, tail) = split_pieces(&all, at);
+                                        vec![(head, nx, narrow), (tail, left, width - left)]
+                                    }
+                                    Some(_) => vec![(all, left, width - left)],
+                                    None => vec![(all, nx, narrow)],
                                 };
-                                while end < tops.len() {
-                                    let bottom = if end + 1 < tops.len() { tops[end + 1] } else { height };
-                                    let line_h: f64 = line_notes[end].iter().map(|n| n.1).sum();
-                                    let extra = notes_h + line_h + if notes_h + line_h > 0.0 { rule(&pg) } else { 0.0 };
-                                    if bottom - base + extra > pg.room() && (end > start || pg.y > 0.0) {
-                                        break;
+                                parts.retain(|(p, _, _)| !p.is_empty());
+                            }
+                            for (pi, (pieces, left, text_w)) in parts.into_iter().enumerate() {
+                                let first_part = pi == 0;
+                                let (layout, marks) = pieces_layout(&ctx, &pieces, p.style, p.align, text_w);
+                                let layout = Rc::new(layout);
+                                let marker = match (first && first_part, p.list) {
+                                    (true, Some(list)) => {
+                                        let label = list_label(list, p.indent, numbers[bi]);
+                                        let first_size = pieces
+                                            .iter()
+                                            .find_map(|x| if let Piece::Text(r) = x { Some(r.size) } else { None })
+                                            .flatten()
+                                            .unwrap_or(size);
+                                        Some(Rc::new(text_layout(
+                                            &ctx,
+                                            &[&TextRun { text: label, size: Some(first_size), ..Default::default() }],
+                                            Style::Normal,
+                                            Align::Right,
+                                            INDENT_STEP * 0.7,
+                                        )))
                                     }
-                                    notes_h += line_h;
-                                    end += 1;
-                                }
-                                if end == start {
-                                    pg.next_column();
-                                    continue;
-                                }
-                                let bottom = if end < tops.len() { tops[end] } else { height };
-                                let m = if start == 0 { marker.clone() } else { None };
-                                if start == 0 && p.style.is_heading() {
-                                    found_pages.entry(bi).or_insert(pg.pages.len());
-                                }
-                                pg.push(Item::Lines { layout: layout.clone(), lines: start..end, x: left, top: pg.y, marker: m });
-                                pg.y += bottom - base;
-                                for line in &line_notes[start..end] {
-                                    for (nl, h) in line {
-                                        pg.add_note(nl.clone(), *h);
+                                    _ => None,
+                                };
+                                first = false;
+                                let (tops, height) = line_tops(&layout);
+                                // Each footnote's layout and height, by the line its mark is on.
+                                let mut line_notes: Vec<Vec<(Rc<pango::Layout>, f64)>> = vec![Vec::new(); tops.len()];
+                                for (idx, n) in &marks {
+                                    let text = notes_here.iter().find(|(k, _)| k == n).map(|(_, t)| *t).unwrap_or("");
+                                    let nl = note_layout(&ctx, *n, text, width);
+                                    let h = line_tops(&nl).1 + 2.0;
+                                    let (line, _) = layout.index_to_line_x(*idx as i32, false);
+                                    if let Some(v) = line_notes.get_mut(line.max(0) as usize) {
+                                        v.push((Rc::new(nl), h));
                                     }
                                 }
-                                start = end;
-                                if start < tops.len() {
+                                // Keep a heading with the start of what follows it.
+                                if first_part && p.style.is_heading() && pg.room() < height + 3.0 * DEFAULT_SIZE && pg.y > 0.0 {
                                     pg.next_column();
+                                }
+                                let mut start = 0;
+                                while start < tops.len() {
+                                    let base = tops[start];
+                                    let mut end = start;
+                                    let mut notes_h = 0.0;
+                                    let rule = |pg: &Pager| {
+                                        let has = pg.pages.last().is_some_and(|p| p.notes.iter().any(|(c, _)| *c == pg.col));
+                                        if has { 0.0 } else { NOTE_RULE }
+                                    };
+                                    while end < tops.len() {
+                                        let bottom = if end + 1 < tops.len() { tops[end + 1] } else { height };
+                                        let line_h: f64 = line_notes[end].iter().map(|n| n.1).sum();
+                                        let extra = notes_h + line_h + if notes_h + line_h > 0.0 { rule(&pg) } else { 0.0 };
+                                        if bottom - base + extra > pg.room() && (end > start || pg.y > 0.0) {
+                                            break;
+                                        }
+                                        notes_h += line_h;
+                                        end += 1;
+                                    }
+                                    if end == start {
+                                        pg.next_column();
+                                        continue;
+                                    }
+                                    let bottom = if end < tops.len() { tops[end] } else { height };
+                                    let m = if start == 0 { marker.clone() } else { None };
+                                    if start == 0 && p.style.is_heading() {
+                                        found_pages.entry(bi).or_insert(pg.pages.len());
+                                    }
+                                    pg.push(Item::Lines {
+                                        layout: layout.clone(),
+                                        lines: start..end,
+                                        x: left,
+                                        top: pg.y,
+                                        marker: m,
+                                    });
+                                    pg.y += bottom - base;
+                                    for line in &line_notes[start..end] {
+                                        for (nl, h) in line {
+                                            pg.add_note(nl.clone(), *h);
+                                        }
+                                    }
+                                    start = end;
+                                    if start < tops.len() {
+                                        pg.next_column();
+                                    }
                                 }
                             }
                         }
@@ -406,6 +496,13 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
                             pg.y += h;
                         }
                     }
+                }
+                // What follows starts below the wrapped picture.
+                if let Some((top, _, h, _, page, col)) = float
+                    && pg.pages.len() == page
+                    && pg.col == col
+                {
+                    pg.y = pg.y.max(top + h + 4.0);
                 }
                 pg.space(below);
             }
@@ -679,6 +776,29 @@ mod tests {
         let r = paginate(&toc, &BTreeMap::new());
         assert_eq!(r.heading_pages().get(&1), Some(&1));
         assert_eq!(r.heading_pages().get(&3), Some(&2));
+    }
+
+    #[test]
+    fn text_wraps_beside_a_picture() {
+        let png = crate::present::model::base64(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+        )
+        .unwrap();
+        let media: BTreeMap<String, Vec<u8>> = [("p.png".to_string(), png)].into();
+        let words = "word ".repeat(200);
+        let doc = Document {
+            blocks: vec![Block::Paragraph(Paragraph {
+                runs: vec![Run::Image(Image { image: "p.png".into(), width: 100.0, wrap: Some(Side::Left) }), Run::text(&words)],
+                ..Default::default()
+            })],
+            ..Default::default()
+        };
+        let r = paginate(&doc, &media);
+        let items = &r.pages[0].items;
+        assert!(matches!(items[0], Item::Picture { x, .. } if x == 0.0));
+        let xs: Vec<f64> = items.iter().filter_map(|i| if let Item::Lines { x, .. } = i { Some(*x) } else { None }).collect();
+        // Beside the picture, then full width below it.
+        assert_eq!(xs, [100.0 + WRAP_GAP, 0.0]);
     }
 
     #[test]

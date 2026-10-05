@@ -171,6 +171,54 @@ impl Default for Slide {
 pub enum Shape {
     Rectangle,
     Ellipse,
+    Rounded,
+    Triangle,
+    Diamond,
+    Arrow,
+    Star,
+    Hexagon,
+}
+
+impl Shape {
+    pub const ALL: [Shape; 8] =
+        [Shape::Rectangle, Shape::Rounded, Shape::Ellipse, Shape::Triangle, Shape::Diamond, Shape::Hexagon, Shape::Star, Shape::Arrow];
+    pub fn name(self) -> &'static str {
+        match self {
+            Shape::Rectangle => "Rectangle",
+            Shape::Ellipse => "Ellipse",
+            Shape::Rounded => "Rounded rectangle",
+            Shape::Triangle => "Triangle",
+            Shape::Diamond => "Diamond",
+            Shape::Arrow => "Arrow",
+            Shape::Star => "Star",
+            Shape::Hexagon => "Hexagon",
+        }
+    }
+    /// PowerPoint's preset geometry name.
+    pub fn preset(self) -> &'static str {
+        match self {
+            Shape::Rectangle => "rect",
+            Shape::Ellipse => "ellipse",
+            Shape::Rounded => "roundRect",
+            Shape::Triangle => "triangle",
+            Shape::Diamond => "diamond",
+            Shape::Arrow => "rightArrow",
+            Shape::Star => "star5",
+            Shape::Hexagon => "hexagon",
+        }
+    }
+    pub fn from_preset(p: &str) -> Shape {
+        Shape::ALL.into_iter().find(|s| s.preset() == p).unwrap_or(Shape::Rectangle)
+    }
+}
+
+/// A line around an object.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Outline {
+    /// `#rrggbb`.
+    pub color: String,
+    /// Points.
+    pub width: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -237,11 +285,22 @@ pub struct Object {
     pub group: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<Build>,
+    /// Degrees clockwise, about the object's centre.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rotation: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outline: Option<Outline>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shadow: bool,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
 }
 
 impl Object {
     pub fn new(id: u32, kind: Kind, (x, y, w, h): (f64, f64, f64, f64)) -> Object {
-        Object { id, kind, x, y, w, h, group: None, build: None }
+        Object { id, kind, x, y, w, h, group: None, build: None, rotation: 0.0, outline: None, shadow: false }
     }
 
     /// Keep it on the slide and at least a little visible size.
@@ -252,7 +311,27 @@ impl Object {
         self.y = self.y.clamp(0.0, H - self.h);
     }
     pub fn contains(&self, x: f64, y: f64) -> bool {
+        let (x, y) = self.to_local(x, y);
         x >= self.x && x <= self.x + self.w && y >= self.y && y <= self.y + self.h
+    }
+
+    pub fn center(&self) -> (f64, f64) {
+        (self.x + self.w / 2.0, self.y + self.h / 2.0)
+    }
+
+    /// A slide point in the object's own unrotated frame.
+    pub fn to_local(&self, x: f64, y: f64) -> (f64, f64) {
+        self.turn(x, y, -self.rotation)
+    }
+
+    fn turn(&self, x: f64, y: f64, degrees: f64) -> (f64, f64) {
+        if degrees == 0.0 {
+            return (x, y);
+        }
+        let (cx, cy) = self.center();
+        let (s, c) = degrees.to_radians().sin_cos();
+        let (dx, dy) = (x - cx, y - cy);
+        (cx + dx * c - dy * s, cy + dx * s + dy * c)
     }
 }
 
@@ -504,6 +583,17 @@ mod tests {
         let mut o = Object::new(1, Kind::Text { text: "x".into() }, (900.0, -5.0, 200.0, 2.0));
         o.clamp();
         assert_eq!((o.x, o.y, o.w, o.h), (760.0, 0.0, 200.0, 16.0));
+    }
+
+    #[test]
+    fn turned_objects_are_hit_where_they_show() {
+        let mut o = Object::new(1, Kind::Shape { shape: Shape::Rectangle, fill: "#000000".into() }, (100.0, 100.0, 200.0, 20.0));
+        assert!(o.contains(290.0, 110.0));
+        o.rotation = 90.0;
+        // Now it stands upright through its centre (200, 110).
+        assert!(!o.contains(290.0, 110.0));
+        assert!(o.contains(200.0, 190.0));
+        assert_eq!(Shape::from_preset("star5"), Shape::Star);
     }
 
     #[test]

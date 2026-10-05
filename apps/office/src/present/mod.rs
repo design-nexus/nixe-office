@@ -2,6 +2,7 @@
 
 pub mod model;
 mod arrange;
+mod looks;
 mod data;
 mod pptx;
 mod pptx_more;
@@ -50,7 +51,16 @@ enum Drag {
         w0: f64,
         h0: f64,
     },
+    /// Turning an object by its handle: where the pointer took hold, on the slide.
+    Rotate {
+        id: u32,
+        sx: f64,
+        sy: f64,
+    },
 }
+
+/// How far above an object its rotation handle sits, in screen pixels.
+const ROTATE_GAP: f64 = 26.0;
 
 struct Controls {
     layout: gtk::DropDown,
@@ -65,6 +75,7 @@ struct Controls {
     fill: Rc<color::ColorButton>,
     object_tools: gtk::Box,
     group: gtk::Button,
+    shadow: gtk::ToggleButton,
 }
 
 pub struct Present {
@@ -342,12 +353,7 @@ impl Present {
             p.add_object(Kind::Text { text: String::new() }, 360.0, 90.0)
         }));
         g.append(&button("nxo-image-symbolic", "Add a picture", |p| p.pick_picture()));
-        g.append(&button("nxo-square-symbolic", "Add a rectangle", |p| {
-            p.add_object(Kind::Shape { shape: Shape::Rectangle, fill: "#5273cf".into() }, 240.0, 140.0)
-        }));
-        g.append(&button("nxo-circle-symbolic", "Add an ellipse", |p| {
-            p.add_object(Kind::Shape { shape: Shape::Ellipse, fill: "#e47b89".into() }, 200.0, 200.0)
-        }));
+        g.append(&self.shapes_button());
         g.append(&button("nxo-table-2-symbolic", "Add a table (double-click it to fill it in)", |p| {
             p.add_object(Kind::table(3, 3), 520.0, 180.0)
         }));
@@ -374,6 +380,22 @@ impl Present {
         let group_button = button("nxo-group-symbolic", "Group the selected objects (Ctrl+G)", |p| p.group_chosen());
         object_tools.append(&group_button);
         object_tools.append(&button("nxo-ungroup-symbolic", "Ungroup (Ctrl+Shift+G)", |p| p.ungroup_chosen()));
+        object_tools.append(&self.rotate_button());
+        object_tools.append(&self.outline_button());
+        let shadow = gtk::ToggleButton::new();
+        shadow.set_icon_name("nxo-layers-2-symbolic");
+        shadow.add_css_class("tool-toggle");
+        shadow.set_tooltip_text(Some("Drop shadow"));
+        let me = Rc::downgrade(self);
+        shadow.connect_toggled(move |b| {
+            if let Some(p) = me.upgrade()
+                && !p.syncing.get()
+            {
+                let on = b.is_active();
+                p.change_object(move |o| o.shadow = on);
+            }
+        });
+        object_tools.append(&shadow);
         object_tools.append(&self.build_button());
         object_tools.append(&button("nxo-trash-2-symbolic", "Delete the object (Delete)", |p| p.delete_chosen()));
         object_tools.set_visible(false);
@@ -406,6 +428,7 @@ impl Present {
             fill,
             object_tools,
             group: group_button,
+            shadow,
         });
         bar
     }
@@ -539,6 +562,7 @@ impl Present {
             c.object_tools.set_visible(obj.is_some());
             let n = self.chosen().len();
             c.group.set_sensitive(n >= 2);
+            c.shadow.set_active(obj.as_ref().is_some_and(|o| o.shadow));
             if let Some(Kind::Shape { fill, .. }) = obj.as_ref().map(|o| &o.kind) {
                 c.fill.set_current(Some(fill));
                 c.fill.button.set_sensitive(true);
@@ -930,17 +954,30 @@ impl Present {
         for o in slide.objects.iter().filter(|o| chosen.contains(&o.id)) {
             let (x, y, ow, oh) = (ox + o.x * s, oy + o.y * s, o.w * s, o.h * s);
             let lead = self.selected.get() == Some(o.id);
+            // Drawn in the object's own turned frame.
+            cr.save().ok();
+            cr.translate(x + ow / 2.0, y + oh / 2.0);
+            cr.rotate(o.rotation.to_radians());
+            cr.translate(-ow / 2.0, -oh / 2.0);
             cr.set_line_width(if lead { 2.0 } else { 1.5 });
             if !lead {
                 cr.set_dash(&[4.0, 3.0], 0.0);
             }
-            cr.rectangle(x, y, ow, oh);
+            cr.rectangle(0.0, 0.0, ow, oh);
             cr.stroke().ok();
             cr.set_dash(&[], 0.0);
             if lead && chosen.len() == 1 {
-                cr.rectangle(x + ow - 5.0, y + oh - 5.0, 10.0, 10.0);
+                // Resize at the corner; turn by the round handle above.
+                cr.rectangle(ow - 5.0, oh - 5.0, 10.0, 10.0);
+                cr.fill().ok();
+                cr.set_line_width(1.5);
+                cr.move_to(ow / 2.0, 0.0);
+                cr.line_to(ow / 2.0, -ROTATE_GAP + 6.0);
+                cr.stroke().ok();
+                cr.arc(ow / 2.0, -ROTATE_GAP, 6.0, 0.0, std::f64::consts::TAU);
                 cr.fill().ok();
             }
+            cr.restore().ok();
         }
         // Snap guides while dragging.
         cr.set_line_width(1.0);
@@ -1005,9 +1042,24 @@ impl Present {
                     p.drag_by(dx, dy, !alt)
                 }
                 Drag::Resize { id, w0, h0 } => p.with_object(id, |o| {
-                    o.w = w0 + dx;
-                    o.h = h0 + dy;
+                    // The pointer's move, in the object's own turned frame.
+                    let (sn, cs) = (-o.rotation).to_radians().sin_cos();
+                    o.w = w0 + dx * cs - dy * sn;
+                    o.h = h0 + dx * sn + dy * cs;
                 }),
+                Drag::Rotate { id, sx, sy } => {
+                    let shift = gtk::prelude::EventControllerExt::current_event_state(g).contains(gdk::ModifierType::SHIFT_MASK);
+                    p.with_object(id, |o| {
+                        let (cx, cy) = o.center();
+                        let a = (sy + dy - cy).atan2(sx + dx - cx).to_degrees() + 90.0;
+                        // Shift turns in 15° steps; near-straight snaps straight.
+                        let a = if shift { (a / 15.0).round() * 15.0 } else { a };
+                        let straight = (a / 90.0).round() * 90.0;
+                        let a = if (a - straight).abs() < 2.5 { straight } else { a };
+                        let a = (a + 180.0).rem_euclid(360.0) - 180.0;
+                        o.rotation = (a * 10.0).round() / 10.0;
+                    });
+                }
                 Drag::None => {}
             }
         });
@@ -1066,16 +1118,23 @@ impl Present {
         let (sx, sy) = self.to_slide(x, y);
         let slide = self.slide();
         let s = self.frame().2;
-        // The corner handle of the selected object (one object picked).
+        // The handles of the selected object (one object picked), in its own frame.
         if let Some(o) = self.selected.get().and_then(|id| slide.objects.iter().find(|o| o.id == id))
             && self.chosen().len() == 1
-            && (sx - (o.x + o.w)).abs() * s <= 8.0
-            && (sy - (o.y + o.h)).abs() * s <= 8.0
         {
-            self.end_edit();
-            self.push_undo();
-            self.drag.set(Drag::Resize { id: o.id, w0: o.w, h0: o.h });
-            return;
+            let (lx, ly) = o.to_local(sx, sy);
+            if (lx - (o.x + o.w)).abs() * s <= 8.0 && (ly - (o.y + o.h)).abs() * s <= 8.0 {
+                self.end_edit();
+                self.push_undo();
+                self.drag.set(Drag::Resize { id: o.id, w0: o.w, h0: o.h });
+                return;
+            }
+            if (lx - (o.x + o.w / 2.0)).abs() * s <= 9.0 && (ly - o.y + ROTATE_GAP / s).abs() * s <= 9.0 {
+                self.end_edit();
+                self.push_undo();
+                self.drag.set(Drag::Rotate { id: o.id, sx, sy });
+                return;
+            }
         }
         if let Some(o) = slide.objects.iter().rev().find(|o| o.contains(sx, sy)) {
             if self.editing.get() == Some(Target::Object(o.id)) {
@@ -1611,6 +1670,13 @@ pub fn write_sample(path: &Path) {
     let mut table = Object::new(11, Kind::table(3, 3), (40.0, 360.0, 400.0, 140.0));
     table.build = Some(Build { order: 2, effect: Effect::Fly });
     s.objects.push(table);
+    for (i, shape) in [Shape::Star, Shape::Arrow, Shape::Hexagon, Shape::Rounded].into_iter().enumerate() {
+        let mut o = Object::new(20 + i as u32, Kind::Shape { shape, fill: "#e0a43a".into() }, (40.0 + i as f64 * 110.0, 40.0, 90.0, 90.0));
+        o.rotation = i as f64 * 15.0;
+        o.shadow = i % 2 == 0;
+        o.outline = (i > 1).then(|| Outline { color: "#202329".into(), width: 3.0 });
+        s.objects.push(o);
+    }
     for (id, x) in [(12, 470.0), (13, 560.0)] {
         let mut o = Object::new(id, Kind::Shape { shape: Shape::Rectangle, fill: "#5273cf".into() }, (x, 400.0, 70.0, 70.0));
         o.group = Some(1);

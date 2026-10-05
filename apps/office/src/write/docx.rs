@@ -89,10 +89,23 @@ fn text_run(r: &TextRun) -> String {
     out
 }
 
-fn picture_run(rid: &str, id: usize, name: &str, w_pt: f64, h_pt: f64) -> String {
+fn picture_run(rid: &str, id: usize, name: &str, (w_pt, h_pt): (f64, f64), wrap: Option<Side>) -> String {
     let (cx, cy) = ((w_pt * EMU).round() as i64, (h_pt * EMU).round() as i64);
+    // A wrapped picture floats at the side of its paragraph, text around it.
+    let (open, close) = match wrap {
+        None => (r#"<wp:inline distT="0" distB="0" distL="0" distR="0">"#.to_string(), "</wp:inline>"),
+        Some(side) => (
+            format!(
+                r#"<wp:anchor distT="0" distB="114300" distL="114300" distR="114300" simplePos="0" relativeHeight="{}" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="column"><wp:align>{}</wp:align></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>"#,
+                251_658_240 + id,
+                if side == Side::Right { "right" } else { "left" }
+            ),
+            "</wp:anchor>",
+        ),
+    };
+    let after_extent = if wrap.is_some() { r#"<wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapSquare wrapText="bothSides"/>"# } else { "" };
     format!(
-        r#"<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="{cx}" cy="{cy}"/><wp:docPr id="{id}" name="{name}"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr><a:graphic><a:graphicData uri="{PIC_NS}"><pic:pic><pic:nvPicPr><pic:cNvPr id="{id}" name="{name}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="{rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"#,
+        r#"<w:r><w:drawing>{open}<wp:extent cx="{cx}" cy="{cy}"/>{after_extent}<wp:docPr id="{id}" name="{name}"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr><a:graphic><a:graphicData uri="{PIC_NS}"><pic:pic><pic:nvPicPr><pic:cNvPr id="{id}" name="{name}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="{rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>{close}</w:drawing></w:r>"#,
         name = esc(name)
     )
 }
@@ -123,6 +136,24 @@ fn header_footer(tag: &str, text: &str, page_numbers: bool) -> String {
 fn first_comment(b: Option<&Block>) -> Option<u32> {
     let Some(Block::Paragraph(p)) = b else { return None };
     p.runs.iter().find_map(|r| if let Run::Text(t) = r { Some(t.comment) } else { None }).flatten()
+}
+
+/// A run, inside `w:ins` or `w:del` when it's a tracked change.
+fn tracked_run(t: &TextRun, revisions: &[Revision]) -> String {
+    let (tag, id) = match (t.inserted, t.deleted) {
+        (Some(id), _) => ("ins", id),
+        (_, Some(id)) => ("del", id),
+        _ => return text_run(t),
+    };
+    let rev = revisions.iter().find(|r| r.id == id);
+    let author = esc(rev.map(|r| r.author.as_str()).filter(|a| !a.is_empty()).unwrap_or("Nexus Write"));
+    let date = rev.map(|r| r.date.as_str()).filter(|d| !d.is_empty()).map(|d| format!(r#" w:date="{}""#, esc(d))).unwrap_or_default();
+    let mut runs = text_run(t);
+    if tag == "del" {
+        runs = runs.replace("<w:t xml:space=\"preserve\">", "<w:delText xml:space=\"preserve\">").replace("</w:t>", "</w:delText>");
+    }
+    // Word wants revision ids distinct from comments': keep them apart.
+    format!(r#"<w:{tag} w:id="{}" w:author="{author}"{date}>{runs}</w:{tag}>"#, id + 10_000)
 }
 
 fn paragraph_xml(text: &str, ppr: &str) -> String {
@@ -221,7 +252,7 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
                                     open = Some(id);
                                 }
                             }
-                            body.push_str(&text_run(t));
+                            body.push_str(&tracked_run(t, &doc.revisions));
                         }
                         Run::Note(n) => {
                             footnotes.push(n.note.clone());
@@ -240,7 +271,7 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
                             let file = format!("image{pic_id}.png");
                             rels.push((rid.clone(), "image".into(), format!("media/{file}")));
                             images.push((file, bytes.clone()));
-                            body.push_str(&picture_run(&rid, pic_id, &img.image, img.width, h));
+                            body.push_str(&picture_run(&rid, pic_id, &img.image, (img.width, h), img.wrap));
                         }
                     }
                 }
@@ -344,6 +375,14 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
             doc.page.columns(),
             (doc.page.column_gap * TWIP).round() as i64
         );
+    }
+    if doc.tracking {
+        let rid = format!("rId{}", rels.len() + 1);
+        rels.push((rid, "settings".into(), "settings.xml".into()));
+        extra_parts.push((
+            "word/settings.xml".into(),
+            format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="{W_NS}"><w:trackRevisions/></w:settings>"#),
+        ));
     }
     // Footnotes and comments get parts of their own.
     if !footnotes.is_empty() {
@@ -484,7 +523,7 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>"#,
     );
     for (name, _) in &extra_parts {
-        let kind = ["header", "footer", "footnotes", "comments"].into_iter().find(|k| name.contains(k)).unwrap_or("footer");
+        let kind = ["header", "footer", "footnotes", "comments", "settings"].into_iter().find(|k| name.contains(k)).unwrap_or("footer");
         let _ = write!(
             types,
             r#"<Override PartName="/{name}" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.{kind}+xml"/>"#
@@ -613,6 +652,8 @@ struct Reader<'z, 'b> {
     /// Comments from comments.xml by Word's id: (author, date, text).
     comment_text: HashMap<String, (String, String, String)>,
     comments: Vec<Comment>,
+    revision_ids: HashMap<String, u32>,
+    revisions: Vec<Revision>,
     /// The comment whose range is open (ranges can run across paragraphs).
     open_comment: Option<u32>,
     /// A page break in the paragraph just read: before its text, or after.
@@ -733,11 +774,20 @@ impl Reader<'_, '_> {
             if !r.has_tag_name((W_NS, "r")) {
                 continue;
             }
-            if r.ancestors().skip(1).any(|a| a.has_tag_name((W_NS, "del")) || a.has_tag_name((W_NS, "r"))) {
+            if r.ancestors().skip(1).any(|a| a.has_tag_name((W_NS, "r"))) {
                 continue;
             }
             let mut fmt = run_format(child(&r, "rPr"));
             fmt.comment = self.open_comment;
+            // Tracked changes: the run sits inside w:ins or w:del.
+            if let Some(change) = r.ancestors().skip(1).find(|a| a.has_tag_name((W_NS, "ins")) || a.has_tag_name((W_NS, "del"))) {
+                let id = self.revision_id(&change);
+                if change.has_tag_name((W_NS, "ins")) {
+                    fmt.inserted = Some(id);
+                } else {
+                    fmt.deleted = Some(id);
+                }
+            }
             for c in r.children() {
                 if c.has_tag_name((W_NS, "br")) && wattr(&c, "type") == Some("page") {
                     // Text so far stays on this page; the rest of the paragraph is lost
@@ -755,7 +805,7 @@ impl Reader<'_, '_> {
                     }
                     continue;
                 }
-                if c.has_tag_name((W_NS, "t")) {
+                if c.has_tag_name((W_NS, "t")) || c.has_tag_name((W_NS, "delText")) {
                     para.runs.push(Run::Text(TextRun { text: c.text().unwrap_or("").to_string(), ..fmt.clone() }));
                 } else if c.has_tag_name((W_NS, "tab")) {
                     para.runs.push(Run::Text(TextRun { text: "\t".into(), ..fmt.clone() }));
@@ -778,6 +828,22 @@ impl Reader<'_, '_> {
             }
         }
         para
+    }
+
+    /// Our id for a w:ins or w:del, adding its revision the first time.
+    fn revision_id(&mut self, n: &roxmltree::Node) -> u32 {
+        let wid = wattr(n, "id").unwrap_or("").to_string();
+        if let Some(id) = self.revision_ids.get(&wid) {
+            return *id;
+        }
+        let id = self.revision_ids.len() as u32 + 1;
+        self.revision_ids.insert(wid, id);
+        self.revisions.push(Revision {
+            id,
+            author: wattr(n, "author").unwrap_or("").to_string(),
+            date: wattr(n, "date").unwrap_or("").to_string(),
+        });
+        id
     }
 
     /// Our id for Word's comment `wid`, adding the comment the first time.
@@ -813,8 +879,36 @@ impl Reader<'_, '_> {
             .max(16.0);
         let name = format!("picture-{}.png", self.media.len() + 1);
         self.media.insert(name.clone(), png);
-        Some(Image { image: name, width })
+        Some(Image { image: name, width, wrap: anchor_side(drawing, self.max_width) })
     }
+}
+
+/// A floating picture with text wrapped around it: which side it sits on.
+fn anchor_side(drawing: &roxmltree::Node, column: f64) -> Option<Side> {
+    let anchor = drawing.children().find(|n| n.has_tag_name((WP_NS, "anchor")))?;
+    let wraps = ["wrapSquare", "wrapTight", "wrapThrough"];
+    if !anchor.children().any(|n| wraps.iter().any(|w| n.has_tag_name((WP_NS, *w)))) {
+        return None;
+    }
+    let h = anchor.children().find(|n| n.has_tag_name((WP_NS, "positionH")))?;
+    if let Some(align) = h.children().find(|n| n.has_tag_name((WP_NS, "align"))).and_then(|a| a.text()) {
+        return Some(if matches!(align.trim(), "right" | "outside") { Side::Right } else { Side::Left });
+    }
+    let offset = h
+        .children()
+        .find(|n| n.has_tag_name((WP_NS, "posOffset")))
+        .and_then(|o| o.text())
+        .and_then(|t| t.trim().parse::<f64>().ok())
+        .map(|v| v / EMU)
+        .unwrap_or(0.0);
+    let width = anchor
+        .children()
+        .find(|n| n.has_tag_name((WP_NS, "extent")))
+        .and_then(|e| e.attribute("cx"))
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|v| v / EMU)
+        .unwrap_or(0.0);
+    Some(if offset + width / 2.0 > column / 2.0 { Side::Right } else { Side::Left })
 }
 
 fn style_from_id(id: &str) -> Style {
@@ -913,6 +1007,7 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
     let max_width = doc.page.content_width();
     // Footnotes and comments, from their own parts.
     let part_of = |kind: &str| rels.values().find(|t| t.ends_with(&format!("{kind}.xml"))).cloned();
+    let part_of_settings = part_of("settings");
     let mut footnotes = HashMap::new();
     if let Some(path) = part_of("footnotes")
         && let Some(x) = text_part(&mut zip, &path)
@@ -959,6 +1054,8 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
         comment_ids: HashMap::new(),
         comment_text,
         comments: Vec::new(),
+        revision_ids: HashMap::new(),
+        revisions: Vec::new(),
         open_comment: None,
         break_before: false,
         break_after: false,
@@ -1027,6 +1124,12 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
         }
     }
     doc.comments = std::mem::take(&mut reader.comments);
+    doc.revisions = std::mem::take(&mut reader.revisions);
+    if let Some(path) = part_of_settings.as_deref()
+        && let Some(x) = text_part(reader.zip, path)
+    {
+        doc.tracking = x.contains("trackRevisions") && !x.contains(r#"trackRevisions w:val="0""#) && !x.contains(r#"trackRevisions w:val="false""#);
+    }
     let media = std::mem::take(&mut reader.media);
     if doc.blocks.is_empty() {
         bail!("the document is empty");
@@ -1058,7 +1161,7 @@ mod tests {
                     r.font = Some("Noto Serif".into());
                 }),
                 Run::styled(" marked", |r| r.highlight = Some("#fff59d".into())),
-                Run::Image(Image { image: "pic.png".into(), width: 120.0 }),
+                Run::Image(Image { image: "pic.png".into(), width: 120.0, wrap: Some(Side::Right) }),
             ],
             ..Default::default()
         }));
@@ -1108,7 +1211,7 @@ mod tests {
             (Some(18.0), Some("#c62828"), true, Some("Noto Serif"))
         );
         assert!(matches!(&p.runs[1], Run::Text(t) if t.highlight.as_deref() == Some("#fff59d")));
-        assert!(matches!(&p.runs[2], Run::Image(i) if (i.width - 120.0).abs() < 0.01));
+        assert!(matches!(&p.runs[2], Run::Image(i) if (i.width - 120.0).abs() < 0.01 && i.wrap == Some(Side::Right)));
         assert_eq!(back_media.values().next(), Some(&png));
         // The recipe's bold labels survive.
         let Block::Paragraph(p) = &back.blocks[1] else { panic!() };
@@ -1164,6 +1267,29 @@ mod tests {
         assert_eq!(back.comments.len(), 1);
         let c = &back.comments[0];
         assert_eq!((c.author.as_str(), c.text.as_str(), c.date.as_str()), ("Ken Doe", "Check this", "2026-10-05T10:00:00Z"));
+        // Tracked changes keep who made them, and the switch.
+        let tracked = Document {
+            tracking: true,
+            revisions: vec![Revision { id: 3, author: "Ann".into(), date: "2026-10-05T09:00:00Z".into() }],
+            blocks: vec![para(vec![
+                Run::text("Keep "),
+                Run::styled("new", |r| r.inserted = Some(3)),
+                Run::styled("old", |r| r.deleted = Some(3)),
+            ])],
+            ..Default::default()
+        };
+        let (bytes, _) = write(&tracked, &BTreeMap::new()).unwrap();
+        let (back, _) = read(&bytes).unwrap();
+        assert!(back.tracking);
+        let Block::Paragraph(p) = &back.blocks[0] else { panic!() };
+        let marks: Vec<(String, bool, bool)> = p
+            .runs
+            .iter()
+            .filter_map(|r| if let Run::Text(t) = r { Some((t.text.clone(), t.inserted.is_some(), t.deleted.is_some())) } else { None })
+            .collect();
+        assert_eq!(marks, [("Keep ".into(), false, false), ("new".into(), true, false), ("old".into(), false, true)]);
+        assert_eq!(back.revisions[0].author, "Ann");
+
         // The cached contents had page numbers: the second heading is on page 2.
         let pages = super::super::layout::paginate(&doc, &BTreeMap::new());
         assert_eq!(pages.heading_pages().get(&5), Some(&2));

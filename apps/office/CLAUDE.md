@@ -38,6 +38,12 @@
   `layout.rs` paginates for PDF/print and the page count: columns, footnotes at each
   column's foot, and a second pass to put page numbers in the table of contents.
   With columns on, the editor is one column wide, so lines break as printed.
+  Tracked changes (`changes.rs`) are `ins:<id>` / `del:<id>` tags plus
+  `Document.revisions`; while tracking, Backspace/Delete/typing over a selection go
+  through `tracked_key` (before the TextView sees them), so deleted text stays.
+  Pictures wrapped beside a paragraph (`Image.wrap`) take no room in the line; the page
+  view draws them and `wrap.rs` gives the paragraph margin tags (`wl:`/`wr:`/`wb:`,
+  never saved). Print sets the first lines narrower beside the picture.
 - **Spelling**: GTK doesn't send commit notifications for child anchors or
   paintables, so libspelling's count of the text drifts (and later asserts) when one
   goes in. The adapter is replaced after each such insert and set aside during loads
@@ -48,7 +54,8 @@
   reorders rows (undoable; refused when merged cells are in the data); filtering is a
   view (`view_rows`). Merged cells (`Sheet.merges`) only show as merged while no filter
   is on. Highlight rules (`rules.rs`) apply through `Calc::look`, used by the grid and
-  print. Functions beyond the core live in `functions.rs`. The grid (`grid.rs`) is
+  print. Functions beyond the core live in `functions.rs`; borders, wrapped cells and
+  Summarize (SUMIFS-style formulas on a new sheet) in `summary.rs`. The grid (`grid.rs`) is
   a `DrawingArea` with its own adjustments; selection is in on-screen rows
   (`src_row` maps to the sheet). The cell editor is an overlay `Entry` placed with
   margins. `xlsx.rs` reads with roxmltree (styles, merges, notes and conditional
@@ -61,7 +68,9 @@
   time); with `presenter_view` on and a second monitor, slides go full screen there and
   the presenter view on this one. `arrange.rs` has multi-select, groups, snap guides
   and align/distribute; `data.rs` the table and chart editors and the transition and
-  build menus. Slide charts reuse `sheets::chart::draw`.
+  build menus; `looks.rs` the shapes menu, rotation and borders. Objects turn about
+  their centre (`Object::rotation`; hit-testing goes through `to_local`). Slide charts
+  reuse `sheets::chart::draw`.
 - **Office files** are written by hand as XML strings (`write/docx.rs`,
   `present/pptx.rs`, `present/pptx_more.rs` for tables, charts, transitions and
   timing) and read with roxmltree.

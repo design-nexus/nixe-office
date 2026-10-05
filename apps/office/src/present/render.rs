@@ -170,7 +170,125 @@ pub fn draw(
     cr.restore().ok();
 }
 
+/// Trace a shape's outline in the box (x, y, w, h).
+pub fn shape_path(cr: &cairo::Context, shape: Shape, (x, y, w, h): (f64, f64, f64, f64)) {
+    let poly = |pts: &[(f64, f64)]| {
+        cr.new_sub_path();
+        for (i, (px, py)) in pts.iter().enumerate() {
+            if i == 0 {
+                cr.move_to(x + px * w, y + py * h);
+            } else {
+                cr.line_to(x + px * w, y + py * h);
+            }
+        }
+        cr.close_path();
+    };
+    match shape {
+        Shape::Rectangle => cr.rectangle(x, y, w, h),
+        Shape::Rounded => rounded(cr, x, y, w, h, w.min(h) * 0.16),
+        Shape::Ellipse => {
+            cr.save().ok();
+            cr.translate(x + w / 2.0, y + h / 2.0);
+            cr.scale((w / 2.0).max(0.01), (h / 2.0).max(0.01));
+            cr.new_sub_path();
+            cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::TAU);
+            cr.restore().ok();
+        }
+        Shape::Triangle => poly(&[(0.5, 0.0), (1.0, 1.0), (0.0, 1.0)]),
+        Shape::Diamond => poly(&[(0.5, 0.0), (1.0, 0.5), (0.5, 1.0), (0.0, 0.5)]),
+        Shape::Hexagon => poly(&[(0.25, 0.0), (0.75, 0.0), (1.0, 0.5), (0.75, 1.0), (0.25, 1.0), (0.0, 0.5)]),
+        Shape::Arrow => {
+            // The head is as long as the arrow is tall, up to half its length.
+            let head = 1.0 - (h / w.max(1.0)).min(0.5);
+            poly(&[(0.0, 0.25), (head, 0.25), (head, 0.0), (1.0, 0.5), (head, 1.0), (head, 0.75), (0.0, 0.75)]);
+        }
+        Shape::Star => {
+            let pts: Vec<(f64, f64)> = (0..10)
+                .map(|i| {
+                    let r = if i % 2 == 0 { 0.5 } else { 0.5 * 0.4 };
+                    let a = (-90.0 + i as f64 * 36.0f64).to_radians();
+                    (0.5 + r * a.cos(), 0.5 + r * a.sin() * 1.05 + 0.03)
+                })
+                .collect();
+            poly(&pts);
+        }
+    }
+}
+
+/// The box an object's border and shadow follow: a picture's is the picture as fitted.
+fn object_path(cr: &cairo::Context, o: &Object, media: &BTreeMap<String, Vec<u8>>, pictures: &Pictures) {
+    match &o.kind {
+        Kind::Shape { shape, .. } => shape_path(cr, *shape, (o.x, o.y, o.w, o.h)),
+        Kind::Image { image } => match pictures.get(image, media) {
+            Some(pic) => {
+                let (pw, ph) = (pic.width().max(1) as f64, pic.height().max(1) as f64);
+                let scale = (o.w / pw).min(o.h / ph);
+                let (dw, dh) = (pw * scale, ph * scale);
+                cr.rectangle(o.x + (o.w - dw) / 2.0, o.y + (o.h - dh) / 2.0, dw, dh);
+            }
+            None => cr.rectangle(o.x, o.y, o.w, o.h),
+        },
+        Kind::Chart { .. } => rounded(cr, o.x, o.y, o.w, o.h, 8.0),
+        _ => cr.rectangle(o.x, o.y, o.w, o.h),
+    }
+}
+
 fn draw_object(
+    cr: &cairo::Context,
+    ctx: &pango::Context,
+    slide: &Slide,
+    o: &Object,
+    media: &BTreeMap<String, Vec<u8>>,
+    pictures: &Pictures,
+    hints: Hints,
+) {
+    cr.save().ok();
+    if o.rotation != 0.0 {
+        let (cx, cy) = o.center();
+        cr.translate(cx, cy);
+        cr.rotate(o.rotation.to_radians());
+        cr.translate(-cx, -cy);
+    }
+    if o.shadow && hints.skip_object != Some(o.id) {
+        // A soft drop shadow, down and to the right.
+        cr.save().ok();
+        if matches!(o.kind, Kind::Text { .. }) && o.outline.is_none() {
+            // Text without a box: the letters cast it.
+            cr.translate(2.0, 3.0);
+            cr.push_group();
+            let dark = Slide { color: "#000000".into(), ..slide.clone() };
+            draw_content(cr, ctx, &dark, o, media, pictures, Hints { placeholders: false, ..hints });
+            cr.pop_group_to_source().ok();
+            cr.paint_with_alpha(0.35).ok();
+        } else {
+            for (i, alpha) in [0.10, 0.08, 0.06].iter().enumerate() {
+                cr.save().ok();
+                let d = 3.0 + i as f64 * 2.0;
+                cr.translate(d * 0.6, d);
+                object_path(cr, o, media, pictures);
+                cr.set_source_rgba(0.0, 0.0, 0.0, *alpha);
+                cr.fill().ok();
+                cr.restore().ok();
+            }
+        }
+        cr.restore().ok();
+    }
+    draw_content(cr, ctx, slide, o, media, pictures, hints);
+    if let Some(line) = &o.outline
+        && line.width > 0.0
+    {
+        object_path(cr, o, media, pictures);
+        let (r, g, b) = rgb(&line.color);
+        cr.set_source_rgb(r, g, b);
+        cr.set_line_width(line.width);
+        cr.set_line_join(cairo::LineJoin::Round);
+        cr.stroke().ok();
+    }
+    cr.restore().ok();
+}
+
+/// The object itself: fill, picture, text, table or chart.
+fn draw_content(
     cr: &cairo::Context,
     ctx: &pango::Context,
     slide: &Slide,
@@ -184,16 +302,7 @@ fn draw_object(
             Kind::Shape { shape, fill } => {
                 let (r, g, b) = rgb(fill);
                 cr.set_source_rgb(r, g, b);
-                match shape {
-                    Shape::Rectangle => cr.rectangle(o.x, o.y, o.w, o.h),
-                    Shape::Ellipse => {
-                        cr.save().ok();
-                        cr.translate(o.x + o.w / 2.0, o.y + o.h / 2.0);
-                        cr.scale(o.w / 2.0, o.h / 2.0);
-                        cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::TAU);
-                        cr.restore().ok();
-                    }
-                }
+                shape_path(cr, *shape, (o.x, o.y, o.w, o.h));
                 cr.fill().ok();
             }
             Kind::Image { image } => {

@@ -197,8 +197,31 @@ impl Pages for SheetPages {
                     cr.set_line_width(0.5);
                     cr.rectangle(x, y, item.w, item.h);
                     cr.stroke().ok();
+                    let b = item.format.borders;
+                    if b != 0 {
+                        cr.set_source_rgb(0.35, 0.38, 0.42);
+                        cr.set_line_width(0.75);
+                        for (edge, (x1, y1, x2, y2)) in [
+                            (TOP, (x, y, x + item.w, y)),
+                            (BOTTOM, (x, y + item.h, x + item.w, y + item.h)),
+                            (LEFT, (x, y, x, y + item.h)),
+                            (RIGHT, (x + item.w, y, x + item.w, y + item.h)),
+                        ] {
+                            if b & edge != 0 {
+                                cr.move_to(x1, y1);
+                                cr.line_to(x2, y2);
+                            }
+                        }
+                        cr.stroke().ok();
+                    }
                     if item.text.is_empty() {
                         continue;
+                    }
+                    if item.format.wrap {
+                        layout.set_ellipsize(pango::EllipsizeMode::None);
+                        layout.set_wrap(pango::WrapMode::WordChar);
+                    } else {
+                        layout.set_ellipsize(pango::EllipsizeMode::End);
                     }
                     let mut f = font.clone();
                     if item.format.bold {
@@ -223,8 +246,13 @@ impl Pages for SheetPages {
                         item.format.color.as_deref().map(rgb).unwrap_or((0.125, 0.137, 0.161))
                     };
                     cr.set_source_rgb(r, g, b);
-                    cr.move_to(x + 4.0, y + (item.h - th as f64 / pango::SCALE as f64) / 2.0);
+                    let th = th as f64 / pango::SCALE as f64;
+                    cr.save().ok();
+                    cr.rectangle(x, y, item.w, item.h);
+                    cr.clip();
+                    cr.move_to(x + 4.0, y + ((item.h - th) / 2.0).max(2.0));
                     pangocairo::functions::show_layout(cr, &layout);
+                    cr.restore().ok();
                 }
             }
         }

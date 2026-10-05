@@ -48,6 +48,27 @@ fn rels(entries: &[(String, &str, String)]) -> String {
     s
 }
 
+/// A frame turned `rot` degrees clockwise.
+fn xfrm_rot(x: f64, y: f64, w: f64, h: f64, rot: f64) -> String {
+    let r = (rot.rem_euclid(360.0) * 60000.0).round() as i64;
+    if r == 0 {
+        return xfrm(x, y, w, h);
+    }
+    format!(r#"<a:xfrm rot="{r}"><a:off x="{}" y="{}"/><a:ext cx="{}" cy="{}"/></a:xfrm>"#, emu(x), emu(y), emu(w), emu(h))
+}
+
+/// An object's border and drop shadow, in the order spPr wants them.
+fn deco(o: &Object) -> String {
+    let mut out = String::new();
+    if let Some(l) = &o.outline {
+        let _ = write!(out, r#"<a:ln w="{}"><a:solidFill><a:srgbClr val="{}"/></a:solidFill></a:ln>"#, emu(l.width), hex(&l.color));
+    }
+    if o.shadow {
+        out.push_str(r#"<a:effectLst><a:outerShdw blurRad="76200" dist="50800" dir="3600000" algn="tl" rotWithShape="0"><a:srgbClr val="000000"><a:alpha val="35000"/></a:srgbClr></a:outerShdw></a:effectLst>"#);
+    }
+    out
+}
+
 fn xfrm(x: f64, y: f64, w: f64, h: f64) -> String {
     format!(r#"<a:xfrm><a:off x="{}" y="{}"/><a:ext cx="{}" cy="{}"/></a:xfrm>"#, emu(x), emu(y), emu(w), emu(h))
 }
@@ -63,10 +84,14 @@ struct TextShape<'a> {
     size: f64,
     centred: bool,
     bold: bool,
+    /// Degrees clockwise.
+    rot: f64,
+    /// A border and shadow, as spPr elements.
+    deco: String,
 }
 
 fn text_shape(t: TextShape, s: &Slide) -> String {
-    let TextShape { id, name, ph, text, frame, size, centred, bold } = t;
+    let TextShape { id, name, ph, text, frame, size, centred, bold, rot, deco } = t;
     let (x, y, w, h) = frame;
     let ph = ph.map(|t| format!(r#"<p:ph type="{t}"/>"#)).unwrap_or_default();
     let mut paras = String::new();
@@ -84,9 +109,9 @@ fn text_shape(t: TextShape, s: &Slide) -> String {
         );
     }
     format!(
-        r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="{name}"/><p:cNvSpPr txBox="1"/><p:nvPr>{ph}</p:nvPr></p:nvSpPr><p:spPr>{xf}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr><p:txBody><a:bodyPr wrap="square" anchor="{anchor}"><a:normAutofit/></a:bodyPr><a:lstStyle/>{paras}</p:txBody></p:sp>"#,
+        r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="{name}"/><p:cNvSpPr txBox="1"/><p:nvPr>{ph}</p:nvPr></p:nvSpPr><p:spPr>{xf}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/>{deco}</p:spPr><p:txBody><a:bodyPr wrap="square" anchor="{anchor}"><a:normAutofit/></a:bodyPr><a:lstStyle/>{paras}</p:txBody></p:sp>"#,
         name = esc(name),
-        xf = xfrm(x, y, w, h),
+        xf = xfrm_rot(x, y, w, h, rot),
         anchor = if centred || ph.contains("title") || ph.contains("Title") { "ctr" } else { "t" },
     )
 }
@@ -113,16 +138,19 @@ fn object_xml(o: &Object, id: usize, s: &Slide, media: &BTreeMap<String, Vec<u8>
                 size: s.body_size.unwrap_or(24.0),
                 centred: false,
                 bold: false,
+                rot: o.rotation,
+                deco: deco(o),
             },
             s,
         )),
         Kind::Shape { shape, fill } => {
             let _ = write!(
                 tree,
-                r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="Shape {id}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>{}<a:prstGeom prst="{}"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="{}"/></a:solidFill><a:ln><a:noFill/></a:ln></p:spPr></p:sp>"#,
-                xfrm(o.x, o.y, o.w, o.h),
-                if *shape == Shape::Ellipse { "ellipse" } else { "rect" },
-                hex(fill)
+                r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="Shape {id}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>{}<a:prstGeom prst="{}"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="{}"/></a:solidFill>{}</p:spPr></p:sp>"#,
+                xfrm_rot(o.x, o.y, o.w, o.h, o.rotation),
+                shape.preset(),
+                hex(fill),
+                if o.outline.is_some() { deco(o) } else { format!("<a:ln><a:noFill/></a:ln>{}", deco(o)) }
             );
         }
         Kind::Image { image } => {
@@ -134,8 +162,9 @@ fn object_xml(o: &Object, id: usize, s: &Slide, media: &BTreeMap<String, Vec<u8>
             out.slide_rels.push((rid.clone(), "image", format!("../media/{name}")));
             let _ = write!(
                 tree,
-                r#"<p:pic><p:nvPicPr><p:cNvPr id="{id}" name="Picture {id}"/><p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="{rid}"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>{}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>"#,
-                xfrm(o.x, o.y, o.w, o.h)
+                r#"<p:pic><p:nvPicPr><p:cNvPr id="{id}" name="Picture {id}"/><p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="{rid}"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>{}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>{}</p:spPr></p:pic>"#,
+                xfrm_rot(o.x, o.y, o.w, o.h, o.rotation),
+                deco(o)
             );
         }
         Kind::Table { rows, header } => tree.push_str(&more::table_frame(id, o, rows, *header, s)),
@@ -246,6 +275,8 @@ pub fn write(deck: &Deck, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u8>,
                     size: s.title_size.unwrap_or(f.4),
                     centred: f.5,
                     bold: true,
+                    rot: 0.0,
+                    deco: String::new(),
                 },
                 s,
             ));
@@ -263,6 +294,8 @@ pub fn write(deck: &Deck, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u8>,
                     size: s.body_size.unwrap_or(f.4),
                     centred: f.5,
                     bold: false,
+                    rot: 0.0,
+                    deco: String::new(),
                 },
                 s,
             ));
@@ -421,6 +454,34 @@ fn xfrm_box(x: &roxmltree::Node, off: &str, ext: &str) -> Option<(f64, f64, f64,
     Some((v(&o, "x"), v(&o, "y"), v(&e, "cx"), v(&e, "cy")))
 }
 
+/// Rotation, border and shadow from a shape's or picture's spPr.
+fn read_deco(n: &roxmltree::Node, o: &mut Object) {
+    let Some(sp) = n.children().find(|c| c.has_tag_name((P, "spPr"))) else { return };
+    if let Some(rot) = sp
+        .children()
+        .find(|c| c.has_tag_name((A, "xfrm")))
+        .and_then(|x| x.attribute("rot"))
+        .and_then(|r| r.parse::<f64>().ok())
+    {
+        let deg = (rot / 60000.0).rem_euclid(360.0);
+        o.rotation = if deg > 180.0 { deg - 360.0 } else { deg };
+    }
+    if let Some(ln) = sp.children().find(|c| c.has_tag_name((A, "ln")))
+        && let Some(color) = ln
+            .children()
+            .find(|c| c.has_tag_name((A, "solidFill")))
+            .and_then(|f| f.descendants().find(|c| c.has_tag_name((A, "srgbClr"))))
+            .and_then(|c| c.attribute("val"))
+    {
+        let width = ln.attribute("w").and_then(|w| w.parse::<f64>().ok()).map(|w| w / EMU).unwrap_or(0.75);
+        o.outline = Some(Outline { color: format!("#{}", color.to_lowercase()), width: width.clamp(0.25, 24.0) });
+    }
+    o.shadow = sp
+        .children()
+        .find(|c| c.has_tag_name((A, "effectLst")))
+        .is_some_and(|e| e.children().any(|c| c.has_tag_name((A, "outerShdw"))));
+}
+
 /// The shape's id in the file (`p:cNvPr id`), which animations refer to.
 fn shape_id(n: &roxmltree::Node) -> Option<String> {
     n.descendants().find(|c| c.has_tag_name((P, "cNvPr"))).and_then(|c| c.attribute("id")).map(String::from)
@@ -557,7 +618,7 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
                     let kind = if !text.trim().is_empty() {
                         Kind::Text { text }
                     } else if let Some(fill) = fill {
-                        Kind::Shape { shape: if prst == "ellipse" { Shape::Ellipse } else { Shape::Rectangle }, fill }
+                        Kind::Shape { shape: Shape::from_preset(prst), fill }
                     } else {
                         continue;
                     };
@@ -565,6 +626,7 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
                         let mut o = Object::new(s.next_id(), kind, (x, y, w, h));
                         o.clamp();
                         o.group = group_number(&sp);
+                        read_deco(&sp, &mut o);
                         if let Some(sid) = shape_id(&sp) {
                             spids.insert(sid, o.id);
                         }
@@ -586,6 +648,7 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
                 let mut o = Object::new(s.next_id(), Kind::Image { image: name }, (x, y, w, h));
                 o.clamp();
                 o.group = group_number(&pic);
+                read_deco(&pic, &mut o);
                 if let Some(sid) = shape_id(&pic) {
                     spids.insert(sid, o.id);
                 }
@@ -732,6 +795,12 @@ mod tests {
         a.group = Some(1);
         b.group = Some(1);
         b.build = Some(Build { order: 3, effect: Effect::Appear });
+        a.rotation = 30.0;
+        a.outline = Some(Outline { color: "#c62828".into(), width: 4.0 });
+        a.shadow = true;
+        if let Kind::Shape { shape, .. } = &mut a.kind {
+            *shape = Shape::Star;
+        }
         s.objects = vec![table, chart, a, b];
         let (bytes, _) = write(&deck, &BTreeMap::new()).unwrap();
         let (back, _) = read(&bytes).unwrap();
@@ -746,6 +815,10 @@ mod tests {
         let shape = find(|k| matches!(k, Kind::Shape { .. }));
         let text = find(|k| matches!(k, Kind::Text { .. }));
         assert!(shape.group.is_some() && shape.group == text.group);
+        assert!(matches!(shape.kind, Kind::Shape { shape: Shape::Star, .. }));
+        assert_eq!(shape.rotation, 30.0);
+        assert_eq!(shape.outline, Some(Outline { color: "#c62828".into(), width: 4.0 }));
+        assert!(shape.shadow && !text.shadow);
         assert!((text.x - 220.0).abs() < 0.01 && (text.y - 320.0).abs() < 0.01);
         assert!(c.group.is_none());
         // The click order and effects survive.
