@@ -10,6 +10,7 @@ mod pptx;
 pub(crate) mod pptx_more;
 pub mod render;
 mod show;
+mod sorter;
 mod templates;
 
 use crate::doc::{self, Find, SidebarGroup, Template};
@@ -36,6 +37,8 @@ const PAD: f64 = 28.0;
 enum Target {
     Title,
     Body,
+    /// The second column (two columns).
+    Body2,
     Object(u32),
 }
 
@@ -107,6 +110,10 @@ pub struct Present {
     editing: Cell<Option<Target>>,
     notes: gtk::TextView,
     thumbs: gtk::Box,
+    /// The slide being edited ("slide") or the slide sorter ("sorter").
+    views: gtk::Stack,
+    sorter: gtk::FlowBox,
+    sorter_button: gtk::ToggleButton,
     controls: RefCell<Option<Controls>>,
     drag: Cell<Drag>,
     undo: RefCell<Vec<(Deck, usize)>>,
@@ -172,6 +179,9 @@ impl Present {
             editing: Cell::new(None),
             notes,
             thumbs: widgets::vbox(6),
+            views: gtk::Stack::new(),
+            sorter: gtk::FlowBox::new(),
+            sorter_button: gtk::ToggleButton::new(),
             controls: RefCell::new(None),
             drag: Cell::new(Drag::None),
             undo: RefCell::new(Vec::new()),
@@ -191,7 +201,8 @@ impl Present {
         overlay.add_css_class("slide-desk");
         p.desk.set_child(Some(&overlay));
         p.desk.set_vexpand(true);
-        p.root.append(&p.desk);
+        let slide_view = widgets::vbox(0);
+        slide_view.append(&p.desk);
         // The window's size sets the fitted size the zoom starts from.
         for adj in [p.desk.hadjustment(), p.desk.vadjustment()] {
             let me = Rc::downgrade(&p);
@@ -212,7 +223,17 @@ impl Present {
             .child(&p.notes)
             .build();
         notes_box.append(&scroll);
-        p.root.append(&notes_box);
+        slide_view.append(&notes_box);
+        p.views.add_named(&slide_view, Some("slide"));
+        let sorter_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .child(&p.sorter)
+            .build();
+        p.views.add_named(&sorter_scroll, Some("sorter"));
+        p.views.set_vexpand(true);
+        p.root.append(&p.views);
+        p.connect_sorter();
         p.thumbs.add_css_class("slide-thumbs");
         p.connect_canvas();
         p.connect_text();
@@ -286,7 +307,14 @@ impl Present {
         let names: Vec<&str> = Layout::ALL.iter().map(|l| l.name()).collect();
         let layout = dropdown(&names, "Layout", "layout-picker", |p, i| {
             let l = Layout::ALL[i as usize % Layout::ALL.len()];
-            p.change_slide(|s| s.layout = l);
+            p.change_slide(|s| {
+                s.layout = l;
+                // Leaving two columns, the second column's points join the first.
+                if l != Layout::TwoColumns && !s.body2.is_empty() {
+                    let second = std::mem::take(&mut s.body2);
+                    s.body = if s.body.is_empty() { second } else { format!("{}\n{second}", s.body) };
+                }
+            });
         });
         g.append(&layout);
         g.append(&self.transition_button());
@@ -303,6 +331,19 @@ impl Present {
             }
         });
         g.append(&master);
+        let sorter = &self.sorter_button;
+        sorter.set_icon_name("nxo-gallery-thumbnails-symbolic");
+        sorter.add_css_class("tool-toggle");
+        sorter.set_tooltip_text(Some("Slide sorter: see every slide and drag them into order"));
+        let me = Rc::downgrade(self);
+        sorter.connect_toggled(move |b| {
+            if let Some(p) = me.upgrade()
+                && !p.syncing.get()
+            {
+                p.show_sorter(b.is_active());
+            }
+        });
+        g.append(sorter);
         flow.append(&g);
 
         let g = group();
@@ -774,6 +815,21 @@ impl Present {
         };
         self.media.borrow_mut().insert(name.clone(), png);
         let (tw, th) = (texture.width().max(1) as f64, texture.height().max(1) as f64);
+        // A picture slide's first picture fills its picture frame.
+        let slide = self.slide();
+        if let Some((fx, fy, fw, fh)) = picture_frame(slide.layout)
+            && !slide.objects.iter().any(|o| matches!(o.kind, Kind::Image { .. }))
+        {
+            let mut id = 0;
+            self.change_slide(|s| {
+                id = s.next_id();
+                s.objects.push(Object::new(id, Kind::Image { image: name.clone() }, (fx, fy, fw, fh)));
+            });
+            self.clear_selection();
+            self.selected.set(Some(id));
+            self.sync();
+            return Ok(());
+        }
         let scale = (W * 0.6 / tw).min(H * 0.6 / th).min(1.0);
         self.add_object(Kind::Image { image: name }, (tw * scale).max(48.0), (th * scale).max(32.0));
         Ok(())
@@ -820,6 +876,7 @@ impl Present {
             }
         }
         self.mark_thumbs();
+        self.refresh_sorter();
     }
 
     fn mark_thumbs(&self) {
@@ -834,6 +891,7 @@ impl Present {
             i += 1;
             c = w.next_sibling();
         }
+        self.mark_sorter();
     }
 
     fn thumb(&self, i: usize) -> gtk::Button {
@@ -862,6 +920,7 @@ impl Present {
             if let Some(p) = me.upgrade() {
                 window::navigate("document");
                 p.go_to(i);
+                p.show_sorter(false);
             }
         });
         let click = gtk::GestureClick::new();
@@ -870,14 +929,14 @@ impl Present {
         let bb = b.clone();
         click.connect_pressed(move |_, _, _, _| {
             if let Some(p) = me.upgrade() {
-                p.slide_menu(i, &bb);
+                p.slide_menu(i, bb.upcast_ref());
             }
         });
         b.add_controller(click);
         b
     }
 
-    fn slide_menu(&self, i: usize, parent: &gtk::Button) {
+    fn slide_menu(&self, i: usize, parent: &gtk::Widget) {
         let pop = gtk::Popover::new();
         pop.add_css_class("menu-popover");
         pop.set_parent(parent);
@@ -1012,6 +1071,7 @@ impl Present {
             placeholders: true,
             skip_title: editing == Some(Target::Title),
             skip_body: editing == Some(Target::Body),
+            skip_body2: editing == Some(Target::Body2),
             skip_object: if let Some(Target::Object(id)) = editing { Some(id) } else { None },
             ..Default::default()
         };
@@ -1255,6 +1315,8 @@ impl Present {
             self.begin_edit(Target::Title);
         } else if inside(body_frame(slide.layout)) {
             self.begin_edit(Target::Body);
+        } else if inside(body2_frame(slide.layout)) {
+            self.begin_edit(Target::Body2);
         } else {
             self.end_edit();
             self.canvas.grab_focus();
@@ -1303,6 +1365,7 @@ impl Present {
         match t {
             Target::Title => title_frame(s.layout).map(|f| (f.0, f.1, f.2, f.3, s.title_size.unwrap_or(f.4), f.5)),
             Target::Body => body_frame(s.layout).map(|f| (f.0, f.1, f.2, f.3, s.body_size.unwrap_or(f.4), f.5)),
+            Target::Body2 => body2_frame(s.layout).map(|f| (f.0, f.1, f.2, f.3, s.body_size.unwrap_or(f.4), f.5)),
             Target::Object(id) => s
                 .objects
                 .iter()
@@ -1316,6 +1379,7 @@ impl Present {
         match t {
             Target::Title => s.title,
             Target::Body => s.body,
+            Target::Body2 => s.body2,
             Target::Object(id) => s
                 .objects
                 .iter()
@@ -1398,6 +1462,7 @@ impl Present {
                 match t {
                     Target::Title => s.title = text,
                     Target::Body => s.body = text,
+                    Target::Body2 => s.body2 = text,
                     Target::Object(id) => {
                         if let Some(Kind::Text { text: tx }) = s.objects.iter_mut().find(|o| o.id == id).map(|o| &mut o.kind) {
                             *tx = text;
@@ -1461,6 +1526,8 @@ impl Present {
         while let Some(c) = self.thumbs.first_child() {
             self.thumbs.remove(&c);
         }
+        self.sorter.remove_all();
+        self.show_sorter(false);
         self.refresh_thumbs();
         self.sync();
     }
@@ -1523,7 +1590,7 @@ fn replace_in(text: &str, query: &str, with: &str, case: bool) -> (String, usize
 
 fn replace_slide(s: &mut Slide, query: &str, with: &str, case: bool) -> usize {
     let mut n = 0;
-    for t in [&mut s.title, &mut s.body, &mut s.notes] {
+    for t in [&mut s.title, &mut s.body, &mut s.body2, &mut s.notes] {
         let (r, k) = replace_in(t, query, with, case);
         *t = r;
         n += k;
@@ -1909,6 +1976,30 @@ pub mod tests {
         p.change_object(|o| o.build = Some(Build { order: 1, effect: Effect::Fade }));
         assert_eq!(p.slide().steps().iter().map(|s| s.id).collect::<Vec<_>>(), [chart]);
         crate::print::export_pdf(p.pages().as_ref(), &pdf).unwrap();
+
+        // Two columns: the second column is edited on its own, and joins the first when the layout changes.
+        p.change_slide(|s| s.layout = Layout::TwoColumns);
+        p.begin_edit(Target::Body);
+        p.edit.buffer().set_text("Left");
+        p.begin_edit(Target::Body2);
+        p.edit.buffer().set_text("Right");
+        p.end_edit();
+        assert_eq!((p.slide().body.as_str(), p.slide().body2.as_str()), ("Left", "Right"));
+        p.change_slide(|s| s.layout = Layout::Content);
+        assert_eq!(p.slide().body2, "Right", "change_slide itself leaves the column alone");
+
+        // The slide sorter: a tile per slide, and a drag moves a slide.
+        p.add_slide();
+        p.show_sorter(true);
+        assert_eq!(p.views.visible_child_name().as_deref(), Some("sorter"));
+        assert!(p.sorter.child_at_index(2).is_some() && p.sorter.child_at_index(3).is_none());
+        assert!(p.sorter.child_at_index(p.current.get() as i32).unwrap().is_selected());
+        let first = p.deck.borrow().slides[0].clone();
+        p.change_deck(|d| assert_eq!(d.move_to(0, 2), Some(2)));
+        assert_eq!(p.deck.borrow().slides[2], first);
+        p.sorter.child_at_index(1).unwrap().activate();
+        assert_eq!(p.current.get(), 1);
+        assert_eq!(p.views.visible_child_name().as_deref(), Some("slide"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

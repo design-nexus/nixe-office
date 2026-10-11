@@ -1654,6 +1654,35 @@ window.office-window button.slide-thumb.active drawingarea {
   box-shadow: 0 0 0 2px @theme_accent;
 }
 
+.slide-sorter {
+  padding: 20px;
+}
+
+.slide-sorter flowboxchild {
+  padding: 8px;
+  border-radius: 8px;
+}
+
+.slide-sorter flowboxchild:hover {
+  background: @row_hover;
+}
+
+.slide-sorter flowboxchild:selected {
+  background: @nav_active;
+}
+
+.slide-sorter drawingarea {
+  border: 1px solid @hairline;
+}
+
+.slide-sorter flowboxchild:selected drawingarea {
+  box-shadow: 0 0 0 2px @theme_accent;
+}
+
+.slide-sorter flowboxchild:selected .thumb-number {
+  color: @theme_accent;
+}
+
 .thumb-number {
   min-width: 18px;
   font-size: 0.86em;
@@ -1709,4 +1738,12 @@ window.presenter .presenter-now {
 .presenter-notes {
   font-size: 1.3em;
   line-height: 1.4;
+}
+
+/* Special characters in Write's menu: small square keys. */
+window.office-window button.symbol-key {
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  font-size: 1.1em;
 }

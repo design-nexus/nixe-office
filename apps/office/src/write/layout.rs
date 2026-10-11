@@ -796,11 +796,13 @@ impl Pages for Rendered {
         cr.rectangle(0.0, 0.0, pw, ph);
         let _ = cr.fill();
         let width = self.setup.content_width();
-        if !self.setup.header.is_empty() {
+        // A plain first page goes without its header, footer and number.
+        let plain = index == 0 && self.setup.plain_first_page;
+        if !self.setup.header.is_empty() && !plain {
             self.draw_note(cr, &self.setup.header, ml, mt / 2.0, width, pango::Alignment::Left);
         }
-        let numbers = self.setup.page_numbers;
-        if !self.setup.footer.is_empty() {
+        let numbers = self.setup.page_numbers && !plain;
+        if !self.setup.footer.is_empty() && !plain {
             let w = if numbers { width * 0.75 } else { width };
             self.draw_note(cr, &self.setup.footer, ml, ph - mb / 2.0, w, pango::Alignment::Left);
         }

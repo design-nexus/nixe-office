@@ -518,7 +518,8 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
                     (None, Some(s)) => s,
                     _ => (420.0, 260.0),
                 };
-                sheet.charts.push(PlacedChart { range, kind, x, y, w: w.max(160.0), h: h.max(120.0) });
+                let text = chart_titles(&chart_xml);
+                sheet.charts.push(PlacedChart { range, kind, text, x, y, w: w.max(160.0), h: h.max(120.0) });
             }
         }
         for target in sheet_rels.values().filter(|t| t.contains("comments")) {
@@ -697,7 +698,34 @@ fn cell_at(pos: f64, size: impl Fn(u32) -> u32, max: u32) -> (u32, u32) {
 }
 
 /// A chart of `range` for Excel, its series named by a first row of words.
-fn excel_chart(wb: &Workbook, calc: &Calc, si: usize, range: &str, kind: ChartKind) -> Option<rust_xlsxwriter::Chart> {
+/// A chart part's title and axis titles.
+fn chart_titles(xml: &str) -> ChartText {
+    let Ok(doc) = roxmltree::Document::parse(xml) else { return ChartText::default() };
+    // A title's words: its runs, put together.
+    let words = |t: roxmltree::Node| -> String {
+        t.descendants().filter(|n| n.tag_name().name() == "t").filter_map(|n| n.text()).collect::<String>().trim().to_string()
+    };
+    let title_of = |n: roxmltree::Node| n.children().find(|c| c.tag_name().name() == "title").map(words).unwrap_or_default();
+    let mut text = ChartText::default();
+    if let Some(chart) = doc.descendants().find(|n| n.tag_name().name() == "chart") {
+        text.title = title_of(chart);
+    }
+    for ax in doc.descendants().filter(|n| matches!(n.tag_name().name(), "catAx" | "valAx" | "dateAx")) {
+        let pos = ax.children().find(|c| c.tag_name().name() == "axPos").and_then(|p| p.attribute("val")).unwrap_or("");
+        let t = title_of(ax);
+        if t.is_empty() {
+            continue;
+        }
+        if matches!(pos, "b" | "t") {
+            text.x_title = t;
+        } else {
+            text.y_title = t;
+        }
+    }
+    text
+}
+
+fn excel_chart(wb: &Workbook, calc: &Calc, si: usize, range: &str, kind: ChartKind, text: &ChartText) -> Option<rust_xlsxwriter::Chart> {
     use rust_xlsxwriter::{Chart, ChartType};
     let ((r1, c1), (r2, c2)) = formula::parse_range(range)?;
     let s = &wb.sheets[si];
@@ -723,6 +751,17 @@ fn excel_chart(wb: &Workbook, calc: &Calc, si: usize, range: &str, kind: ChartKi
         }
         if named {
             series.set_name((s.name.as_str(), r1, c as u16));
+        }
+    }
+    if !text.title.is_empty() {
+        chart.title().set_name(&text.title);
+    }
+    if kind != ChartType::Pie {
+        if !text.x_title.is_empty() {
+            chart.x_axis().set_name(&text.x_title);
+        }
+        if !text.y_title.is_empty() {
+            chart.y_axis().set_name(&text.y_title);
         }
     }
     Some(chart)
@@ -899,7 +938,7 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
             lost.push("the filter (every row is shown)".into());
         }
         if let Some(ch) = &s.chart
-            && let Some(chart) = excel_chart(wb, calc, si, &ch.range, ch.kind)
+            && let Some(chart) = excel_chart(wb, calc, si, &ch.range, ch.kind, &ch.text)
         {
             let c2 = formula::parse_range(&ch.range).map(|r| r.1.1).unwrap_or(0);
             // Beside the data.
@@ -928,7 +967,7 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
             ws.set_row_hidden(*r)?;
         }
         for pc in &s.charts {
-            let Some(mut chart) = excel_chart(wb, calc, si, &pc.range, pc.kind) else { continue };
+            let Some(mut chart) = excel_chart(wb, calc, si, &pc.range, pc.kind, &pc.text) else { continue };
             chart.set_width(pc.w.round().max(1.0) as u32).set_height(pc.h.round().max(1.0) as u32);
             let (col, xo) = cell_at(pc.x, |c| s.col_w(c), COLS);
             let (row, yo) = cell_at(pc.y, |r| s.row_h(r), ROWS);
@@ -969,7 +1008,7 @@ mod tests {
         wb.set_row_h(0, 40);
         wb.sheet_mut().freeze_rows = 1;
         wb.sheet_mut().freeze_cols = 2;
-        wb.sheet_mut().chart = Some(Chart { range: "A1:B3".into(), kind: ChartKind::Bar });
+        wb.sheet_mut().chart = Some(Chart { range: "A1:B3".into(), kind: ChartKind::Bar, text: ChartText::default() });
         wb.set(8, 0, "Merged");
         wb.merge(Area::new(8, 0, 9, 2));
         wb.set_comment(1, 1, "Due on the 1st");
@@ -982,7 +1021,11 @@ mod tests {
             banded: true,
             total: false,
         });
-        wb.sheet_mut().charts.push(PlacedChart { range: "A1:B3".into(), kind: ChartKind::StackedBar, x: 500.0, y: 40.0, w: 400.0, h: 240.0 });
+        wb.sheet_mut().charts.push(PlacedChart {
+            range: "A1:B3".into(),
+            kind: ChartKind::StackedBar,
+            text: ChartText { title: "Costs".into(), x_title: "Item".into(), y_title: "Dollars".into() },
+            x: 500.0, y: 40.0, w: 400.0, h: 240.0 });
         wb.format(Area::cell(4, 0), |f| f.wrap = true);
         wb.sheet_mut().rules = vec![
             Rule {
@@ -1057,6 +1100,7 @@ mod tests {
         assert_eq!(s.tables, wb.sheets[0].tables);
         let pc = s.charts.iter().find(|c| c.kind == ChartKind::StackedBar).expect("the placed chart");
         assert_eq!(pc.range, "A1:B3");
+        assert_eq!(pc.text, ChartText { title: "Costs".into(), x_title: "Item".into(), y_title: "Dollars".into() });
         assert!((pc.x - 500.0).abs() < 2.0 && (pc.y - 40.0).abs() < 2.0, "{pc:?}");
         assert!((pc.w - 400.0).abs() < 2.0 && (pc.h - 240.0).abs() < 2.0, "{pc:?}");
         // Excel groups rules by range; within a range the order holds, and only

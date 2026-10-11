@@ -51,7 +51,8 @@ impl Sheets {
             cr.fill().ok();
             match wb.chart_data_for(wb.active, &c.range, calc) {
                 Some((names, labels, series)) => {
-                    chart::draw(cr, &ctx, c.kind, &chart::Data { names: &names, labels: &labels, series: &series }, (x, y, cw, ch))
+                    let d = chart::Data { names: &names, labels: &labels, series: &series };
+                    chart::draw_titled(cr, &ctx, c.kind, &d, &c.text, (x, y, cw, ch))
                 }
                 None => {
                     cr.set_source_rgb(1.0, 1.0, 1.0);
@@ -138,7 +139,7 @@ impl Sheets {
         };
         let n = self.wb.borrow().sheet().charts.len();
         self.change(|wb| {
-            wb.sheet_mut().charts.push(PlacedChart { range: range.name(), kind: ChartKind::Bar, x, y, w: 420.0, h: 260.0 })
+            wb.sheet_mut().charts.push(PlacedChart { range: range.name(), kind: ChartKind::Bar, text: ChartText::default(), x, y, w: 420.0, h: 260.0 })
         });
         self.chart_sel.set(Some(n));
         self.area.queue_draw();
@@ -166,6 +167,16 @@ impl Sheets {
         list.add_css_class("group-list");
         list.append(&widgets::row("Cells", "Labels in the first column, one series per other column.", Some(range.upcast_ref())));
         list.append(&widgets::row("Kind", "", Some(kind.upcast_ref())));
+        let titles: [gtk::Entry; 3] = std::array::from_fn(|_| gtk::Entry::new());
+        for ((entry, value), (name, hint)) in titles
+            .iter()
+            .zip([&c.text.title, &c.text.x_title, &c.text.y_title])
+            .zip([("Title", "Above the chart"), ("Across", "Along the bottom"), ("Up", "Up the side")])
+        {
+            entry.set_text(value);
+            entry.set_placeholder_text(Some(hint));
+            list.append(&widgets::row(name, "", Some(entry.upcast_ref())));
+        }
         card.append(&list);
         let err = widgets::label("", "danger-text");
         err.set_visible(false);
@@ -203,6 +214,8 @@ impl Sheets {
                 if let Some(c) = wb.sheet_mut().charts.get_mut(i) {
                     c.range = a.name();
                     c.kind = k;
+                    let [t, x, y] = &titles;
+                    c.text = ChartText { title: t.text().trim().into(), x_title: x.text().trim().into(), y_title: y.text().trim().into() };
                 }
             });
         });

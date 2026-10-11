@@ -87,15 +87,25 @@ fn run_props(r: &TextRun) -> String {
 
 fn text_run(r: &TextRun) -> String {
     let mut out = String::new();
-    // Tabs are their own element; everything else is plain text.
-    for (i, part) in r.text.split('\t').enumerate() {
-        if i > 0 {
-            let _ = write!(out, "<w:r>{}<w:tab/></w:r>", run_props(r));
+    let props = run_props(r);
+    // Tabs and line breaks are their own elements; everything else is plain text.
+    let mut text = String::new();
+    let flush = |out: &mut String, text: &mut String| {
+        if !text.is_empty() {
+            let _ = write!(out, r#"<w:r>{props}<w:t xml:space="preserve">{}</w:t></w:r>"#, esc(text));
+            text.clear();
         }
-        if !part.is_empty() {
-            let _ = write!(out, r#"<w:r>{}<w:t xml:space="preserve">{}</w:t></w:r>"#, run_props(r), esc(part));
+    };
+    for c in r.text.chars() {
+        match c {
+            '\t' | LINE_BREAK => {
+                flush(&mut out, &mut text);
+                let _ = write!(out, "<w:r>{props}{}</w:r>", if c == '\t' { "<w:tab/>" } else { "<w:br/>" });
+            }
+            c => text.push(c),
         }
     }
+    flush(&mut out, &mut text);
     out
 }
 
@@ -450,6 +460,17 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
         extra_parts.push(("word/footer1.xml".into(), header_footer("ftr", &doc.page.footer, doc.page.page_numbers)));
         let _ = write!(sect, r#"<w:footerReference w:type="default" r:id="{rid}"/>"#);
     }
+    // A plain first page: its own empty header and footer.
+    let has_hf = !doc.page.header.is_empty() || !doc.page.footer.is_empty() || doc.page.page_numbers;
+    if doc.page.plain_first_page && has_hf {
+        for (tag, kind, file) in [("hdr", "header", "header2.xml"), ("ftr", "footer", "footer2.xml")] {
+            let rid = format!("rId{}", rels.len() + 1);
+            rels.push((rid.clone(), kind.into(), file.into()));
+            extra_parts.push((format!("word/{file}"), header_footer(tag, "", false)));
+            let _ = write!(sect, r#"<w:{kind}Reference w:type="first" r:id="{rid}"/>"#);
+        }
+    }
+    let title_pg = if doc.page.plain_first_page && has_hf { "<w:titlePg/>" } else { "" };
     let refs = std::mem::take(&mut sect);
     let page = format!(
         r#"<w:pgSz w:w="{}" w:h="{}"{}/><w:pgMar w:top="{t}" w:right="{r}" w:bottom="{b}" w:left="{l}" w:header="{}" w:footer="{}" w:gutter="0"/>"#,
@@ -462,7 +483,7 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
     let gap = (doc.page.column_gap * TWIP).round() as i64;
     let section = |cols: usize, kind: &str| {
         let cols = if cols > 1 { format!(r#"<w:cols w:num="{cols}" w:space="{gap}"/>"#) } else { String::new() };
-        format!(r#"{refs}<w:type w:val="{kind}"/>{page}{cols}"#)
+        format!(r#"{refs}<w:type w:val="{kind}"/>{page}{cols}{title_pg}"#)
     };
     for (k, (cols, kind)) in breaks.iter().enumerate() {
         body = body.replace(&format!("<!--SECT{k}-->"), &format!("<w:sectPr>{}</w:sectPr>", section(*cols, kind)));
@@ -997,7 +1018,7 @@ impl Reader<'_, '_> {
                 } else if c.has_tag_name((W_NS, "tab")) {
                     para.runs.push(Run::Text(TextRun { text: "\t".into(), ..fmt.clone() }));
                 } else if c.has_tag_name((W_NS, "br")) || c.has_tag_name((W_NS, "cr")) {
-                    para.runs.push(Run::Text(TextRun { text: " ".into(), ..fmt.clone() }));
+                    para.runs.push(Run::Text(TextRun { text: LINE_BREAK.to_string(), ..fmt.clone() }));
                 } else if c.has_tag_name((W_NS, "drawing"))
                     && let Some(d) = self.figure(&c)
                 {
@@ -1220,6 +1241,7 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
             doc.page.paper = crate::print::Paper::closest(w, h).unwrap_or("letter").into();
             doc.page.landscape = w > h || wattr(&sz, "orient") == Some("landscape");
         }
+        doc.page.plain_first_page = child(&sect, "titlePg").is_some_and(|t| wattr(&t, "val").is_none_or(|v| v != "0" && v != "false"));
         if let Some(m) = child(&sect, "pgMar") {
             let g = |k: &str| wattr(&m, k).and_then(|v| v.parse::<f64>().ok()).map(|v| (v / TWIP).clamp(18.0, 216.0));
             doc.page.margins = [
@@ -1429,6 +1451,7 @@ mod tests {
             header: "Head".into(),
             footer: String::new(),
             page_numbers: true,
+            plain_first_page: false,
             columns: 2,
             column_gap: 24.0,
         };
@@ -1438,6 +1461,11 @@ mod tests {
         assert!(lost.is_empty());
         let (back, back_media) = read(&bytes).unwrap();
         assert_eq!(back.page.paper, "a4");
+        assert!(!back.page.plain_first_page);
+        let mut plain = doc.clone();
+        plain.page.plain_first_page = true;
+        let (bytes, _) = write(&plain, &media).unwrap();
+        assert!(read(&bytes).unwrap().0.page.plain_first_page);
         for (paper, landscape) in [("a5", true), ("legal", false), ("legal", true)] {
             let mut turned = Document { blocks: vec![Block::Paragraph(Paragraph::text(Style::Normal, "Turned"))], ..Default::default() };
             turned.page.paper = paper.into();
@@ -1564,6 +1592,13 @@ mod tests {
             .filter_map(|r| if let Run::Text(t) = r { Some((t.text.clone(), t.inserted.is_some(), t.deleted.is_some())) } else { None })
             .collect();
         assert_eq!(marks, [("Moved".into(), false, true), (" stays ".into(), false, false), ("Moved".into(), true, false)]);
+
+        // A line break inside a paragraph, and a tab.
+        let broken = Document { blocks: vec![Block::Paragraph(Paragraph::text(Style::Normal, "Flat 2\u{2028}High Street\tLeeds"))], ..Default::default() };
+        let (bytes, _) = write(&broken, &BTreeMap::new()).unwrap();
+        let (back, _) = read(&bytes).unwrap();
+        let Block::Paragraph(p) = &back.blocks[0] else { panic!() };
+        assert_eq!(p.plain_text(), "Flat 2\u{2028}High Street\tLeeds");
 
         // Line and paragraph spacing.
         let spaced = Document {

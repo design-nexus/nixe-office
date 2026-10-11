@@ -24,7 +24,7 @@ struct CellItem {
 
 enum Page {
     Cells { title: String, cells: Vec<CellItem> },
-    Chart { title: String, kind: ChartKind, names: Vec<String>, labels: Vec<String>, series: Vec<Vec<f64>> },
+    Chart { title: String, kind: ChartKind, text: ChartText, names: Vec<String>, labels: Vec<String>, series: Vec<Vec<f64>> },
 }
 
 pub struct SheetPages {
@@ -82,7 +82,7 @@ impl SheetPages {
                     let all: Vec<u32> =
                         if header { std::iter::once(0).chain(rws.iter().copied()).collect() } else { rws.clone() };
                     // With a filter on, rows aren't the sheet's rows: no merging then.
-                    let merges: &[Area] = if s.filter.as_ref().is_some_and(|f| !f.query.trim().is_empty()) { &[] } else { &s.merges };
+                    let merges: &[Area] = if s.filter.as_ref().is_some_and(|f| f.active()) { &[] } else { &s.merges };
                     for r in &all {
                         let r = *r;
                         let h = s.row_h(r) as f64 * PT;
@@ -122,7 +122,14 @@ impl SheetPages {
             }
             for c in &s.charts {
                 if let Some((names, labels, series)) = wb.chart_data_for(si, &c.range, calc) {
-                    pages.push(Page::Chart { title: format!("{} · chart of {}", s.name, c.range), kind: c.kind, names, labels, series });
+                    pages.push(Page::Chart {
+                        title: format!("{} · chart of {}", s.name, c.range),
+                        kind: c.kind,
+                        text: c.text.clone(),
+                        names,
+                        labels,
+                        series,
+                    });
                 }
             }
             if let Some(chart) = &s.chart
@@ -131,6 +138,7 @@ impl SheetPages {
                 pages.push(Page::Chart {
                     title: format!("{} · chart of {}", s.name, chart.range),
                     kind: chart.kind,
+                    text: chart.text.clone(),
                     names,
                     labels,
                     series,
@@ -179,12 +187,13 @@ impl Pages for SheetPages {
         pangocairo::functions::show_layout(cr, &layout);
         let (ox, oy) = (MARGIN, MARGIN + TITLE_H);
         match page {
-            Page::Chart { kind, names, labels, series, .. } => {
-                chart::draw(
+            Page::Chart { kind, text, names, labels, series, .. } => {
+                chart::draw_titled(
                     cr,
                     &self.ctx,
                     *kind,
                     &chart::Data { names, labels, series },
+                    text,
                     (ox, oy, pw - 2.0 * MARGIN, ph - 2.0 * MARGIN - TITLE_H),
                 );
             }

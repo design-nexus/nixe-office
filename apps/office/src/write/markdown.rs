@@ -322,17 +322,11 @@ pub fn read(text: &str, base: Option<&Path>) -> (Document, BTreeMap<String, Vec<
                 "</sup>" => r.sup = r.sup.saturating_sub(1),
                 "<sub>" => r.sub += 1,
                 "</sub>" => r.sub = r.sub.saturating_sub(1),
-                "<br>" | "<br/>" | "<br />" => r.finish(),
+                "<br>" | "<br/>" | "<br />" => r.text(&LINE_BREAK.to_string(), false),
                 _ => {}
             },
             Event::SoftBreak => r.text(" ", false),
-            Event::HardBreak => {
-                let keep = r.para.as_ref().map(|p| (p.style, p.list, p.indent));
-                r.finish();
-                if let Some((style, list, indent)) = keep {
-                    r.para = Some(Paragraph { style, list, indent, ..Default::default() });
-                }
-            }
+            Event::HardBreak => r.text(&LINE_BREAK.to_string(), false),
             Event::FootnoteReference(label) => {
                 if !r.in_note {
                     let note = r.notes.get(label.as_ref()).cloned().unwrap_or_default();
@@ -483,7 +477,7 @@ fn runs(p: &Paragraph, notes: &mut Vec<String>, pictures: &mut Vec<String>) -> S
         }
     }
     flush(&mut out, &mut pending);
-    out.replace('\n', " ")
+    out.replace('\n', " ").replace(LINE_BREAK, "<br>")
 }
 
 /// Markdown for `doc`; pictures are linked in the folder `pictures_dir` (relative to
@@ -636,7 +630,7 @@ pub fn write_text(doc: &Document) -> String {
                 let mut line = String::new();
                 for r in &p.runs {
                     match r {
-                        Run::Text(t) if t.deleted.is_none() => line.push_str(&t.text),
+                        Run::Text(t) if t.deleted.is_none() => line.push_str(&t.text.replace(LINE_BREAK, "\n")),
                         Run::Note(n) => {
                             notes.push(n.note.clone());
                             let _ = write!(line, "[{}]", notes.len());
@@ -690,7 +684,7 @@ pub fn pictures_dir(path: &Path) -> String {
 mod tests {
     use super::*;
 
-    const SAMPLE: &str = "# Trip notes\n\nWe go **by train**, *maybe* ~~by car~~. See [the map](https://example.com/map).\nH<sub>2</sub>O and E = mc<sup>2</sup>.[^1]\n\n## Packing\n\n- Boots\n- Coats\n    - Rain coat\n1. Book\n2. Tickets\n\n> Travel light.\n\n| Day | Where |\n| --- | --- |\n| Mon | Leeds |\n\n```\nlet x = 1;\nlet y = 2;\n```\n\n- [x] Done\n\n[^1]: Roughly.\n";
+    const SAMPLE: &str = "# Trip notes\n\nLine one<br>line two\n\nWe go **by train**, *maybe* ~~by car~~. See [the map](https://example.com/map).\nH<sub>2</sub>O and E = mc<sup>2</sup>.[^1]\n\n## Packing\n\n- Boots\n- Coats\n    - Rain coat\n1. Book\n2. Tickets\n\n> Travel light.\n\n| Day | Where |\n| --- | --- |\n| Mon | Leeds |\n\n```\nlet x = 1;\nlet y = 2;\n```\n\n- [x] Done\n\n[^1]: Roughly.\n";
 
     fn texts(p: &Paragraph) -> Vec<&TextRun> {
         p.runs.iter().filter_map(|r| if let Run::Text(t) = r { Some(t) } else { None }).collect()
@@ -702,15 +696,16 @@ mod tests {
         let paras: Vec<&Paragraph> = d.blocks.iter().filter_map(|b| if let Block::Paragraph(p) = b { Some(p) } else { None }).collect();
         assert_eq!(paras[0].style, Style::H1);
         assert_eq!(paras[0].plain_text(), "Trip notes");
-        let body = texts(paras[1]);
+        assert_eq!(paras[1].plain_text(), "Line one\u{2028}line two");
+        let body = texts(paras[2]);
         assert!(body.iter().any(|t| t.bold && t.text == "by train"));
         assert!(body.iter().any(|t| t.italic && t.text == "maybe"));
         assert!(body.iter().any(|t| t.strike && t.text == "by car"));
         assert!(body.iter().any(|t| t.link.as_deref() == Some("https://example.com/map") && t.text == "the map"));
         assert!(body.iter().any(|t| t.subscript && t.text == "2"));
         assert!(body.iter().any(|t| t.superscript && t.text == "2"));
-        assert!(paras[1].runs.iter().any(|r| matches!(r, Run::Note(n) if n.note == "Roughly.")));
-        assert_eq!(paras[2].style, Style::H2);
+        assert!(paras[2].runs.iter().any(|r| matches!(r, Run::Note(n) if n.note == "Roughly.")));
+        assert_eq!(paras[3].style, Style::H2);
         let listed: Vec<(String, Option<List>, u8)> =
             paras.iter().filter(|p| p.list.is_some()).map(|p| (p.plain_text(), p.list, p.indent)).collect();
         assert_eq!(

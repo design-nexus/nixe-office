@@ -384,6 +384,24 @@ pub fn write(deck: &Deck, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u8>,
             ));
             id += 1;
         }
+        if let Some(f) = body2_frame(s.layout) {
+            tree.push_str(&text_shape(
+                TextShape {
+                    id,
+                    name: "Content 2",
+                    ph: Some("body"),
+                    text: &s.body2,
+                    frame: (f.0, f.1, f.2, f.3),
+                    size: s.body_size.unwrap_or(f.4),
+                    centred: f.5,
+                    bold: false,
+                    rot: 0.0,
+                    deco: String::new(),
+                },
+                s,
+            ));
+            id += 1;
+        }
         // Shape ids for every object first, so builds can point at them.
         let mut shape_id: HashMap<u32, usize> = HashMap::new();
         let mut written_groups: Vec<u32> = Vec::new();
@@ -785,6 +803,7 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
             s.background = format!("#{}", c.to_lowercase());
         }
         let (mut title, mut body, mut centre_title, mut section) = (None::<String>, Vec::<String>::new(), false, false);
+        let (mut title_y, mut body_geo) = (None::<f64>, Vec::<Option<(f64, f64, f64, f64)>>::new());
         let mut colour = None;
         // Lines and connectors.
         for ln in doc.descendants().filter(|n| n.has_tag_name((P, "sp")) || n.has_tag_name((P, "cxnSp"))) {
@@ -844,8 +863,12 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
                     section |= ph.as_deref() == Some("title")
                         && sp.descendants().any(|n| n.has_tag_name((A, "pPr")) && n.attribute("algn") == Some("ctr"));
                     title = Some(text);
+                    title_y = geo.map(|g| g.1);
                 }
-                Some("body") | Some("subTitle") | Some("obj") => body.push(text),
+                Some("body") | Some("subTitle") | Some("obj") => {
+                    body.push(text);
+                    body_geo.push(geo);
+                }
                 Some(_) => {}
                 None => {
                     let fill = sp
@@ -983,7 +1006,20 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
         if let Some(c) = colour {
             s.color = c;
         }
+        // Two bodies side by side are two columns; a title low on the slide, under a picture, is a caption.
+        let side_by_side = body_geo.len() == 2
+            && matches!((body_geo[0], body_geo[1]), (Some(a), Some(b)) if (a.1 - b.1).abs() < 40.0 && (a.0 + a.2 / 2.0 - b.0 - b.2 / 2.0).abs() > 200.0);
+        let has_picture = s.objects.iter().any(|o| matches!(o.kind, Kind::Image { .. }));
+        let captioned = title.is_some() && has_picture && title_y.is_some_and(|y| y > H * 0.6);
+        if side_by_side {
+            if body_geo[1].unwrap().0 < body_geo[0].unwrap().0 {
+                body.swap(0, 1);
+            }
+            s.body2 = body.pop().unwrap_or_default();
+        }
         s.layout = match (&title, body.is_empty()) {
+            _ if side_by_side => Layout::TwoColumns,
+            _ if captioned => Layout::Picture,
             (Some(_), _) if centre_title => Layout::Title,
             (Some(_), _) if section => Layout::Section,
             (Some(_), false) => Layout::Content,
@@ -1142,5 +1178,30 @@ mod tests {
         assert_eq!(steps, [Effect::Fly, Effect::Fade, Effect::Appear]);
         let all: Vec<(Effect, bool)> = s.steps().iter().map(|st| (st.effect, st.out)).collect();
         assert_eq!(all, [(Effect::Fly, false), (Effect::Fade, false), (Effect::Appear, false), (Effect::Fade, true)]);
+    }
+
+    #[test]
+    fn two_columns_and_picture_layouts() {
+        let png = base64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==").unwrap();
+        let mut media = BTreeMap::new();
+        media.insert("p.png".to_string(), png);
+        let two = Slide {
+            layout: Layout::TwoColumns,
+            title: "Pros and cons".into(),
+            body: "Cheap\nClose".into(),
+            body2: "Small".into(),
+            ..Default::default()
+        };
+        let mut pic = Slide { layout: Layout::Picture, title: "The lake".into(), body: "At dawn".into(), ..Default::default() };
+        let (x, y, w, h) = picture_frame(Layout::Picture).unwrap();
+        pic.objects.push(Object::new(1, Kind::Image { image: "p.png".into() }, (x, y, w, h)));
+        let deck = Deck { slides: vec![two, pic], ..Default::default() };
+        let (bytes, _) = write(&deck, &media).unwrap();
+        let (back, _) = read(&bytes).unwrap();
+        let (a, b) = (&back.slides[0], &back.slides[1]);
+        assert_eq!(a.layout, Layout::TwoColumns);
+        assert_eq!((a.title.as_str(), a.body.as_str(), a.body2.as_str()), ("Pros and cons", "Cheap\nClose", "Small"));
+        assert_eq!(b.layout, Layout::Picture);
+        assert_eq!((b.title.as_str(), b.body.as_str()), ("The lake", "At dawn"));
     }
 }

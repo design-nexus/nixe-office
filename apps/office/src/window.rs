@@ -142,6 +142,8 @@ fn install_icons() {
         "subscript",
         "link",
         "unfold-vertical",
+        "omega",
+        "gallery-thumbnails",
         "message-square-plus",
         "align-center",
         "align-left",

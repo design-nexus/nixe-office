@@ -1,7 +1,7 @@
 //! Drawing a chart with Cairo, for the chart pane and the PDF alike. Charts are
 //! part of the document, so they keep their own colours on a white page.
 
-use super::model::ChartKind;
+use super::model::{ChartKind, ChartText};
 use gtk::pango;
 
 /// Series colours, distinct in hue and readable on white.
@@ -74,6 +74,76 @@ fn short(v: f64) -> String {
 /// Draw the chart in the box (x, y, w, h) on white. `ctx` is a 72-dpi Pango context
 /// for the PDF, or the widget's for the screen.
 /// Draw the chart in the box `(x, y, w, h)`.
+/// A chart with its title along the top and its axes' titles beside them.
+pub fn draw_titled(
+    cr: &cairo::Context,
+    ctx: &pango::Context,
+    kind: ChartKind,
+    d: &Data,
+    t: &ChartText,
+    (x, y, w, h): (f64, f64, f64, f64),
+) {
+    cr.set_source_rgb(1.0, 1.0, 1.0);
+    cr.rectangle(x, y, w, h);
+    let _ = cr.fill();
+    let (mut ix, mut iy, mut iw, mut ih) = (x, y, w, h);
+    let fs = 9.0;
+    if !t.title.trim().is_empty() {
+        let layout = pango::Layout::new(ctx);
+        let mut font = pango::FontDescription::from_string("Noto Sans Bold");
+        font.set_size((fs * 1.35 * pango::SCALE as f64) as i32);
+        layout.set_font_description(Some(&font));
+        layout.set_width(((w - 24.0).max(1.0) * pango::SCALE as f64) as i32);
+        layout.set_alignment(pango::Alignment::Center);
+        layout.set_ellipsize(pango::EllipsizeMode::End);
+        layout.set_text(t.title.trim());
+        let (_, th) = layout.pixel_size();
+        cr.set_source_rgb(INK.0, INK.1, INK.2);
+        cr.move_to(x + 12.0, y + 10.0);
+        pangocairo::functions::show_layout(cr, &layout);
+        iy += th as f64 + 6.0;
+        ih -= th as f64 + 6.0;
+    }
+    // Pie charts have no axes to name.
+    if kind != ChartKind::Pie {
+        let axis = |s: &str| {
+            let layout = pango::Layout::new(ctx);
+            let mut font = pango::FontDescription::from_string("Noto Sans");
+            font.set_size((fs * pango::SCALE as f64) as i32);
+            layout.set_font_description(Some(&font));
+            layout.set_ellipsize(pango::EllipsizeMode::End);
+            layout.set_alignment(pango::Alignment::Center);
+            layout.set_text(s.trim());
+            layout
+        };
+        if !t.x_title.trim().is_empty() {
+            let layout = axis(&t.x_title);
+            layout.set_width(((iw - 24.0).max(1.0) * pango::SCALE as f64) as i32);
+            let (_, th) = layout.pixel_size();
+            cr.set_source_rgb(0.32, 0.35, 0.4);
+            cr.move_to(ix + 12.0, iy + ih - th as f64 - 6.0);
+            pangocairo::functions::show_layout(cr, &layout);
+            ih -= th as f64 + 4.0;
+        }
+        if !t.y_title.trim().is_empty() {
+            let layout = axis(&t.y_title);
+            layout.set_width(((ih - 24.0).max(1.0) * pango::SCALE as f64) as i32);
+            let (_, th) = layout.pixel_size();
+            // Turned to read upwards, along the left edge.
+            cr.save().ok();
+            cr.set_source_rgb(0.32, 0.35, 0.4);
+            cr.translate(ix + 8.0, iy + ih - 12.0);
+            cr.rotate(-std::f64::consts::FRAC_PI_2);
+            cr.move_to(0.0, 0.0);
+            pangocairo::functions::show_layout(cr, &layout);
+            cr.restore().ok();
+            ix += th as f64 + 6.0;
+            iw -= th as f64 + 6.0;
+        }
+    }
+    draw(cr, ctx, kind, d, (ix, iy, iw.max(1.0), ih.max(1.0)));
+}
+
 pub fn draw(cr: &cairo::Context, ctx: &pango::Context, kind: ChartKind, d: &Data, (x, y, w, h): (f64, f64, f64, f64)) {
     cr.set_source_rgb(1.0, 1.0, 1.0);
     cr.rectangle(x, y, w, h);

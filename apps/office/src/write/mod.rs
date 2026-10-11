@@ -14,6 +14,7 @@ mod marks;
 pub mod model;
 mod picture;
 mod spacing;
+mod symbols;
 mod table;
 mod templates;
 mod view;
@@ -377,6 +378,7 @@ impl Writer {
             }
         });
         g.append(&link);
+        g.append(&self.symbols_button());
         let me = Rc::downgrade(self);
         let color = color::button("nxo-baseline-symbolic", "Text color", color::TEXT, "Automatic", move |c| {
             if let Some(w) = me.upgrade() {
@@ -1109,6 +1111,13 @@ impl Writer {
         let numbers = gtk::Switch::new();
         numbers.set_active(s.page_numbers);
         list.append(&widgets::row("Page numbers", "At the bottom of every page.", Some(numbers.upcast_ref())));
+        let plain_first = gtk::Switch::new();
+        plain_first.set_active(s.plain_first_page);
+        list.append(&widgets::row(
+            "Plain first page",
+            "No header, footer or page number on the first page, for a letter or a title page.",
+            Some(plain_first.upcast_ref()),
+        ));
         let columns = Rc::new(Cell::new(s.columns()));
         let cc = columns.clone();
         list.append(&widgets::segmented_row(
@@ -1146,6 +1155,7 @@ impl Writer {
                 header: header.text().to_string(),
                 footer: footer.text().to_string(),
                 page_numbers: numbers.is_active(),
+                plain_first_page: plain_first.is_active(),
                 columns: columns.get() as u8,
                 column_gap: w.setup.borrow().column_gap,
             };
@@ -1823,6 +1833,7 @@ impl doc::Editor for Writer {
             (&["Ctrl", "K"], "Add or edit a link (Ctrl+click opens one)"),
             (&["Ctrl", "Shift", "="], "Superscript (Ctrl+=: subscript)"),
             (&["Ctrl", "Enter"], "Page break"),
+            (&["Shift", "Enter"], "New line in the same paragraph"),
             (&["Ctrl", "Alt", "F"], "Footnote (Ctrl+Alt+D: endnote)"),
             (&["Ctrl", "Alt", "M"], "Comment on the selection"),
             (&["Ctrl", "Shift", "T"], "Track changes on or off"),
@@ -1841,6 +1852,14 @@ impl doc::Editor for Writer {
             return true;
         }
         if self.tracked_key(key, ctrl) {
+            return true;
+        }
+        // Shift+Enter: a new line in the same paragraph.
+        if shift && !ctrl && matches!(key, gdk::Key::Return | gdk::Key::KP_Enter) {
+            let b = self.tb();
+            b.delete_selection(true, true);
+            b.insert_interactive_at_cursor(&LINE_BREAK.to_string(), true);
+            self.view.scroll_mark_onscreen(&b.get_insert());
             return true;
         }
         if ctrl && mods.contains(gdk::ModifierType::ALT_MASK) {

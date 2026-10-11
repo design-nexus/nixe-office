@@ -41,6 +41,7 @@ pub struct Hints {
     /// Leave out the title or body (it's being edited on top).
     pub skip_title: bool,
     pub skip_body: bool,
+    pub skip_body2: bool,
     /// Leave out this text object.
     pub skip_object: Option<u32>,
     /// In the slideshow: how many build steps are showing (None shows everything).
@@ -127,13 +128,42 @@ pub fn draw(
         && !hints.skip_body
     {
         let size = slide.body_size.unwrap_or(f.4);
-        let top = slide.layout == Layout::Content;
+        let top = slide.layout.body_at_top();
         if !slide.body.is_empty() {
             text_box(cr, ctx, slide, &slide.body, f, Look { size, title: false, faint: false, top });
         } else if hints.placeholders {
-            let hint = if top { "Click to add points" } else { "Click to add a subtitle" };
+            let hint = match slide.layout {
+                _ if top => "Click to add points",
+                Layout::Picture => "Click to add a caption",
+                _ => "Click to add a subtitle",
+            };
             text_box(cr, ctx, slide, hint, f, Look { size, title: false, faint: true, top });
         }
+    }
+    if let Some(f) = body2_frame(slide.layout)
+        && !hints.skip_body2
+    {
+        let size = slide.body_size.unwrap_or(f.4);
+        if !slide.body2.is_empty() {
+            text_box(cr, ctx, slide, &slide.body2, f, Look { size, title: false, faint: false, top: true });
+        } else if hints.placeholders {
+            text_box(cr, ctx, slide, "Click to add points", f, Look { size, title: false, faint: true, top: true });
+        }
+    }
+    // Where the picture goes, until there is one.
+    if let Some((px, py, pw, ph)) = picture_frame(slide.layout)
+        && hints.placeholders
+        && !slide.objects.iter().any(|o| matches!(o.kind, Kind::Image { .. }))
+    {
+        let (r, g, b) = rgb(&slide.color);
+        cr.set_source_rgba(r, g, b, 0.35);
+        cr.set_line_width(1.5);
+        cr.set_dash(&[8.0, 6.0], 0.0);
+        cr.rectangle(px, py, pw, ph);
+        cr.stroke().ok();
+        cr.set_dash(&[], 0.0);
+        let hint = (px, py + ph / 2.0 - 20.0, pw, 40.0, 22.0, true);
+        text_box(cr, ctx, slide, "Add a picture (toolbar) and it goes here", hint, Look { size: 22.0, title: false, faint: true, top: false });
     }
     let steps = slide.steps();
     let (hidden, moving): (Vec<u32>, Option<Step>) = match hints.built {

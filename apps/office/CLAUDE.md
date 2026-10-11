@@ -126,6 +126,13 @@
   played in `Slide::steps` order; Magic Move pairs objects with `Object::same_as` and
   is written as PowerPoint's Morph. In the slideshow, digits then Enter go to a slide and
   L toggles the laser pointer (drawn by `Show::paint_extras` over the live slide).
+  Layouts are `model::Layout` with fixed frames (`title_frame`, `body_frame`); two
+  columns adds `body2_frame` (`Slide.body2`, folded into the body when the layout
+  changes away), and picture with caption has `picture_frame`, which the slide's first
+  picture fills. In PowerPoint they're placeholders, recognised on the way back by
+  position (two bodies side by side; a title low on a slide with a picture).
+  The slide sorter (`sorter.rs`) is a `FlowBox` in the `views` stack beside the slide
+  view; dragging a tile calls `Deck::move_to`.
 - **Office files** are written by hand as XML strings (`write/docx.rs`,
   `present/pptx.rs`, `present/pptx_more.rs` for tables, charts, transitions and
   timing) and read with roxmltree.

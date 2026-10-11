@@ -13,6 +13,8 @@ mod pages;
 mod menu;
 mod placed;
 mod rules;
+mod series;
+mod sortfilter;
 mod structure;
 mod summary;
 mod templates;
@@ -97,6 +99,8 @@ struct ChartPane {
     area: gtk::DrawingArea,
     range: gtk::Entry,
     kind: gtk::DropDown,
+    /// The chart's title, and its axes' (across, up).
+    titles: [gtk::Entry; 3],
 }
 
 pub struct Sheets {
@@ -214,7 +218,7 @@ impl Sheets {
             fx: gtk::Entry::new(),
             sheet_list: widgets::hbox(2),
             tab_scroll: gtk::ScrolledWindow::new(),
-            chart: ChartPane { pane, area: chart_area, range, kind },
+            chart: ChartPane { pane, area: chart_area, range, kind, titles: std::array::from_fn(|_| gtk::Entry::new()) },
             controls: RefCell::new(None),
             clip: RefCell::new(None),
             cut: Cell::new(false),
@@ -410,6 +414,7 @@ impl Sheets {
         let g = group();
         g.append(&button("nxo-arrow-up-narrow-wide-symbolic", "Sort A to Z by this column", |s| s.sort(true)));
         g.append(&button("nxo-arrow-down-symbolic", "Sort Z to A by this column", |s| s.sort(false)));
+        g.append(&button("nxo-sliders-horizontal-symbolic", "Sort by several columns…", |s| s.rc().sort_dialog()));
         let filter = self.filter_button();
         g.append(&filter);
         let header =
@@ -573,64 +578,6 @@ impl Sheets {
         menu
     }
 
-    fn filter_button(self: &Rc<Self>) -> gtk::MenuButton {
-        let menu = gtk::MenuButton::new();
-        menu.set_icon_name("nxo-filter-symbolic");
-        menu.add_css_class("bar-button");
-        menu.set_tooltip_text(Some("Show only the rows whose cell in this column contains some text"));
-        menu.set_valign(gtk::Align::Center);
-        let pop = gtk::Popover::new();
-        let content = widgets::vbox(10);
-        content.add_css_class("prompt-box");
-        let title = widgets::label("Filter", "popover-title");
-        content.append(&title);
-        let query = gtk::Entry::new();
-        query.set_placeholder_text(Some("Text to look for"));
-        content.append(&query);
-        let buttons = widgets::hbox(8);
-        buttons.set_halign(gtk::Align::End);
-        let clear = gtk::Button::with_label("Show all");
-        let apply = gtk::Button::with_label("Filter");
-        apply.add_css_class("suggested-action");
-        buttons.append(&clear);
-        buttons.append(&apply);
-        content.append(&buttons);
-        pop.set_child(Some(&content));
-        menu.set_popover(Some(&pop));
-        let me = Rc::downgrade(self);
-        let (t, q) = (title.clone(), query.clone());
-        pop.connect_show(move |_| {
-            if let Some(s) = me.upgrade() {
-                let col = s.cursor.get().1;
-                t.set_text(&format!("Filter column {}", formula::col_name(col)));
-                let wb = s.wb.borrow();
-                q.set_text(wb.sheet().filter.as_ref().filter(|f| f.col == col).map(|f| f.query.as_str()).unwrap_or(""));
-            }
-        });
-        let me = Rc::downgrade(self);
-        let (p, q) = (pop.clone(), query.clone());
-        let go = move || {
-            p.popdown();
-            if let Some(s) = me.upgrade() {
-                let col = s.cursor.get().1;
-                let text = q.text().trim().to_string();
-                s.change(|wb| wb.sheet_mut().filter = (!text.is_empty()).then(|| Filter { col, query: text.clone() }));
-            }
-        };
-        let g2 = go.clone();
-        apply.connect_clicked(move |_| g2());
-        query.connect_activate(move |_| go());
-        let me = Rc::downgrade(self);
-        let p = pop.clone();
-        clear.connect_clicked(move |_| {
-            p.popdown();
-            if let Some(s) = me.upgrade() {
-                s.change(|wb| wb.sheet_mut().filter = None);
-            }
-        });
-        menu
-    }
-
     fn build_formula_bar(self: &Rc<Self>) -> gtk::Box {
         let bar = widgets::hbox(10);
         bar.add_css_class("formula-bar");
@@ -723,6 +670,44 @@ impl Sheets {
         let remove = gtk::Button::with_label("Remove");
         row.append(&remove);
         c.pane.append(&row);
+        // Titles: set when Enter is pressed or the field is left.
+        for (i, (label, hint)) in [("Title", "None"), ("Across", "Bottom axis"), ("Up", "Side axis")].into_iter().enumerate() {
+            let row = widgets::hbox(8);
+            let l = widgets::label(label, "dim");
+            l.set_width_chars(6);
+            l.set_xalign(0.0);
+            row.append(&l);
+            let e = &c.titles[i];
+            e.set_hexpand(true);
+            e.set_placeholder_text(Some(hint));
+            row.append(e);
+            c.pane.append(&row);
+            let me = Rc::downgrade(self);
+            let commit = move |text: String| {
+                let Some(s) = me.upgrade() else { return };
+                if s.syncing.get() {
+                    return;
+                }
+                let chart = s.wb.borrow().sheet().chart.clone();
+                if let Some(mut ch) = chart {
+                    let field = match i {
+                        0 => &mut ch.text.title,
+                        1 => &mut ch.text.x_title,
+                        _ => &mut ch.text.y_title,
+                    };
+                    if *field != text {
+                        *field = text;
+                        s.change(|wb| wb.sheet_mut().chart = Some(ch.clone()));
+                    }
+                }
+            };
+            let cm = commit.clone();
+            e.connect_activate(move |e| cm(e.text().trim().to_string()));
+            let focus = gtk::EventControllerFocus::new();
+            let e2 = e.clone();
+            focus.connect_leave(move |_| commit(e2.text().trim().to_string()));
+            e.add_controller(focus);
+        }
         let note = widgets::label(
             "Labels in the first column, one series per other column. A first row of words names the series.",
             "dim",
@@ -749,7 +734,8 @@ impl Sheets {
                     return;
                 }
                 let kind = s.wb.borrow().sheet().chart.as_ref().map(|c| c.kind).unwrap_or_default();
-                s.change(|wb| wb.sheet_mut().chart = Some(Chart { range: text.clone(), kind }));
+                let titles = s.wb.borrow().sheet().chart.as_ref().map(|c| c.text.clone()).unwrap_or_default();
+                s.change(|wb| wb.sheet_mut().chart = Some(Chart { range: text.clone(), kind, text: titles.clone() }));
             }
         };
         let sr = set_range.clone();
@@ -767,9 +753,9 @@ impl Sheets {
                 && !s.syncing.get()
             {
                 let kind = ChartKind::ALL[d.selected() as usize % ChartKind::ALL.len()];
-                let range = s.wb.borrow().sheet().chart.as_ref().map(|c| c.range.clone());
-                if let Some(range) = range {
-                    s.change(|wb| wb.sheet_mut().chart = Some(Chart { range: range.clone(), kind }));
+                let chart = s.wb.borrow().sheet().chart.clone();
+                if let Some(c) = chart {
+                    s.change(|wb| wb.sheet_mut().chart = Some(Chart { kind, ..c.clone() }));
                 }
             }
         });
@@ -796,7 +782,7 @@ impl Sheets {
                 Some(a.name())
             };
             if let Some(range) = range {
-                self.change(|wb| wb.sheet_mut().chart = Some(Chart { range: range.clone(), kind: ChartKind::Bar }));
+                self.change(|wb| wb.sheet_mut().chart = Some(Chart { range: range.clone(), kind: ChartKind::Bar, text: ChartText::default() }));
             }
         }
         self.sync();
@@ -804,14 +790,15 @@ impl Sheets {
 
     fn draw_chart(&self, a: &gtk::DrawingArea, cr: &cairo::Context, w: f64, h: f64) {
         let wb = self.wb.borrow();
-        let Some(kind) = wb.sheet().chart.as_ref().map(|c| c.kind) else {
+        let Some((kind, titles)) = wb.sheet().chart.as_ref().map(|c| (c.kind, c.text.clone())) else {
             return;
         };
         let calc = self.calc.borrow();
         let ctx = a.pango_context();
         match wb.chart_data(wb.active, &calc) {
             Some((names, labels, series)) => {
-                chart::draw(cr, &ctx, kind, &chart::Data { names: &names, labels: &labels, series: &series }, (0.0, 0.0, w, h))
+                let d = chart::Data { names: &names, labels: &labels, series: &series };
+                chart::draw_titled(cr, &ctx, kind, &d, &titles, (0.0, 0.0, w, h))
             }
             None => {
                 cr.set_source_rgb(1.0, 1.0, 1.0);
@@ -1403,6 +1390,11 @@ impl Sheets {
             Some(ch) => {
                 self.chart.range.set_text(&ch.range);
                 self.chart.kind.set_selected(ChartKind::ALL.iter().position(|k| *k == ch.kind).unwrap_or(0) as u32);
+                for (e, t) in self.chart.titles.iter().zip([&ch.text.title, &ch.text.x_title, &ch.text.y_title]) {
+                    if !e.has_focus() && e.text() != t.as_str() {
+                        e.set_text(t);
+                    }
+                }
             }
             None => self.chart.range.set_text(""),
         }

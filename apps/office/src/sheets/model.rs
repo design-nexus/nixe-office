@@ -107,7 +107,12 @@ pub struct Sort {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Filter {
     pub col: u32,
+    /// Show rows whose cell contains this text ("" for any).
+    #[serde(default)]
     pub query: String,
+    /// And, when set, only rows whose cell shows one of these (as shown; "" for empty).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub values: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -156,6 +161,21 @@ pub struct Chart {
     /// `A1:C12`: labels in the first column, one series per other column.
     pub range: String,
     pub kind: ChartKind,
+    #[serde(flatten, default)]
+    pub text: ChartText,
+}
+
+/// A chart's title, and what its axes measure.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ChartText {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    /// Across the bottom.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub x_title: String,
+    /// Up the side.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub y_title: String,
 }
 
 /// A chart's series names, labels, and values per series.
@@ -200,6 +220,8 @@ pub struct Sheet {
 pub struct PlacedChart {
     pub range: String,
     pub kind: ChartKind,
+    #[serde(flatten, default)]
+    pub text: ChartText,
     pub x: f64,
     pub y: f64,
     pub w: f64,
@@ -773,6 +795,7 @@ impl Workbook {
         };
         let clip = self.copy(src);
         let (h, w) = (src.rows() as i64, src.cols() as i64);
+        let down = vd >= hd;
         let s = self.sheet_mut();
         for (r, c) in area.iter() {
             if src.contains(r, c) {
@@ -781,7 +804,19 @@ impl Workbook {
             let sr = (r as i64 - src.top as i64).rem_euclid(h);
             let sc = (c as i64 - src.left as i64).rem_euclid(w);
             let mut cell = clip.cells[sr as usize][sc as usize].clone();
-            cell.raw = formula::shift(&cell.raw, r as i64 - (src.top as i64 + sr), c as i64 - (src.left as i64 + sc), ROWS, COLS);
+            // A series carries on (1, 2 → 3; Jan → Feb); anything else is copied.
+            let (line, t): (Vec<&str>, i64) = if down {
+                (clip.cells.iter().map(|row| row[sc as usize].raw.as_str()).collect(), r as i64 - src.top as i64)
+            } else {
+                (clip.cells[sr as usize].iter().map(|cl| cl.raw.as_str()).collect(), c as i64 - src.left as i64)
+            };
+            match super::series::next(&line, t) {
+                Some(v) => cell.raw = v,
+                None => {
+                    cell.raw =
+                        formula::shift(&cell.raw, r as i64 - (src.top as i64 + sr), c as i64 - (src.left as i64 + sc), ROWS, COLS)
+                }
+            }
             s.put(r, c, cell);
         }
         area
@@ -1017,17 +1052,13 @@ impl Workbook {
     /// row and the matching rows (then the empty rows after the data).
     pub fn view_rows(&self, si: usize, calc: &Calc) -> Vec<u32> {
         let s = &self.sheets[si];
-        let Some(f) = s.filter.as_ref().filter(|f| !f.query.trim().is_empty()) else {
+        let Some(f) = s.filter.as_ref().filter(|f| f.active()) else {
             return (0..ROWS).collect();
         };
         let last = s.used().map(|(r, _)| r).unwrap_or(0);
         let first = if s.header { 1 } else { 0 };
-        let q = f.query.trim().to_lowercase();
         let mut out: Vec<u32> = (0..first).collect();
-        out.extend((first..=last).filter(|r| {
-            let v = calc.value(self, si, *r, f.col);
-            display(&v, s.raw(*r, f.col), &s.format(*r, f.col)).0.to_lowercase().contains(&q)
-        }));
+        out.extend((first..=last).filter(|r| f.keeps(&self.shown(si, *r, f.col, calc))));
         out.extend(last + 1..ROWS);
         out
     }
@@ -1038,6 +1069,11 @@ impl Workbook {
     /// Merged cells can't be moved row by row, so a sheet with merges in its
     /// data isn't sorted: returns false.
     pub fn sort_rows(&mut self, si: usize, col: u32, ascending: bool, calc: &Calc) -> bool {
+        self.sort_by(si, &[(col, ascending)], calc)
+    }
+
+    /// Sort by several columns: by the first, then the next where those are equal.
+    pub fn sort_by(&mut self, si: usize, keys: &[(u32, bool)], calc: &Calc) -> bool {
         let s = &self.sheets[si];
         let Some((last, _)) = s.used() else { return true };
         let first = if s.header { 1 } else { 0 };
@@ -1047,28 +1083,39 @@ impl Workbook {
         if s.merges.iter().any(|m| m.bottom >= first && m.top <= last) {
             return false;
         }
-        let mut keyed: Vec<(u32, Value)> = (first..=last).map(|r| (r, calc.value(self, si, r, col))).collect();
+        let mut keyed: Vec<(u32, Vec<Value>)> =
+            (first..=last).map(|r| (r, keys.iter().map(|(c, _)| calc.value(self, si, r, *c)).collect())).collect();
         keyed.sort_by(|(_, a), (_, b)| {
             use std::cmp::Ordering;
-            let ord = match (a, b) {
-                (Value::Empty, Value::Empty) => return Ordering::Equal,
-                (Value::Empty, _) => return Ordering::Greater,
-                (_, Value::Empty) => return Ordering::Less,
-                (Value::Num(x), Value::Num(y)) => x.partial_cmp(y).unwrap_or(Ordering::Equal),
-                (Value::Num(_), _) => Ordering::Less,
-                (_, Value::Num(_)) => Ordering::Greater,
-                _ => a.text().to_lowercase().cmp(&b.text().to_lowercase()),
-            };
-            if ascending { ord } else { ord.reverse() }
+            for (k, (x, y)) in a.iter().zip(b).enumerate() {
+                let ascending = keys[k].1;
+                let ord = match (x, y) {
+                    (Value::Empty, Value::Empty) => Ordering::Equal,
+                    // Empty cells go last either way.
+                    (Value::Empty, _) => return Ordering::Greater,
+                    (_, Value::Empty) => return Ordering::Less,
+                    (Value::Num(p), Value::Num(q)) => p.partial_cmp(q).unwrap_or(Ordering::Equal),
+                    (Value::Num(_), _) => Ordering::Less,
+                    (_, Value::Num(_)) => Ordering::Greater,
+                    _ => x.text().to_lowercase().cmp(&y.text().to_lowercase()),
+                };
+                let ord = if ascending { ord } else { ord.reverse() };
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+            Ordering::Equal
         });
         let s = &mut self.sheets[si];
         let old: BTreeMap<(u32, u32), Cell> = s.cells.range((first, 0)..(last + 1, 0)).map(|(k, v)| (*k, v.clone())).collect();
         let heights: BTreeMap<u32, u32> = s.row_heights.range(first..=last).map(|(k, v)| (*k, *v)).collect();
+        let hidden: Vec<u32> = s.hidden_rows.range(first..=last).copied().collect();
         for k in old.keys() {
             s.cells.remove(k);
         }
         for r in first..=last {
             s.row_heights.remove(&r);
+            s.hidden_rows.remove(&r);
         }
         for (new_r, (old_r, _)) in (first..).zip(keyed) {
             for ((_, c), cell) in old.range((old_r, 0)..(old_r + 1, 0)) {
@@ -1078,6 +1125,10 @@ impl Workbook {
             }
             if let Some(h) = heights.get(&old_r) {
                 s.row_heights.insert(new_r, *h);
+            }
+            // A hidden row stays hidden where it goes.
+            if hidden.contains(&old_r) {
+                s.hidden_rows.insert(new_r);
             }
         }
         true
@@ -1316,7 +1367,7 @@ impl Workbook {
             let fc = get_i("filterColumn", -1);
             let fq = o.get("filterQuery").and_then(|x| x.as_str()).unwrap_or("");
             if fc >= 0 && !fq.is_empty() {
-                s.filter = Some(Filter { col: fc as u32, query: fq.to_string() });
+                s.filter = Some(Filter { col: fc as u32, query: fq.to_string(), values: None });
             }
             let range = o.get("chartRange").and_then(|x| x.as_str()).unwrap_or("");
             if !range.is_empty() {
@@ -1326,7 +1377,7 @@ impl Workbook {
                     "pie" => ChartKind::Pie,
                     _ => ChartKind::Bar,
                 };
-                s.chart = Some(Chart { range: range.to_uppercase(), kind });
+                s.chart = Some(Chart { range: range.to_uppercase(), kind, text: ChartText::default() });
             }
             (s, sort)
         };
@@ -1550,7 +1601,7 @@ mod tests {
         assert_eq!(col, vec!["Item", "apple", "pear", "fig"]);
         // The formula moved with its row and still points at it.
         assert_eq!(wb.sheet().raw(2, 2), "=B3*2");
-        wb.sheet_mut().filter = Some(Filter { col: 0, query: "P".into() });
+        wb.sheet_mut().filter = Some(Filter { col: 0, query: "P".into(), values: None });
         let rows = wb.view_rows(0, &calc(&wb));
         assert_eq!(&rows[..3], &[0, 1, 2]);
         assert_eq!(rows[3], 4);
@@ -1587,7 +1638,7 @@ mod tests {
                 wb.set(r as u32, c as u32, v);
             }
         }
-        wb.sheet_mut().chart = Some(Chart { range: "A1:C3".into(), kind: ChartKind::Line });
+        wb.sheet_mut().chart = Some(Chart { range: "A1:C3".into(), kind: ChartKind::Line, text: ChartText::default() });
         let (names, labels, series) = wb.chart_data(0, &calc(&wb)).unwrap();
         assert_eq!(names, vec!["Rent", "Food"]);
         assert_eq!(labels, vec!["Jan", "Feb"]);

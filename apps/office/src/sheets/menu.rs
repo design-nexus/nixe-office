@@ -105,6 +105,7 @@ impl Sheets {
             item("Paste formatting only", false, Box::new(|s| s.paste_special(Paste::Formats)));
         }
         item("Dropdown list…", false, Box::new(|s| s.rc().list_dialog()));
+        item("Sort…", false, Box::new(|s| s.rc().sort_dialog()));
         list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         let r = fmt::count(nr as usize, "row", "rows");
         let c = fmt::count(nc as usize, "column", "columns");

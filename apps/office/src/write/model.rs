@@ -58,6 +58,9 @@ pub struct PageSetup {
     pub header: String,
     pub footer: String,
     pub page_numbers: bool,
+    /// The first page has no header, footer or page number (a letter, a title page).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub plain_first_page: bool,
     /// Text columns on the page, 1 to 3.
     pub columns: u8,
     /// Points between columns.
@@ -69,6 +72,7 @@ impl Default for PageSetup {
         Self { paper: "letter".into(), landscape: false, margins: [72.0; 4], header: String::new(),
             footer: String::new(),
             page_numbers: false,
+            plain_first_page: false,
             columns: 1,
             column_gap: 18.0,
         }
@@ -246,6 +250,10 @@ pub struct Paragraph {
     pub space_after: Option<f64>,
     pub runs: Vec<Run>,
 }
+
+/// A line break inside a paragraph (Shift+Enter): Unicode's line separator,
+/// which breaks the line without starting a new paragraph.
+pub const LINE_BREAK: char = '\u{2028}';
 
 /// The line spacings offered, as in other word processors.
 pub const LINE_SPACINGS: [f64; 4] = [1.0, 1.15, 1.5, 2.0];

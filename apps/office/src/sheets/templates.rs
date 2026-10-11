@@ -68,7 +68,7 @@ pub fn build(id: &str) -> Option<Workbook> {
             }
             wb.format(Area::new(1, 1, total, 3), |f| f.number = NumFmt::Currency);
             wb.format(Area::new(total, 0, total, 3), |f| f.bold = true);
-            wb.sheet_mut().chart = Some(Chart { range: format!("A1:C{total}"), kind: ChartKind::Bar });
+            wb.sheet_mut().chart = Some(Chart { range: format!("A1:C{total}"), kind: ChartKind::Bar, text: ChartText::default() });
         }
         "home-inventory" => {
             layout(

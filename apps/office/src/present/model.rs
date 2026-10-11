@@ -22,14 +22,22 @@ pub enum Layout {
     Section,
     /// Nothing but the objects placed on it.
     Blank,
+    /// A title over two columns of points.
+    #[serde(rename = "two-columns")]
+    TwoColumns,
+    /// A picture filling most of the slide, a title and caption under it.
+    Picture,
 }
 
 impl Layout {
-    pub const ALL: [Layout; 4] = [Layout::Title, Layout::Content, Layout::Section, Layout::Blank];
+    pub const ALL: [Layout; 6] =
+        [Layout::Title, Layout::Content, Layout::TwoColumns, Layout::Picture, Layout::Section, Layout::Blank];
     pub fn name(self) -> &'static str {
         match self {
             Layout::Title => "Title",
             Layout::Content => "Title and content",
+            Layout::TwoColumns => "Two columns",
+            Layout::Picture => "Picture with caption",
             Layout::Section => "Section",
             Layout::Blank => "Blank",
         }
@@ -45,6 +53,8 @@ pub fn title_frame(l: Layout) -> Option<Frame> {
         Layout::Title => Some((85.0, 170.0, 790.0, 120.0, 54.0, true)),
         Layout::Content => Some((80.0, 56.0, 800.0, 96.0, 42.0, false)),
         Layout::Section => Some((85.0, 182.0, 790.0, 116.0, 50.0, true)),
+        Layout::TwoColumns => Some((80.0, 56.0, 800.0, 96.0, 42.0, false)),
+        Layout::Picture => Some((80.0, 392.0, 800.0, 64.0, 32.0, false)),
         Layout::Blank => None,
     }
 }
@@ -54,7 +64,26 @@ pub fn body_frame(l: Layout) -> Option<Frame> {
         Layout::Title => Some((90.0, 300.0, 780.0, 100.0, 26.0, true)),
         Layout::Content => Some((86.0, 170.0, 790.0, 310.0, 24.0, false)),
         Layout::Section => Some((90.0, 306.0, 780.0, 90.0, 24.0, true)),
+        Layout::TwoColumns => Some((86.0, 170.0, 380.0, 310.0, 22.0, false)),
+        Layout::Picture => Some((80.0, 456.0, 800.0, 56.0, 20.0, false)),
         Layout::Blank => None,
+    }
+}
+
+/// The second column's frame (two columns only).
+pub fn body2_frame(l: Layout) -> Option<Frame> {
+    (l == Layout::TwoColumns).then_some((494.0, 170.0, 380.0, 310.0, 22.0, false))
+}
+
+/// Where the picture goes (picture with caption only): x, y, w, h.
+pub fn picture_frame(l: Layout) -> Option<(f64, f64, f64, f64)> {
+    (l == Layout::Picture).then_some((80.0, 36.0, 800.0, 340.0))
+}
+
+impl Layout {
+    /// Its body text starts at the top of its frame (points), not centred.
+    pub fn body_at_top(self) -> bool {
+        matches!(self, Layout::Content | Layout::TwoColumns)
     }
 }
 
@@ -74,6 +103,9 @@ pub struct Slide {
     pub layout: Layout,
     pub title: String,
     pub body: String,
+    /// The second column (two columns).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub body2: String,
     pub notes: String,
     /// `#rrggbb`.
     pub background: String,
@@ -168,6 +200,7 @@ impl Default for Slide {
             layout: Layout::Content,
             title: String::new(),
             body: String::new(),
+            body2: String::new(),
             notes: String::new(),
             background: LOOKS[0].1.into(),
             color: LOOKS[0].2.into(),
@@ -463,7 +496,7 @@ impl Slide {
 
     /// All the words on the slide, for find.
     pub fn texts(&self) -> Vec<&str> {
-        let mut v = vec![self.title.as_str(), self.body.as_str(), self.notes.as_str()];
+        let mut v = vec![self.title.as_str(), self.body.as_str(), self.body2.as_str(), self.notes.as_str()];
         for o in &self.objects {
             match &o.kind {
                 Kind::Text { text } => v.push(text),
@@ -589,6 +622,16 @@ impl Deck {
         Some(j as usize)
     }
 
+    /// Takes slide `i` out and puts it back at `to` (the slide sorter's drag).
+    pub fn move_to(&mut self, i: usize, to: usize) -> Option<usize> {
+        if i >= self.slides.len() || to >= self.slides.len() || i == to {
+            return None;
+        }
+        let s = self.slides.remove(i);
+        self.slides.insert(to, s);
+        Some(to)
+    }
+
     pub fn to_json(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("a deck always serialises")
     }
@@ -634,6 +677,7 @@ impl Deck {
                 },
                 title: gs("title"),
                 body: gs("body"),
+                body2: String::new(),
                 notes: gs("notes"),
                 background: Some(gs("backgroundColor")).filter(|c| c.starts_with('#')).unwrap_or_else(|| bg.into()),
                 color: Some(gs("fontColor")).filter(|c| c.starts_with('#')).unwrap_or_else(|| fg.into()),
