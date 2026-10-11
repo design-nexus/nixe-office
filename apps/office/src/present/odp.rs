@@ -409,7 +409,7 @@ impl Reader<'_, '_> {
     fn geometry(&self, n: &roxmltree::Node) -> Option<(f64, f64, f64, f64, f64)> {
         let w = self.len(attr(n, SVG, "width"), true)?;
         let h = self.len(attr(n, SVG, "height"), false)?;
-        if let Some(t) = attr(n, DRAW, "transform") {
+        if let Some(t) = attr(n, DRAW, "transform").map(|t| t.replace(" (", "(")) {
             // rotate(a) translate(x y), as LibreOffice writes it.
             let num = |s: &str| s.trim().trim_end_matches(|c: char| c.is_ascii_alphabetic()).parse::<f64>().ok();
             let rot = t.split("rotate(").nth(1).and_then(|r| r.split(')').next()).and_then(num).unwrap_or(0.0);
@@ -481,13 +481,8 @@ impl Reader<'_, '_> {
         let (x, y, w, h, rot) = self.geometry(n)?;
         let kind = match name {
             "frame" => {
-                if let Some(img) = n.children().find(|c| c.has_tag_name((DRAW, "image"))) {
-                    let href = attr(&img, XLINK, "href")?;
-                    let png = odf::picture(self.pkg, href, &mut self.cache)?;
-                    let file = format!("picture-{}.png", self.media.len() + 1);
-                    self.media.insert(file.clone(), png);
-                    Kind::Image { image: file }
-                } else if let Some(t) = n.children().find(|c| c.has_tag_name((TABLE, "table"))) {
+                // A table's frame also holds a picture of it, for software without tables.
+                if let Some(t) = n.children().find(|c| c.has_tag_name((TABLE, "table"))) {
                     let mut rows: Vec<Vec<String>> = Vec::new();
                     for row in t.descendants().filter(|c| c.has_tag_name((TABLE, "table-row"))).take(50) {
                         let cells = row
@@ -505,7 +500,27 @@ impl Reader<'_, '_> {
                     if rows.is_empty() {
                         return None;
                     }
-                    Kind::Table { rows, header: attr(&t, TABLE, "use-first-row-styles") == Some("true") }
+                    // A heading row says so, or is shaded unlike the next row.
+                    let fills: Vec<Option<&str>> = t
+                        .descendants()
+                        .filter(|c| c.has_tag_name((TABLE, "table-row")))
+                        .take(2)
+                        .map(|row| {
+                            let cell = row.children().find(|c| c.has_tag_name((TABLE, "table-cell")));
+                            let style = cell.and_then(|c| attr(&c, TABLE, "style-name")).or_else(|| attr(&row, TABLE, "default-cell-style-name"))?;
+                            (self.styles.get("table-cell", style, "graphic/fill") == Some("solid"))
+                                .then(|| self.styles.get("table-cell", style, "graphic/fill-color"))
+                                .flatten()
+                        })
+                        .collect();
+                    let shaded = fills.len() == 2 && fills[0].is_some() && fills[0] != fills[1];
+                    Kind::Table { rows, header: attr(&t, TABLE, "use-first-row-styles") == Some("true") || shaded }
+                } else if let Some(img) = n.children().find(|c| c.has_tag_name((DRAW, "image"))) {
+                    let href = attr(&img, XLINK, "href")?;
+                    let png = odf::picture(self.pkg, href, &mut self.cache)?;
+                    let file = format!("picture-{}.png", self.media.len() + 1);
+                    self.media.insert(file.clone(), png);
+                    Kind::Image { image: file }
                 } else {
                     let text = frame_text(&n.children().find(|c| c.has_tag_name((DRAW, "text-box")))?);
                     if text.trim().is_empty() {
@@ -612,32 +627,42 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
             s.background = c;
         }
         let mut title: Option<(String, f64, bool)> = None;
+        // Where the title and first body sit, to recognise our layouts after another app renames them.
+        let mut frames: [Option<(f64, f64, f64, f64)>; 2] = [None, None];
         let mut subtitle: Option<String> = None;
         let mut outlines: Vec<(String, f64, f64, f64)> = Vec::new();
         for n in page.children().filter(|c| c.is_element()) {
             match attr(&n, PRESENTATION, "class") {
                 Some("title") => {
-                    let (_, y, _, h, _) = r.geometry(&n).unwrap_or((0.0, 0.0, 0.0, 0.0, 0.0));
+                    let (x, y, w, h, _) = r.geometry(&n).unwrap_or((0.0, 0.0, 0.0, 0.0, 0.0));
+                    frames[0] = Some((x, y, w, h));
                     let centred = n.descendants().any(|p| p.has_tag_name((TEXT, "p")))
                         && r.styles.get("presentation", attr(&n, PRESENTATION, "style-name").unwrap_or(""), "graphic/textarea-vertical-align") == Some("middle");
                     r.look(&n, &mut s, true);
                     title = Some((frame_text(&n), y + h / 2.0, centred));
                 }
                 Some("subtitle") => {
+                    if let Some((x, y, w, h, _)) = r.geometry(&n) {
+                        frames[1] = Some((x, y, w, h));
+                    }
                     r.look(&n, &mut s, false);
                     subtitle = Some(frame_text(&n));
                 }
                 Some("outline") => {
-                    let (x, y, w, _, _) = r.geometry(&n).unwrap_or((0.0, 0.0, 0.0, 0.0, 0.0));
+                    let (x, y, w, h, _) = r.geometry(&n).unwrap_or((0.0, 0.0, 0.0, 0.0, 0.0));
+                    if outlines.is_empty() {
+                        frames[1] = Some((x, y, w, h));
+                    }
                     r.look(&n, &mut s, false);
                     outlines.push((frame_text(&n), x, y, w));
                 }
                 Some("notes" | "page-number" | "footer" | "date-time" | "header" | "handout") => {}
                 Some(_) => {}
                 None if n.has_tag_name((PRESENTATION, "notes")) => {
+                    // The notes page's text (its slide picture has none).
                     s.notes = n
-                        .descendants()
-                        .filter(|f| attr(f, PRESENTATION, "class") == Some("notes"))
+                        .children()
+                        .filter(|f| f.has_tag_name((DRAW, "frame")) && f.children().any(|c| c.has_tag_name((DRAW, "text-box"))))
                         .map(|f| frame_text(&f))
                         .collect::<Vec<_>>()
                         .join("\n");
@@ -662,7 +687,15 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
         }
         // Our own layouts come back by name; others by what's on the slide.
         let named = attr(&page, PRESENTATION, "presentation-page-layout-name")
-            .and_then(|n| Layout::ALL.into_iter().find(|l| layout_id(*l) == n));
+            .and_then(|n| Layout::ALL.into_iter().find(|l| layout_id(*l) == n))
+            .or_else(|| {
+                let near = |a: Option<(f64, f64, f64, f64)>, b: Option<Frame>| match (a, b) {
+                    (Some(a), Some(b)) => [(a.0, b.0), (a.1, b.1), (a.2, b.2), (a.3, b.3)].iter().all(|(u, v)| (u - v).abs() < 2.0),
+                    (None, None) => true,
+                    _ => false,
+                };
+                Layout::ALL.into_iter().find(|l| *l != Layout::Blank && near(frames[0], title_frame(*l)) && near(frames[1], body_frame(*l)))
+            });
         let side_by_side = outlines.len() == 2 && (outlines[0].2 - outlines[1].2).abs() < 40.0 && (outlines[0].1 - outlines[1].1).abs() > 200.0;
         let has_picture = s.objects.iter().any(|o| matches!(o.kind, Kind::Image { .. }));
         let captioned = title.as_ref().is_some_and(|t| t.1 > H * 0.7) && has_picture;
@@ -766,5 +799,20 @@ mod tests {
         }
         assert_eq!(back.master.len(), 1);
         assert!(matches!(&back.master[0].kind, Kind::Text { text } if text == "{n}"));
+    }
+
+    #[test]
+    fn reads_a_file_collabora_saved() {
+        // Collabora renames the layouts, writes "rotate (…)" with spaces, adds a
+        // picture to each table, and drops the notes' placeholder class.
+        let (deck, _) = read(include_bytes!("../../testdata/collabora/sample.odp")).unwrap();
+        let layouts: Vec<Layout> = deck.slides.iter().map(|s| s.layout).collect();
+        assert_eq!(layouts, [Layout::Title, Layout::Content, Layout::Content, Layout::Section]);
+        assert!(deck.slides.iter().all(|s| !s.notes.is_empty()));
+        let s = &deck.slides[1];
+        assert!(s.objects.iter().any(|o| matches!(&o.kind, Kind::Table { header: true, rows } if rows[0][0] == "Heading 1")));
+        let arrow = s.objects.iter().find(|o| matches!(o.kind, Kind::Shape { shape: Shape::Arrow, .. })).unwrap();
+        assert!((arrow.rotation - 15.0).abs() < 0.01 && (arrow.x - 150.0).abs() < 0.1 && (arrow.y - 40.0).abs() < 0.1, "{arrow:?}");
+        assert!(matches!(&deck.master[0].kind, Kind::Text { text } if text == "{n}"));
     }
 }

@@ -1078,4 +1078,15 @@ mod tests {
         assert_eq!(b.hidden_cols, a.hidden_cols);
         assert_eq!(b.hidden_rows, a.hidden_rows);
     }
+
+    #[test]
+    fn reads_a_file_collabora_saved() {
+        let wb = read(include_bytes!("../../testdata/collabora/sample.ods")).unwrap().workbook;
+        let s = &wb.sheets[0];
+        assert_eq!(s.raw(9, 1), "=SUM(B2:B9)");
+        assert_eq!(s.raw(1, 3), "=B2-C2");
+        assert_eq!(s.format(1, 1).number, NumFmt::Currency);
+        assert!(s.format(0, 0).bold && s.format(0, 0).fill.is_some());
+        assert_eq!(s.col_widths.get(&0), Some(&180));
+    }
 }

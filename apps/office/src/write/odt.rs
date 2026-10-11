@@ -447,7 +447,7 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
         let _ = write!(faces, r#"<style:font-face style:name="{0}" svg:font-family="'{0}'"/>"#, esc(&f));
     }
     let content = format!(
-        r##"<?xml version="1.0" encoding="UTF-8"?><office:document-content {ns}><office:font-face-decls>{faces}</office:font-face-decls><office:automatic-styles>{frames}<style:style style:name="Tbl" style:family="table"><style:table-properties style:width="{width}" table:align="margins"/></style:style><style:style style:name="TblBreak" style:family="table"><style:table-properties style:width="{width}" table:align="margins" fo:break-before="page"/></style:style><style:style style:name="TblCol" style:family="table-column"/><style:style style:name="TblCell" style:family="table-cell"><style:table-cell-properties fo:padding="4pt" fo:border="0.5pt solid #9aa0aa"/></style:style><style:style style:name="TblHead" style:family="table-cell"><style:table-cell-properties fo:padding="4pt" fo:border="0.5pt solid #9aa0aa" fo:background-color="#eef0f3"/></style:style><style:style style:name="Sect0" style:family="section"/><style:style style:name="Break" style:family="paragraph" style:parent-style-name="Standard"><style:paragraph-properties fo:break-before="page"/></style:style>{auto}</office:automatic-styles><office:body><office:text><text:sequence-decls><text:sequence-decl text:display-outline-level="0" text:name="Illustration"/><text:sequence-decl text:display-outline-level="0" text:name="Table"/></text:sequence-decls>{body}</office:text></office:body></office:document-content>"##,
+        r##"<?xml version="1.0" encoding="UTF-8"?><office:document-content {ns}><office:font-face-decls>{faces}</office:font-face-decls><office:automatic-styles>{frames}<style:style style:name="Tbl" style:family="table"><style:table-properties style:width="{width}" table:align="margins" table:border-model="collapsing"/></style:style><style:style style:name="TblBreak" style:family="table"><style:table-properties style:width="{width}" table:align="margins" table:border-model="collapsing" fo:break-before="page"/></style:style><style:style style:name="TblCol" style:family="table-column"/><style:style style:name="TblCell" style:family="table-cell"><style:table-cell-properties fo:padding="4pt" fo:border="0.5pt solid #9aa0aa"/></style:style><style:style style:name="TblHead" style:family="table-cell"><style:table-cell-properties fo:padding="4pt" fo:border="0.5pt solid #9aa0aa" fo:background-color="#eef0f3"/></style:style><style:style style:name="Sect0" style:family="section"/><style:style style:name="Break" style:family="paragraph" style:parent-style-name="Standard"><style:paragraph-properties fo:break-before="page"/></style:style>{auto}</office:automatic-styles><office:body><office:text><text:sequence-decls><text:sequence-decl text:display-outline-level="0" text:name="Illustration"/><text:sequence-decl text:display-outline-level="0" text:name="Table"/></text:sequence-decls>{body}</office:text></office:body></office:document-content>"##,
         ns = odf::NAMESPACES,
         frames = r#"<style:style style:name="fr0" style:family="graphic"><style:graphic-properties style:vertical-pos="top" style:vertical-rel="baseline"/></style:style><style:style style:name="frL" style:family="graphic"><style:graphic-properties style:wrap="right" style:horizontal-pos="left" style:horizontal-rel="paragraph" style:vertical-pos="top" style:vertical-rel="paragraph" fo:margin-right="9pt"/></style:style><style:style style:name="frR" style:family="graphic"><style:graphic-properties style:wrap="left" style:horizontal-pos="right" style:horizontal-rel="paragraph" style:vertical-pos="top" style:vertical-rel="paragraph" fo:margin-left="9pt"/></style:style>"#,
         width = pt(page.content_width()),
@@ -693,6 +693,9 @@ impl Reader<'_, '_> {
         let id = self.doc.comments.iter().map(|c| c.id).max().unwrap_or(0) + 1;
         let author = n.children().find(|c| c.has_tag_name((DC, "creator"))).and_then(|c| c.text()).unwrap_or("").to_string();
         let mut date = n.children().find(|c| c.has_tag_name((DC, "date"))).and_then(|c| c.text()).unwrap_or("").to_string();
+        if date.starts_with("0000") {
+            date.clear();
+        }
         if !date.is_empty() {
             // Seconds, no fraction, in UTC's form.
             date.truncate(19);
@@ -1220,5 +1223,25 @@ mod tests {
         assert_eq!((ps[3].list, ps[3].indent), (Some(List::Bullet), 1));
         assert_eq!(d.comments[0].text, "point");
         assert!(matches!(&ps[4].runs[0], Run::Text(t) if t.comment == Some(1)));
+    }
+
+    #[test]
+    fn reads_a_file_collabora_saved() {
+        // Our sample, opened and saved again by Collabora Office.
+        let (d, media) = read(include_bytes!("../../testdata/collabora/sample.odt")).unwrap();
+        assert_eq!((d.page.header.as_str(), d.page.page_numbers), ("My recipes", true));
+        assert_eq!(d.comments.len(), 1);
+        assert_eq!(d.comments[0].date, "", "a comment without a date stays without one");
+        assert!(d.blocks.iter().any(|b| matches!(b, Block::Table(t) if t.header && t.rows[1][1] == "2 cups")));
+        assert!(d.blocks.contains(&Block::Section(Section { columns: 2, new_page: false })));
+        assert!(d.blocks.contains(&Block::Contents));
+        let numbered = d.blocks.iter().filter(|b| matches!(b, Block::Paragraph(p) if p.list == Some(List::Number))).count();
+        assert_eq!(numbered, 3);
+        let picture = d.blocks.iter().find_map(|b| match b {
+            Block::Paragraph(p) => p.runs.iter().find_map(|r| if let Run::Image(i) = r { Some(i.clone()) } else { None }),
+            _ => None,
+        });
+        assert_eq!(picture.map(|i| i.wrap), Some(Some(Side::Right)));
+        assert_eq!(media.len(), 1);
     }
 }
