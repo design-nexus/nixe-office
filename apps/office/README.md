@@ -14,7 +14,8 @@ Then:
 - **Write**
   - Paragraph styles (title, three headings, quote), font, size, bold, italic,
     underline, strikethrough, superscript and subscript, text color and highlight,
-    alignment.
+    alignment. Change how a style looks (the pen beside the style list): make every
+    heading of that kind look like the text at the cursor, or put it back.
   - Format painter: copy the formatting where the cursor is, then select text to give
     it the same look, or click a paragraph to give it the paragraph's style. Double-click
     the brush to paint more than once; <kbd>Esc</kbd> stops.
@@ -44,7 +45,8 @@ Then:
   - Smart quotes and symbols as you type: "quotes" curl, `--` makes a dash —, `...` an
     ellipsis …, `(c)` ©, `(tm)` ™ and `->` →. Turn it off in Settings.
   - Page setup: Letter, A4, Legal or A5, portrait or landscape, margins, a header, a
-    footer, page numbers and columns.
+    footer (or different ones on even pages, or none on the first), page numbers and
+    columns.
   - The headings appear in the sidebar as an outline; click one to go there.
   - Starter templates: a personal letter, a recipe and a journal.
 - **Sheets**
@@ -59,8 +61,11 @@ Then:
     / <kbd>0</kbd>, or drag the heading's edge open). Hidden cells still count in
     formulas, but don't print. Excel files keep them hidden.
   - Formulas with cell and range references, `$` absolute references and references to
-    other sheets (`'Sheet 2'!B4`). Click cells while typing a formula to put their
-    references in. Over 120 functions:
+    other sheets (`'Sheet 2'!B4`), whole columns and rows (`B:B`, `3:3`), the same cell
+    on a run of sheets (`Jan:Dec!B4`), names from Excel and OpenDocument files
+    (`=TotalIncome`), table references (`Sales[Amount]`, `[@Qty]`) and array constants
+    (`{1,2,3}`). Click cells while typing a formula to put their references in. Over 170
+    functions:
     - Totals and counts: SUM, AVERAGE, AVERAGEA, MIN, MAX, COUNT, COUNTA, COUNTBLANK,
       PRODUCT, SUMPRODUCT, COUNTIF(S), SUMIF(S), AVERAGEIF(S), MAXIFS, MINIFS.
     - Statistics: MEDIAN, MODE, STDEV, VAR, LARGE, SMALL, RANK.
@@ -68,7 +73,13 @@ Then:
       POWER, SQRT, EXP, LN, LOG, LOG10, PI, RAND, RANDBETWEEN.
     - Logic: IF, IFS, SWITCH, IFERROR, IFNA, AND, OR, XOR, NOT, ISBLANK, ISNUMBER,
       ISTEXT, ISERROR, ISNA.
-    - Lookup: VLOOKUP, HLOOKUP, XLOOKUP, XMATCH, INDEX, MATCH, CHOOSE.
+    - Lookup and references: VLOOKUP, HLOOKUP, XLOOKUP, XMATCH, LOOKUP, INDEX, MATCH,
+      CHOOSE, ROW, ROWS, COLUMN, COLUMNS, OFFSET, INDIRECT, ADDRESS.
+    - Maths and statistics beyond the basics: SUBTOTAL, SIN, COS, TAN and their
+      inverses, RADIANS, DEGREES, FACT, COMBIN, PERMUT, GCD, LCM, MROUND, ODD, EVEN,
+      SUMSQ, VARP, STDEVP, DEVSQ, AVEDEV, MINA, MAXA, MMULT, MINVERSE, MDETERM.
+    - Also TIME, WORKDAY, DAYS360, CLEAN, CHAR, CODE, DOLLAR, HYPERLINK, NA,
+      ERROR.TYPE and the base converters (HEX2DEC, DEC2BIN…).
     - Lists: UNIQUE, FILTER, SORT, SORTBY, SEQUENCE, TAKE, DROP, CHOOSECOLS,
       CHOOSEROWS, TRANSPOSE, VSTACK, HSTACK, TOCOL, TOROW. Their results spill into the
       cells below and to the right (`#SPILL!` when something is in the way), as do
@@ -103,7 +114,8 @@ Then:
   - Sort by a column, filter rows by what a column contains, keep the first row as a
     header. Keep the top row, the first column, or everything above and left of the
     cursor in view while the rest scrolls.
-  - Bar, stacked bar, line, area, stacked area, pie and scatter charts of up to six
+  - Bar, horizontal bar, stacked bar, line, area, stacked area, pie, doughnut and
+    scatter charts of up to six
     series, beside the sheet or placed anywhere on it (drag to move, drag the corner
     to resize, double-click to change).
   - Tables: blocks of cells with a coloured heading row, banded rows and a total row,
@@ -126,7 +138,9 @@ Then:
     the arrow keys; give them a border (a line's color and thickness) and a drop shadow.
   - Video and audio on slides, played in the slideshow with their own controls.
   - A master slide for what goes on every slide (a logo, a footer, the slide number);
-    any slide can leave it out.
+    any slide can leave it out. Drag a placeholder's edge to move a slide's title or
+    text (its corner resizes it); on the master, drag them to move them on every slide
+    of that layout.
   - <kbd>Shift</kbd>-click to select several; group them (<kbd>Ctrl</kbd>+<kbd>G</kbd>)
     to move them as one; line them up, space them evenly or change which is in front.
     Guides snap what you drag to the slide's middle and edges and to other objects

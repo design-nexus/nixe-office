@@ -105,7 +105,7 @@ pub fn draw_titled(
         ih -= th as f64 + 6.0;
     }
     // Pie charts have no axes to name.
-    if kind != ChartKind::Pie {
+    if !kind.round() {
         let axis = |s: &str| {
             let layout = pango::Layout::new(ctx);
             let mut font = pango::FontDescription::from_string("Noto Sans");
@@ -152,13 +152,13 @@ pub fn draw(cr: &cairo::Context, ctx: &pango::Context, kind: ChartKind, d: &Data
     let fs = 9.0;
     // Legend along the top when there's more than one series.
     let mut top = y + pad;
-    if d.series.len() > 1 || kind == ChartKind::Pie {
-        let names: Vec<&String> = if kind == ChartKind::Pie { d.labels.iter().collect() } else { d.names.iter().collect() };
+    if d.series.len() > 1 || kind.round() {
+        let names: Vec<&String> = if kind.round() { d.labels.iter().collect() } else { d.names.iter().collect() };
         let mut lx = x + pad;
         let total_pie: f64 = d.series.first().map(|s| s.iter().filter(|v| **v > 0.0).sum()).unwrap_or(0.0);
         for (i, n) in names.iter().enumerate().take(12) {
             let (r, g, b) = SERIES[i % SERIES.len()];
-            let label = if kind == ChartKind::Pie && total_pie > 0.0 {
+            let label = if kind.round() && total_pie > 0.0 {
                 let v = d.series[0].get(i).copied().unwrap_or(0.0).max(0.0);
                 format!("{n} {}%", (v / total_pie * 100.0).round())
             } else {
@@ -183,7 +183,7 @@ pub fn draw(cr: &cairo::Context, ctx: &pango::Context, kind: ChartKind, d: &Data
         return;
     }
 
-    if kind == ChartKind::Pie {
+    if kind.round() {
         let values = d.series.first().cloned().unwrap_or_default();
         let total: f64 = values.iter().filter(|v| **v > 0.0).sum();
         if total <= 0.0 {
@@ -208,6 +208,15 @@ pub fn draw(cr: &cairo::Context, ctx: &pango::Context, kind: ChartKind, d: &Data
             let _ = cr.stroke();
             a += sweep;
         }
+        if kind == ChartKind::Doughnut {
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.arc(cx, cy, rad * 0.55, 0.0, std::f64::consts::TAU);
+            let _ = cr.fill();
+        }
+        return;
+    }
+    if kind == ChartKind::HBar {
+        hbar(cr, ctx, d, (px, py, pw, ph));
         return;
     }
 
@@ -310,6 +319,62 @@ pub fn draw(cr: &cairo::Context, ctx: &pango::Context, kind: ChartKind, d: &Data
         }
     }
     axis_line(cr, gx, gw, zero);
+}
+
+/// Bars lying along: the labels down the left, the values along the bottom.
+fn hbar(cr: &cairo::Context, ctx: &pango::Context, d: &Data, (px, py, pw, ph): (f64, f64, f64, f64)) {
+    let fs = 9.0;
+    let n = d.labels.len();
+    let all: Vec<f64> = d.series.iter().flatten().copied().collect();
+    let (mut lo, mut hi) = (all.iter().cloned().fold(0.0, f64::min), all.iter().cloned().fold(0.0, f64::max));
+    if hi == lo {
+        hi = lo + 1.0;
+    }
+    let step = nice_step(hi - lo);
+    lo = (lo / step).floor() * step;
+    hi = (hi / step).ceil() * step;
+    let label_w = (pw * 0.28).clamp(40.0, 120.0);
+    let (gx, gy, gw, gh) = (px + label_w, py, pw - label_w - 8.0, ph - fs * 2.0);
+    let xpos = |v: f64| gx + (v - lo) / (hi - lo) * gw;
+    cr.set_line_width(0.6);
+    let mut v = lo;
+    while v <= hi + step * 0.01 {
+        let xx = xpos(v);
+        cr.set_source_rgb(GRID.0, GRID.1, GRID.2);
+        cr.move_to(xx, gy);
+        cr.line_to(xx, gy + gh);
+        let _ = cr.stroke();
+        cr.set_source_rgb(0.42, 0.45, 0.5);
+        text(cr, ctx, &short(v), fs * 0.9, (xx - 30.0, gy + gh + 4.0, 60.0), pango::Alignment::Center);
+        v += step;
+    }
+    let slot = gh / n.max(1) as f64;
+    let zero = xpos(0.0f64.clamp(lo, hi));
+    // The first label at the top.
+    let every = ((fs * 1.6) / slot).ceil().max(1.0) as usize;
+    for (i, l) in d.labels.iter().enumerate() {
+        if i % every == 0 {
+            cr.set_source_rgb(0.42, 0.45, 0.5);
+            text(cr, ctx, l, fs * 0.9, (px, gy + slot * (i as f64 + 0.5) - fs * 0.7, label_w - 6.0), pango::Alignment::Right);
+        }
+    }
+    let k = d.series.len().max(1);
+    let bh = slot * 0.7 / k as f64;
+    for (si, s) in d.series.iter().enumerate() {
+        let (r, g, b) = SERIES[si % SERIES.len()];
+        cr.set_source_rgb(r, g, b);
+        for (i, v) in s.iter().enumerate() {
+            let by = gy + slot * i as f64 + slot * 0.15 + bh * si as f64;
+            let xv = xpos(*v);
+            cr.rectangle(xv.min(zero), by, (xv - zero).abs(), bh.max(1.0));
+            let _ = cr.fill();
+        }
+    }
+    cr.set_source_rgb(0.55, 0.58, 0.62);
+    cr.set_line_width(1.0);
+    cr.move_to(zero, gy);
+    cr.line_to(zero, gy + gh);
+    let _ = cr.stroke();
 }
 
 fn axis_line(cr: &cairo::Context, gx: f64, gw: f64, zero: f64) {

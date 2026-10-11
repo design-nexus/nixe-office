@@ -5,6 +5,7 @@ mod cells;
 pub mod chart;
 mod finance;
 pub mod formula;
+mod extra;
 mod functions;
 pub(super) mod grid;
 mod lists;
@@ -1651,7 +1652,12 @@ impl doc::Editor for Sheets {
             "nsheets" => Sheets::read_native(&bytes)?,
             "csv" => Workbook::from_csv(&String::from_utf8_lossy(&bytes))?,
             "xlsx" | "ods" => {
-                let opened = if ext == "ods" { ods::read(&bytes)? } else { xlsx::read(&bytes)? };
+                // Excel or OpenDocument by what's inside, whatever the name says.
+                let open_doc = match crate::container::package_kind(&bytes) {
+                    Some(kind) => kind == crate::container::Package::Open,
+                    None => ext == "ods",
+                };
+                let opened = if open_doc { ods::read(&bytes)? } else { xlsx::read(&bytes)? };
                 if opened.truncated {
                     window::toast(&format!(
                         "Only the first {} rows and {COLS} columns of each sheet were opened.",
@@ -1850,6 +1856,43 @@ pub fn write_sample(path: &Path) {
     let ods = path.extension().is_some_and(|e| e == "ods");
     let (bytes, _) = if ods { ods::write(&wb, &calc) } else { xlsx::write(&wb, &calc) }.expect("a workbook");
     std::fs::write(path, bytes).expect("written");
+}
+
+/// Reads an Excel or OpenDocument spreadsheet and works it out, for the corpus check.
+#[cfg(test)]
+pub fn corpus_read(bytes: &[u8], ods_file: bool) -> anyhow::Result<String> {
+    let t = std::time::Instant::now();
+    let opened = if ods_file { ods::read(bytes)? } else { xlsx::read(bytes)? };
+    let read_secs = t.elapsed().as_secs_f64();
+    let wb = opened.workbook;
+    let t = std::time::Instant::now();
+    let calc = Calc::new(&wb, 0.0);
+    let calc_secs = t.elapsed().as_secs_f64();
+    let cells: usize = wb.sheets.iter().map(|s| s.cells.len()).sum();
+    // Formulas we can't work out, and the function names in them.
+    let mut errors = 0;
+    let mut names = std::collections::BTreeSet::new();
+    let mut samples: Vec<String> = Vec::new();
+    for (si, sh) in wb.sheets.iter().enumerate() {
+        for ((r, c), cell) in &sh.cells {
+            if matches!(calc.value(&wb, si, *r, *c), formula::Value::Err(e) if e == "#NAME?" || e == "#ERROR!") {
+                errors += 1;
+                if samples.len() < 3 {
+                    samples.push(cell.raw.chars().take(80).collect());
+                }
+                let f = cell.raw.to_uppercase();
+                let b = f.as_bytes();
+                for (i, _) in f.match_indices('(') {
+                    let start = b[..i].iter().rposition(|ch| !(ch.is_ascii_alphanumeric() || *ch == b'.' || *ch == b'_')).map_or(0, |p| p + 1);
+                    if start < i {
+                        names.insert(f[start..i].to_string());
+                    }
+                }
+            }
+        }
+    }
+    let names: Vec<String> = names.into_iter().collect();
+    Ok(format!("{} sheets, {cells} cells, {errors} unknown formulas [{}] {samples:?} (read {read_secs:.2}s, formulas {calc_secs:.2}s)", wb.sheets.len(), names.join(" ")))
 }
 
 #[cfg(test)]

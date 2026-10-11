@@ -64,6 +64,14 @@ enum Drag {
         sx: f64,
         sy: f64,
     },
+    /// Moving or resizing a title or text placeholder: on this slide, or on the
+    /// master for every slide of its layout.
+    Holder {
+        holder: Holder,
+        rect: Rect,
+        resize: bool,
+        master: bool,
+    },
 }
 
 /// How far above an object its rotation handle sits, in screen pixels.
@@ -309,8 +317,10 @@ impl Present {
         let names: Vec<&str> = Layout::ALL.iter().map(|l| l.name()).collect();
         let layout = dropdown(&names, "Layout", "layout-picker", |p, i| {
             let l = Layout::ALL[i as usize % Layout::ALL.len()];
+            let frames = p.deck.borrow().layout_frames(l);
             p.change_slide(|s| {
                 s.layout = l;
+                s.frames = frames;
                 // Leaving two columns, the second column's points join the first.
                 if l != Layout::TwoColumns && !s.body2.is_empty() {
                     let second = std::mem::take(&mut s.body2);
@@ -981,6 +991,29 @@ impl Present {
                 }
             }),
         );
+        let moved = {
+            let d = self.deck.borrow();
+            d.slides.get(i).is_some_and(|s| !s.frames.is_default())
+        };
+        if moved {
+            item(
+                "Put the title and text back",
+                Box::new(move |p| {
+                    // In master mode, back for the whole layout.
+                    let master = p.master_mode.get();
+                    p.change_deck(|d| {
+                        let Some(layout) = d.slides.get(i).map(|s| s.layout) else { return };
+                        for h in Holder::ALL {
+                            if master {
+                                d.set_layout_frame(layout, h, None);
+                            } else if let Some(s) = d.slides.get_mut(i) {
+                                *h.of(&mut s.frames) = d.layouts.get(&layout.id()).and_then(|f| h.get(f));
+                            }
+                        }
+                    });
+                }),
+            );
+        }
         item("Move up", Box::new(move |p| p.move_slide(i, -1)));
         item("Move down", Box::new(move |p| p.move_slide(i, 1)));
         if self.deck.borrow().slides.len() > 1 {
@@ -1095,6 +1128,29 @@ impl Present {
             layout.set_font_description(Some(&gtk::pango::FontDescription::from_string("Noto Sans Bold 8.5")));
             cr.move_to(ox, oy - 20.0);
             pangocairo::functions::show_layout(cr, &layout);
+            // This slide's layout: its placeholders, to drag into place for every slide of it.
+            let real = self.deck.borrow().slides.get(self.current.get()).cloned().unwrap_or_default();
+            cr.set_line_width(1.0);
+            cr.set_dash(&[5.0, 3.0], 0.0);
+            for h in Holder::ALL {
+                let Some(f) = real.holder(h) else { continue };
+                let (x, y, fw, fh) = (ox + f.0 * s, oy + f.1 * s, f.2 * s, f.3 * s);
+                cr.set_source_rgba(accent.0, accent.1, accent.2, 0.8);
+                cr.rectangle(x + 0.5, y + 0.5, fw, fh);
+                cr.stroke().ok();
+                cr.rectangle(x + fw - 4.0, y + fh - 4.0, 8.0, 8.0);
+                cr.fill().ok();
+                let name = match h {
+                    Holder::Title => "Title",
+                    Holder::Body => "Text",
+                    Holder::Body2 => "Second column",
+                };
+                let label = self.canvas.create_pango_layout(Some(&format!("{name} · {}", real.layout.name())));
+                label.set_font_description(Some(&gtk::pango::FontDescription::from_string("Noto Sans 8")));
+                cr.move_to(x + 6.0, y + 4.0);
+                pangocairo::functions::show_layout(cr, &label);
+            }
+            cr.set_dash(&[], 0.0);
         }
         // The selection: outlines, and a corner handle when one object is picked.
         let chosen = self.chosen();
@@ -1213,6 +1269,14 @@ impl Present {
                         o.rotation = (a * 10.0).round() / 10.0;
                     });
                 }
+                Drag::Holder { holder, rect: (x, y, w, h), resize, master } => {
+                    let r = if resize {
+                        (x, y, (w + dx).clamp(40.0, W - x), (h + dy).clamp(24.0, H - y))
+                    } else {
+                        ((x + dx).clamp(0.0, W - w), (y + dy).clamp(0.0, H - h), w, h)
+                    };
+                    p.move_holder(holder, Some(r), master);
+                }
                 Drag::None => {}
             }
         });
@@ -1224,6 +1288,14 @@ impl Present {
                 if dx.abs() + dy.abs() < 1.0 {
                     // Only a click: nothing moved, so no undo step.
                     p.undo.borrow_mut().pop();
+                    // A click on a placeholder's edge edits its text.
+                    if let Drag::Holder { holder, master: false, .. } = p.drag.get() {
+                        p.begin_edit(match holder {
+                            Holder::Title => Target::Title,
+                            Holder::Body => Target::Body,
+                            Holder::Body2 => Target::Body2,
+                        });
+                    }
                 } else {
                     p.changed();
                 }
@@ -1231,6 +1303,25 @@ impl Present {
             p.drag.set(Drag::None);
         });
         self.canvas.add_controller(drag);
+        // Over a placeholder's edge the pointer says it moves; over its corner, that it resizes.
+        let motion = gtk::EventControllerMotion::new();
+        let me = Rc::downgrade(self);
+        motion.connect_motion(move |_, x, y| {
+            let Some(p) = me.upgrade() else { return };
+            if p.drag.get() != Drag::None {
+                return;
+            }
+            let (sx, sy) = p.to_slide(x, y);
+            let over_object = p.slide().objects.iter().any(|o| o.contains(sx, sy));
+            let name = match p.holder_at(sx, sy, !p.master_mode.get()) {
+                _ if over_object => None,
+                Some((_, _, true)) => Some("nwse-resize"),
+                Some((_, _, false)) => Some("move"),
+                None => None,
+            };
+            p.canvas.set_cursor_from_name(name);
+        });
+        self.canvas.add_controller(motion);
         let click = gtk::GestureClick::new();
         let me = Rc::downgrade(self);
         click.connect_pressed(move |_, n, x, y| {
@@ -1310,14 +1401,24 @@ impl Present {
             // Shift-click on empty slide keeps the selection.
             return;
         }
+        // A placeholder's edge (or, on the master, the whole of it) moves it; its corner resizes it.
+        let master = self.master_mode.get();
+        if let Some((holder, rect, resize)) = self.holder_at(sx, sy, !master) {
+            self.end_edit();
+            self.clear_selection();
+            self.push_undo();
+            self.drag.set(Drag::Holder { holder, rect, resize, master });
+            self.canvas.grab_focus();
+            return;
+        }
         self.clear_selection();
         let inside =
             |f: Option<Frame>| f.is_some_and(|(fx, fy, fw, fh, _, _)| sx >= fx && sx <= fx + fw && sy >= fy && sy <= fy + fh);
-        if inside(title_frame(slide.layout)) {
+        if inside(slide.title_frame()) {
             self.begin_edit(Target::Title);
-        } else if inside(body_frame(slide.layout)) {
+        } else if inside(slide.body_frame()) {
             self.begin_edit(Target::Body);
-        } else if inside(body2_frame(slide.layout)) {
+        } else if inside(slide.body2_frame()) {
             self.begin_edit(Target::Body2);
         } else {
             self.end_edit();
@@ -1325,6 +1426,41 @@ impl Present {
         }
         self.sync();
         self.canvas.queue_draw();
+    }
+
+    /// The placeholder at a slide point: which, its frame, and whether it's the
+    /// resize corner. With `edge_only`, only near its edge counts (inside is its text).
+    fn holder_at(&self, sx: f64, sy: f64, edge_only: bool) -> Option<(Holder, Rect, bool)> {
+        let s = self.frame().2;
+        let real = self.deck.borrow().slides.get(self.current.get()).cloned()?;
+        let band = 6.0 / s;
+        Holder::ALL.into_iter().find_map(|h| {
+            let f = real.holder(h)?;
+            let rect = (f.0, f.1, f.2, f.3);
+            let (x, y, w, hh) = rect;
+            if (sx - (x + w)).abs() <= 8.0 / s && (sy - (y + hh)).abs() <= 8.0 / s {
+                return Some((h, rect, true));
+            }
+            let near = sx >= x - band && sx <= x + w + band && sy >= y - band && sy <= y + hh + band;
+            let inner = sx > x + band && sx < x + w - band && sy > y + band && sy < y + hh - band;
+            (near && (!edge_only || !inner)).then_some((h, rect, false))
+        })
+    }
+
+    /// Put a placeholder somewhere (None: back where its layout has it), during a drag.
+    fn move_holder(&self, h: Holder, rect: Option<Rect>, master: bool) {
+        let i = self.current.get();
+        {
+            let mut d = self.deck.borrow_mut();
+            let Some(layout) = d.slides.get(i).map(|s| s.layout) else { return };
+            if master {
+                d.set_layout_frame(layout, h, rect);
+            } else if let Some(s) = d.slides.get_mut(i) {
+                *h.of(&mut s.frames) = rect;
+            }
+        }
+        self.canvas.queue_draw();
+        self.place_edit();
     }
 
     fn canvas_key(&self, key: gdk::Key, mods: gdk::ModifierType) -> bool {
@@ -1365,9 +1501,9 @@ impl Present {
     fn target_frame(&self, t: Target) -> Option<(f64, f64, f64, f64, f64, bool)> {
         let s = self.slide();
         match t {
-            Target::Title => title_frame(s.layout).map(|f| (f.0, f.1, f.2, f.3, s.title_size.unwrap_or(f.4), f.5)),
-            Target::Body => body_frame(s.layout).map(|f| (f.0, f.1, f.2, f.3, s.body_size.unwrap_or(f.4), f.5)),
-            Target::Body2 => body2_frame(s.layout).map(|f| (f.0, f.1, f.2, f.3, s.body_size.unwrap_or(f.4), f.5)),
+            Target::Title => s.title_frame().map(|f| (f.0, f.1, f.2, f.3, s.title_size.unwrap_or(f.4), f.5)),
+            Target::Body => s.body_frame().map(|f| (f.0, f.1, f.2, f.3, s.body_size.unwrap_or(f.4), f.5)),
+            Target::Body2 => s.body2_frame().map(|f| (f.0, f.1, f.2, f.3, s.body_size.unwrap_or(f.4), f.5)),
             Target::Object(id) => s
                 .objects
                 .iter()
@@ -1691,8 +1827,13 @@ impl doc::Editor for Present {
         let bytes = std::fs::read(path)?;
         let (deck, media) = match ext.as_str() {
             "npresent" => Present::read_native(&bytes)?,
-            "pptx" => pptx::read(&bytes)?,
-            "odp" => odp::read(&bytes)?,
+            // PowerPoint or OpenDocument by what's inside, whatever the name says.
+            "pptx" | "odp" => match crate::container::package_kind(&bytes) {
+                Some(crate::container::Package::Open) => odp::read(&bytes)?,
+                Some(crate::container::Package::Office) => pptx::read(&bytes)?,
+                None if ext == "odp" => odp::read(&bytes)?,
+                None => pptx::read(&bytes)?,
+            },
             _ => bail!("Nexus Present opens .npresent, .pptx and .odp files"),
         };
         self.load(deck, media);
@@ -1872,6 +2013,22 @@ pub fn write_sample(path: &Path) {
     std::fs::write(path, bytes).expect("written");
 }
 
+/// Reads a PowerPoint or OpenDocument presentation and draws each slide, for the corpus check.
+#[cfg(test)]
+pub fn corpus_read(bytes: &[u8], odp_file: bool) -> anyhow::Result<String> {
+    let (deck, media) = if odp_file { odp::read(bytes)? } else { pptx::read(bytes)? };
+    let pictures = render::Pictures::default();
+    let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 240, 135)?;
+    let cr = gtk::cairo::Context::new(&surface)?;
+    let objects: usize = deck.slides.iter().map(|s| s.objects.len()).sum();
+    for i in 0..deck.slides.len() {
+        if let Some(s) = deck.composed(i) {
+            render::draw(&cr, &ctx(), &s, &media, &pictures, (240.0, 135.0), Hints::default());
+        }
+    }
+    Ok(format!("{} slides, {objects} objects", deck.slides.len()))
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
@@ -2000,11 +2157,24 @@ pub mod tests {
         p.change_slide(|s| s.layout = Layout::Content);
         assert_eq!(p.slide().body2, "Right", "change_slide itself leaves the column alone");
 
+        // Placeholders: moved on one slide, or on the master for every slide of a layout.
+        p.go_to(0);
+        p.change_slide(|s| s.layout = Layout::Content);
+        p.move_holder(Holder::Title, Some((10.0, 20.0, 500.0, 80.0)), false);
+        assert_eq!(p.slide().title_frame().map(|f| (f.0, f.1)), Some((10.0, 20.0)));
+        assert_eq!(p.slide().title_frame().map(|f| f.4), title_frame(Layout::Content).map(|f| f.4), "the text size stays the layout's");
+        p.move_holder(Holder::Body, Some((40.0, 300.0, 600.0, 200.0)), true);
+        assert!(p.deck.borrow().slides.iter().filter(|s| s.layout == Layout::Content).all(|s| s.frames.body == Some((40.0, 300.0, 600.0, 200.0))));
+        p.add_slide();
+        assert_eq!(p.slide().frames.body, Some((40.0, 300.0, 600.0, 200.0)), "a new slide starts where the master says");
+        assert_eq!(p.slide().frames.title, None);
+
         // The slide sorter: a tile per slide, and a drag moves a slide.
         p.add_slide();
         p.show_sorter(true);
         assert_eq!(p.views.visible_child_name().as_deref(), Some("sorter"));
-        assert!(p.sorter.child_at_index(2).is_some() && p.sorter.child_at_index(3).is_none());
+        let n = p.deck.borrow().slides.len() as i32;
+        assert!(p.sorter.child_at_index(n - 1).is_some() && p.sorter.child_at_index(n).is_none());
         assert!(p.sorter.child_at_index(p.current.get() as i32).unwrap().is_selected());
         let first = p.deck.borrow().slides[0].clone();
         p.change_deck(|d| assert_eq!(d.move_to(0, 2), Some(2)));

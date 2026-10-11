@@ -135,7 +135,7 @@ pub fn build(id: &str) -> Option<Deck> {
             ),
         ],
     };
-    Some(Deck { slides, master: Vec::new() })
+    Some(Deck { slides, master: Vec::new(), layouts: Default::default() })
 }
 
 #[cfg(test)]

@@ -274,7 +274,7 @@ pub fn parse_cell(s: &str) -> Option<(u32, u32)> {
         c = c * 26 + (ch as u32 - 'A' as u32 + 1);
     }
     let r: u32 = digits.parse().ok()?;
-    (r >= 1).then_some((r - 1, c - 1))
+    (r >= 1).then(|| (r - 1, c - 1))
 }
 
 /// "A1:B8" → ((0,0),(7,1)), normalised so the first corner is the top-left.
@@ -300,7 +300,19 @@ pub enum Expr {
     Cmp(&'static str, Box<Expr>, Box<Expr>),
     Call(String, Vec<Expr>),
     Error(&'static str),
+    /// A defined name (`TotalIncome`), standing for cells or a formula.
+    Name(String),
+    /// A table's cells by name: `Sales[Amount]`, `Sales[[#Totals],[Amount]]`, and
+    /// `[@Amount]` (no table: the one the formula is in). The text in the brackets.
+    Table(String, String),
+    /// A typed block of values, `{1,2;3,4}`: rows, columns, values row by row.
+    Array(usize, usize, Vec<Value>),
+    /// The same cells on a run of sheets: `Jan:Dec!B4` (the reference without a sheet).
+    Sheets(String, String, Box<Expr>),
 }
+
+/// The grid's size, for references to whole columns (`A:A`) and rows (`1:1`).
+use super::model::{COLS as GRID_COLS, ROWS as GRID_ROWS};
 
 struct Parser<'a> {
     s: &'a [u8],
@@ -507,9 +519,111 @@ impl Parser<'_> {
         Some(cell)
     }
 
+    /// `Jan:Dec!` before a reference (the same cells on each sheet from one to the other).
+    fn sheet_span(&mut self) -> Option<(String, String)> {
+        self.ws();
+        let start = self.i;
+        let quoted = self.s.get(self.i) == Some(&b'\'');
+        let names = if quoted {
+            // 'Sheet 1:Sheet 3'!
+            let close = self.src[self.i + 1..].find('\'')? + self.i + 1;
+            let inner = self.src[self.i + 1..close].to_string();
+            if self.s.get(close + 1) != Some(&b'!') {
+                return None;
+            }
+            self.i = close + 2;
+            inner
+        } else {
+            let mut j = self.i;
+            while j < self.s.len() && (self.s[j].is_ascii_alphanumeric() || self.s[j] == b'_' || self.s[j] == b':') {
+                j += 1;
+            }
+            if self.s.get(j) != Some(&b'!') {
+                return None;
+            }
+            let t = self.src[self.i..j].to_string();
+            self.i = j + 1;
+            t
+        };
+        match names.split_once(':') {
+            Some((a, b)) if !a.is_empty() && !b.is_empty() && !b.contains(':') => Some((a.to_string(), b.to_string())),
+            _ => {
+                self.i = start;
+                None
+            }
+        }
+    }
+
+    /// `A:C` (whole columns) at the cursor, for `sheet`.
+    fn whole_columns(&mut self, sheet: Option<String>) -> Option<Expr> {
+        let start = self.i;
+        let col = |p: &mut Self| -> Option<u32> {
+            let mut j = p.i;
+            if p.s.get(j) == Some(&b'$') {
+                j += 1;
+            }
+            let ls = j;
+            while j < p.s.len() && p.s[j].is_ascii_alphabetic() {
+                j += 1;
+            }
+            if j == ls || j - ls > 3 || p.s.get(j).is_some_and(|c| c.is_ascii_digit() || *c == b'(' || *c == b'_') {
+                return None;
+            }
+            let c = parse_cell(&format!("{}1", &p.src[ls..j]))?.1;
+            p.i = j;
+            Some(c)
+        };
+        let a = col(self);
+        if a.is_some() && self.eat(b':') && let (Some(a), Some(b)) = (a, col(self)) {
+            return Some(Expr::Range { sheet, r1: 0, c1: a.min(b), r2: GRID_ROWS - 1, c2: a.max(b) });
+        }
+        self.i = start;
+        None
+    }
+
+    /// `1:3` (whole rows) at the cursor, for `sheet`.
+    fn whole_rows(&mut self, sheet: Option<String>) -> Option<Expr> {
+        let start = self.i;
+        let row = |p: &mut Self| -> Option<u32> {
+            let mut j = p.i;
+            if p.s.get(j) == Some(&b'$') {
+                j += 1;
+            }
+            let ds = j;
+            while j < p.s.len() && p.s[j].is_ascii_digit() {
+                j += 1;
+            }
+            let r: u32 = p.src[ds..j].parse().ok()?;
+            if r == 0 || p.s.get(j).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'.') {
+                return None;
+            }
+            p.i = j;
+            Some(r - 1)
+        };
+        let a = row(self);
+        if a.is_some() && self.eat(b':') && let (Some(a), Some(b)) = (a, row(self)) {
+            return Some(Expr::Range { sheet, r1: a.min(b), c1: 0, r2: a.max(b), c2: GRID_COLS - 1 });
+        }
+        self.i = start;
+        None
+    }
+
     fn reference(&mut self) -> Option<Expr> {
         let start = self.i;
+        if let Some((a, b)) = self.sheet_span() {
+            let inner = self.reference();
+            return match inner {
+                Some(e @ (Expr::Ref { sheet: None, .. } | Expr::Range { sheet: None, .. })) => Some(Expr::Sheets(a, b, Box::new(e))),
+                _ => {
+                    self.i = start;
+                    None
+                }
+            };
+        }
         let sheet = self.sheet_prefix();
+        if let Some(e) = self.whole_columns(sheet.clone()).or_else(|| self.whole_rows(sheet.clone())) {
+            return Some(e);
+        }
         let Some((r1, c1)) = self.cell() else {
             self.i = start;
             return None;
@@ -524,9 +638,72 @@ impl Parser<'_> {
         Some(Expr::Ref { sheet, r: r1, c: c1 })
     }
 
+    /// The text inside a bracket pair at the cursor (brackets nest; `'` escapes).
+    fn brackets(&mut self) -> Option<String> {
+        if self.s.get(self.i) != Some(&b'[') {
+            return None;
+        }
+        let (start, mut depth, mut j) = (self.i + 1, 0usize, self.i);
+        while j < self.s.len() {
+            match self.s[j] {
+                b'\'' => j += 1,
+                b'[' => depth += 1,
+                b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        self.i = j + 1;
+                        return Some(self.src[start..j].to_string());
+                    }
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        None
+    }
+
+    /// `{1,2;3,4}`: numbers, words, TRUE/FALSE; `,` between columns, `;` between rows.
+    fn array(&mut self) -> Expr {
+        self.i += 1;
+        let mut rows: Vec<Vec<Value>> = vec![Vec::new()];
+        loop {
+            self.ws();
+            let neg = self.eat(b'-');
+            let v = match self.atom() {
+                Expr::Num(n) => Value::Num(if neg { -n } else { n }),
+                Expr::Str(t) if !neg => Value::Text(t),
+                Expr::Bool(b) if !neg => Value::Bool(b),
+                _ => return Expr::Error("#ERROR!"),
+            };
+            rows.last_mut().expect("a row").push(v);
+            self.ws();
+            if self.eat(b',') {
+                continue;
+            }
+            if self.eat(b';') {
+                rows.push(Vec::new());
+                continue;
+            }
+            if self.eat(b'}') {
+                break;
+            }
+            return Expr::Error("#ERROR!");
+        }
+        let cols = rows[0].len();
+        if rows.iter().any(|r| r.len() != cols) {
+            return Expr::Error("#ERROR!");
+        }
+        Expr::Array(rows.len(), cols, rows.into_iter().flatten().collect())
+    }
+
     fn atom(&mut self) -> Expr {
         match self.peek() {
             None => Expr::Error("#ERROR!"),
+            Some(b'{') => self.array(),
+            Some(b'[') => match self.brackets() {
+                Some(spec) => Expr::Table(String::new(), spec),
+                None => Expr::Error("#ERROR!"),
+            },
             Some(b'(') => {
                 self.i += 1;
                 let e = self.comparison();
@@ -553,6 +730,9 @@ impl Parser<'_> {
                 }
             }
             Some(c) if c.is_ascii_digit() || c == b'.' => {
+                if let Some(r) = self.whole_rows(None) {
+                    return r;
+                }
                 let start = self.i;
                 while self.i < self.s.len() && (self.s[self.i].is_ascii_digit() || self.s[self.i] == b'.') {
                     self.i += 1;
@@ -579,14 +759,26 @@ impl Parser<'_> {
                 }
                 let start = self.i;
                 while self.i < self.s.len()
-                    && (self.s[self.i].is_ascii_alphanumeric() || self.s[self.i] == b'_' || self.s[self.i] == b'.')
+                    && (self.s[self.i].is_ascii_alphanumeric() || matches!(self.s[self.i], b'_' | b'.' | b'\\') || self.s[self.i] >= 0x80)
                 {
                     self.i += 1;
                 }
                 if self.i == start {
                     return Expr::Error("#ERROR!");
                 }
-                let name = self.src[start..self.i].to_ascii_uppercase();
+                // Words in other alphabets (a table called Таблица1) are bytes past ASCII; keep whole characters.
+                while !self.src.is_char_boundary(self.i) {
+                    self.i += 1;
+                }
+                let written = self.src[start..self.i].to_string();
+                // A table's cells: `Sales[Amount]`.
+                if self.s.get(self.i) == Some(&b'[') {
+                    return match self.brackets() {
+                        Some(spec) => Expr::Table(written, spec),
+                        None => Expr::Error("#ERROR!"),
+                    };
+                }
+                let name = written.to_ascii_uppercase();
                 if self.eat(b'(') {
                     let mut args = Vec::new();
                     if !self.eat(b')') {
@@ -605,7 +797,7 @@ impl Parser<'_> {
                 match name.as_str() {
                     "TRUE" => Expr::Bool(true),
                     "FALSE" => Expr::Bool(false),
-                    _ => Expr::Error("#NAME?"),
+                    _ => Expr::Name(written),
                 }
             }
         }
@@ -620,6 +812,64 @@ pub trait Cells {
     fn get(&self, sheet: Option<&str>, r: u32, c: u32) -> Value;
     /// Now, as a date number: the fraction is the time of day.
     fn today(&self) -> f64;
+    /// The cell whose formula this is (ROW() and COLUMN() with nothing given).
+    fn here(&self) -> (u32, u32) {
+        (0, 0)
+    }
+    /// What was typed in a cell (SUBTOTAL leaves out the subtotals in its range).
+    fn raw(&self, _sheet: Option<&str>, _r: u32, _c: u32) -> String {
+        String::new()
+    }
+    /// What a defined name stands for, as a formula without its `=`.
+    fn name(&self, _name: &str) -> Option<String> {
+        None
+    }
+    /// A table reference's cells, as a reference.
+    fn table(&self, _table: &str, _spec: &str) -> Option<Expr> {
+        None
+    }
+    /// The sheets from one to another, in order (for `Jan:Dec!B4`).
+    fn sheets_between(&self, _first: &str, _last: &str) -> Vec<String> {
+        Vec::new()
+    }
+    /// The last row and column a sheet uses (whole-column references stop there).
+    fn last_used(&self, _sheet: Option<&str>) -> (u32, u32) {
+        (GRID_ROWS - 1, GRID_COLS - 1)
+    }
+}
+
+thread_local! {
+    /// Defined names in use, one inside another: a name that leads back to itself stops.
+    static NAMES_DEEP: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// What a name or table reference stands for, worked out (None: unknown).
+pub(super) fn resolve(e: &Expr, cells: &dyn Cells) -> Option<Result<Expr, &'static str>> {
+    match e {
+        Expr::Name(n) => {
+            let f = cells.name(n)?;
+            if NAMES_DEEP.with(|d| d.get()) > 16 {
+                return Some(Err("#NAME?"));
+            }
+            Some(Ok(parse(f.trim_start_matches('='))))
+        }
+        Expr::Table(t, spec) => Some(cells.table(t, spec).ok_or("#REF!")),
+        _ => None,
+    }
+}
+
+/// Works out `f` on what a name stands for, minding names that lead to themselves.
+pub(super) fn with_resolved<T>(e: &Expr, cells: &dyn Cells, missing: T, f: impl FnOnce(&Expr) -> T, err: impl FnOnce(&'static str) -> T) -> T {
+    match resolve(e, cells) {
+        None => missing,
+        Some(Err(code)) => err(code),
+        Some(Ok(target)) => {
+            NAMES_DEEP.with(|d| d.set(d.get() + 1));
+            let out = f(&target);
+            NAMES_DEEP.with(|d| d.set(d.get() - 1));
+            out
+        }
+    }
 }
 
 /// An argument: one value, or a block of cells row by row.
@@ -650,6 +900,11 @@ const MAX_RANGE: u64 = 2_000_000;
 pub(super) fn arg(e: &Expr, cells: &dyn Cells) -> Arg {
     match e {
         Expr::Range { sheet, r1, c1, r2, c2 } => {
+            // Whole columns and rows stop where the sheet's cells do.
+            let (last_r, last_c) =
+                if *r1 == 0 && *r2 == GRID_ROWS - 1 || *c1 == 0 && *c2 == GRID_COLS - 1 { cells.last_used(sheet.as_deref()) } else { (*r2, *c2) };
+            let r2 = &(if *r1 == 0 && *r2 == GRID_ROWS - 1 { last_r.max(*r1) } else { *r2 });
+            let c2 = &(if *c1 == 0 && *c2 == GRID_COLS - 1 { last_c.max(*c1) } else { *c2 });
             let (rows, cols) = ((r2 - r1 + 1) as usize, (c2 - c1 + 1) as usize);
             if rows as u64 * cols as u64 > MAX_RANGE {
                 return Arg::One(Value::Err("#REF!"));
@@ -661,6 +916,27 @@ pub(super) fn arg(e: &Expr, cells: &dyn Cells) -> Arg {
                 }
             }
             Arg::Grid { rows, cols, values }
+        }
+        Expr::Name(_) | Expr::Table(..) => {
+            with_resolved(e, cells, Arg::One(Value::Err("#NAME?")), |t| arg(t, cells), |code| Arg::One(Value::Err(code)))
+        }
+        Expr::Array(rows, cols, values) => Arg::Grid { rows: *rows, cols: *cols, values: values.clone() },
+        Expr::Sheets(first, last, inner) => {
+            // Every sheet's cells, one after another.
+            let names = cells.sheets_between(first, last);
+            if names.is_empty() {
+                return Arg::One(Value::Err("#REF!"));
+            }
+            let mut values = Vec::new();
+            for n in names {
+                let one = match inner.as_ref() {
+                    Expr::Ref { r, c, .. } => Expr::Ref { sheet: Some(n), r: *r, c: *c },
+                    Expr::Range { r1, c1, r2, c2, .. } => Expr::Range { sheet: Some(n), r1: *r1, c1: *c1, r2: *r2, c2: *c2 },
+                    _ => return Arg::One(Value::Err("#REF!")),
+                };
+                values.extend(arg(&one, cells).values());
+            }
+            Arg::Grid { rows: values.len(), cols: 1, values }
         }
         // A block worked out from ranges (A1:A9*2) or a function that gives one (UNIQUE).
         _ => match super::arrays::block(e, cells) {
@@ -737,6 +1013,35 @@ pub fn eval(e: &Expr, cells: &dyn Cells) -> Value {
         Expr::Bin(op, a, b) => binary(*op, eval(a, cells), eval(b, cells)),
         Expr::Cmp(op, a, b) => comparison(op, eval(a, cells), eval(b, cells)),
         Expr::Call(name, args) => call(name, args, cells),
+        Expr::Name(_) | Expr::Table(..) => with_resolved(e, cells, Value::Err("#NAME?"), |t| eval(t, cells), Value::Err),
+        Expr::Array(_, _, values) => values.first().cloned().unwrap_or(Value::Empty),
+        Expr::Sheets(..) => arg(e, cells).one(),
+    }
+}
+
+/// The cells an argument names (a reference, or a name or table standing for one):
+/// sheet, top, left, bottom, right, whole columns stopping where the sheet's cells do.
+pub(super) fn reference_of(e: &Expr, cells: &dyn Cells) -> Option<(Option<String>, u32, u32, u32, u32)> {
+    match e {
+        Expr::Ref { sheet, r, c } => Some((sheet.clone(), *r, *c, *r, *c)),
+        Expr::Range { sheet, r1, c1, r2, c2 } => {
+            let (last_r, _) = if *r1 == 0 && *r2 == GRID_ROWS - 1 { cells.last_used(sheet.as_deref()) } else { (*r2, 0) };
+            let r2 = if *r1 == 0 && *r2 == GRID_ROWS - 1 { last_r.max(*r1) } else { *r2 };
+            Some((sheet.clone(), *r1, *c1, r2, *c2))
+        }
+        Expr::Name(_) | Expr::Table(..) => with_resolved(e, cells, None, |t| reference_of(t, cells), |_| None),
+        _ => None,
+    }
+}
+
+/// Equal for an exact lookup: numbers by value, words ignoring case (without allocating
+/// for plain ASCII).
+fn same(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Text(x), Value::Text(y)) if x.is_ascii() && y.is_ascii() => x.eq_ignore_ascii_case(y),
+        (Value::Num(x), Value::Num(y)) => x == y,
+        (Value::Num(_), Value::Text(_)) | (Value::Text(_), Value::Num(_)) => false,
+        _ => compare(a, b).is_eq(),
     }
 }
 
@@ -789,6 +1094,9 @@ fn call(name: &str, args: &[Expr], cells: &dyn Cells) -> Value {
     let n = args.len();
     let bad = Value::Err("#ERROR!");
     if let Some(v) = super::functions::call(name, args, cells) {
+        return v;
+    }
+    if let Some(v) = super::extra::call(name, args, cells) {
         return v;
     }
     // Where one value is wanted, a block gives its first.
@@ -844,6 +1152,35 @@ fn call(name: &str, args: &[Expr], cells: &dyn Cells) -> Value {
                 _ if count == 0 => Value::Err("#DIV/0!"),
                 _ => Value::Num(total / count as f64),
             };
+        }
+        "VLOOKUP" if (3..=4).contains(&n) && let Some((sheet, r1, c1, r2, c2)) = reference_of(&args[1], cells) => {
+            // A lookup in cells: read down the first column only, and stop at the match.
+            let key = eval(&args[0], cells);
+            let col = match eval(&args[2], cells).num() {
+                Ok(c) if c >= 1.0 && (c as u32) <= c2 - c1 + 1 => c as u32 - 1,
+                Ok(_) => return Value::Err("#REF!"),
+                Err(e) => return Value::Err(e),
+            };
+            let approx = if n == 4 { eval(&args[3], cells).truthy().unwrap_or(false) } else { false };
+            let sheet = sheet.as_deref();
+            let mut found = None;
+            for r in r1..=r2 {
+                let v = cells.get(sheet, r, c1);
+                if matches!(v, Value::Empty) {
+                    continue;
+                }
+                if approx {
+                    if compare(&v, &key).is_le() {
+                        found = Some(r);
+                    } else {
+                        break;
+                    }
+                } else if same(&v, &key) {
+                    found = Some(r);
+                    break;
+                }
+            }
+            return found.map(|r| cells.get(sheet, r, c1 + col)).unwrap_or(Value::Err("#N/A"));
         }
         "VLOOKUP" => {
             if !(3..=4).contains(&n) {

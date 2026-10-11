@@ -80,7 +80,73 @@ pub fn picture_frame(l: Layout) -> Option<(f64, f64, f64, f64)> {
     (l == Layout::Picture).then_some((80.0, 36.0, 800.0, 340.0))
 }
 
+/// A placeholder moved from where its layout puts it: x, y, w, h.
+pub type Rect = (f64, f64, f64, f64);
+
+/// Placeholders moved or resized (None: where the layout puts them).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Frames {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<Rect>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<Rect>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body2: Option<Rect>,
+}
+
+impl Frames {
+    pub fn is_default(&self) -> bool {
+        *self == Frames::default()
+    }
+}
+
+/// Which placeholder of a slide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Holder {
+    Title,
+    Body,
+    Body2,
+}
+
+impl Holder {
+    pub const ALL: [Holder; 3] = [Holder::Title, Holder::Body, Holder::Body2];
+    /// The layout's own frame for it.
+    pub fn frame(self, l: Layout) -> Option<Frame> {
+        match self {
+            Holder::Title => title_frame(l),
+            Holder::Body => body_frame(l),
+            Holder::Body2 => body2_frame(l),
+        }
+    }
+    pub fn of(self, f: &mut Frames) -> &mut Option<Rect> {
+        match self {
+            Holder::Title => &mut f.title,
+            Holder::Body => &mut f.body,
+            Holder::Body2 => &mut f.body2,
+        }
+    }
+    pub fn get(self, f: &Frames) -> Option<Rect> {
+        match self {
+            Holder::Title => f.title,
+            Holder::Body => f.body,
+            Holder::Body2 => f.body2,
+        }
+    }
+}
+
+/// A placeholder found at `at` in a file: its own place when that isn't the layout's.
+pub fn moved(at: Option<Rect>, layout: Option<Frame>) -> Option<Rect> {
+    let (a, b) = (at?, layout?);
+    [(a.0, b.0), (a.1, b.1), (a.2, b.2), (a.3, b.3)].iter().any(|(u, v)| (u - v).abs() > 2.0).then_some(a)
+}
+
 impl Layout {
+    /// The id it's saved under (as in the native file).
+    pub fn id(self) -> String {
+        serde_json::to_value(self).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default()
+    }
+
     /// Its body text starts at the top of its frame (points), not centred.
     pub fn body_at_top(self) -> bool {
         matches!(self, Layout::Content | Layout::TwoColumns)
@@ -106,6 +172,9 @@ pub struct Slide {
     /// The second column (two columns).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub body2: String,
+    /// Its placeholders, where moved from the layout's places.
+    #[serde(skip_serializing_if = "Frames::is_default")]
+    pub frames: Frames,
     pub notes: String,
     /// `#rrggbb`.
     pub background: String,
@@ -222,6 +291,7 @@ impl Default for Slide {
             title: String::new(),
             body: String::new(),
             body2: String::new(),
+            frames: Frames::default(),
             notes: String::new(),
             background: LOOKS[0].1.into(),
             color: LOOKS[0].2.into(),
@@ -449,6 +519,10 @@ impl Object {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Deck {
     pub slides: Vec<Slide>,
+    /// Placeholders moved on the master, per layout (by its id): new slides of that
+    /// layout start with them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub layouts: BTreeMap<String, Frames>,
     /// The master slide: objects drawn on every slide, under its own. A text
     /// object's `{n}` shows the slide's number.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -462,7 +536,7 @@ pub const MASTER_ID: u32 = 1 << 31;
 
 impl Default for Deck {
     fn default() -> Self {
-        Deck { slides: vec![Slide { layout: Layout::Title, ..Default::default() }], master: Vec::new() }
+        Deck { slides: vec![Slide { layout: Layout::Title, ..Default::default() }], master: Vec::new(), layouts: BTreeMap::new() }
     }
 }
 
@@ -513,6 +587,24 @@ impl Slide {
 
     pub fn next_group(&self) -> u32 {
         self.objects.iter().filter_map(|o| o.group).max().unwrap_or(0) + 1
+    }
+
+    /// A placeholder's frame here: the layout's, moved where this slide moved it.
+    pub fn holder(&self, h: Holder) -> Option<Frame> {
+        let f = h.frame(self.layout)?;
+        Some(match h.get(&self.frames) {
+            Some((x, y, w, hh)) => (x, y, w, hh, f.4, f.5),
+            None => f,
+        })
+    }
+    pub fn title_frame(&self) -> Option<Frame> {
+        self.holder(Holder::Title)
+    }
+    pub fn body_frame(&self) -> Option<Frame> {
+        self.holder(Holder::Body)
+    }
+    pub fn body2_frame(&self) -> Option<Frame> {
+        self.holder(Holder::Body2)
     }
 
     /// All the words on the slide, for find.
@@ -611,7 +703,9 @@ impl Deck {
         }
         let base = self.slides.get(i).cloned().unwrap_or_default();
         let layout = if base.layout == Layout::Title { Layout::Content } else { base.layout };
-        let s = Slide { layout, title: String::new(), body: String::new(), notes: String::new(), objects: Vec::new(), ..base };
+        // Its placeholders where the master puts them for this layout.
+        let frames = self.layout_frames(layout);
+        let s = Slide { layout, title: String::new(), body: String::new(), body2: String::new(), frames, notes: String::new(), objects: Vec::new(), ..base };
         let at = (i + 1).min(self.slides.len());
         self.slides.insert(at, s);
         Some(at)
@@ -651,6 +745,25 @@ impl Deck {
         let s = self.slides.remove(i);
         self.slides.insert(to, s);
         Some(to)
+    }
+
+    /// Where a layout's placeholders start, as moved on the master.
+    pub fn layout_frames(&self, l: Layout) -> Frames {
+        self.layouts.get(&l.id()).copied().unwrap_or_default()
+    }
+
+    /// Move a layout's placeholder on the master: every slide of that layout follows.
+    pub fn set_layout_frame(&mut self, l: Layout, h: Holder, rect: Option<Rect>) {
+        let mut f = self.layout_frames(l);
+        *h.of(&mut f) = rect;
+        if f.is_default() {
+            self.layouts.remove(&l.id());
+        } else {
+            self.layouts.insert(l.id(), f);
+        }
+        for s in self.slides.iter_mut().filter(|s| s.layout == l) {
+            *h.of(&mut s.frames) = rect;
+        }
     }
 
     pub fn to_json(&self) -> Vec<u8> {
@@ -699,6 +812,7 @@ impl Deck {
                 title: gs("title"),
                 body: gs("body"),
                 body2: String::new(),
+                frames: Frames::default(),
                 notes: gs("notes"),
                 background: Some(gs("backgroundColor")).filter(|c| c.starts_with('#')).unwrap_or_else(|| bg.into()),
                 color: Some(gs("fontColor")).filter(|c| c.starts_with('#')).unwrap_or_else(|| fg.into()),
@@ -741,7 +855,7 @@ impl Deck {
         if slides.is_empty() {
             anyhow::bail!("the presentation has no slides");
         }
-        Ok((Deck { slides, master: Vec::new() }, media))
+        Ok((Deck { slides, master: Vec::new(), layouts: BTreeMap::new() }, media))
     }
 }
 

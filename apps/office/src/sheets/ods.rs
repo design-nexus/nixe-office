@@ -32,10 +32,28 @@ pub fn to_odf(src: &str) -> String {
     let chars: Vec<char> = src.chars().collect();
     let mut out = String::from("of:=");
     let mut i = 0;
+    // Inside `{...}`, rows are split by `|` in OpenFormula.
+    let mut in_array = false;
     // A reference at `i`: an optional sheet, a cell, an optional `:cell`.
     let reference = |i: usize| -> Option<(String, usize)> {
         let mut j = i;
         let mut sheet = None;
+        // `Jan:Dec!B4`: the same cells on each sheet from one to the other.
+        let word_end = |from: usize| (from..chars.len()).find(|&k| !(chars[k].is_alphanumeric() || chars[k] == '_')).unwrap_or(chars.len());
+        let a_end = word_end(j);
+        if a_end > j && chars.get(a_end) == Some(&':') {
+            let b_end = word_end(a_end + 1);
+            if b_end > a_end + 1 && chars.get(b_end) == Some(&'!') {
+                let (a, b): (String, String) = (chars[j..a_end].iter().collect(), chars[a_end + 1..b_end].iter().collect());
+                let k = b_end + 1;
+                let end = (k..chars.len()).find(|&e| !(chars[e].is_ascii_alphanumeric() || chars[e] == '$' || chars[e] == ':')).unwrap_or(chars.len());
+                let cells: String = chars[k..end].iter().collect();
+                let (c1, c2) = cells.split_once(':').unwrap_or((&cells, &cells));
+                if is_cell(c1) && is_cell(c2) {
+                    return Some((format!("[${a}.{c1}:${b}.{c2}]"), end));
+                }
+            }
+        }
         if chars.get(j) == Some(&'\'') {
             let mut name = String::new();
             j += 1;
@@ -68,6 +86,24 @@ pub fn to_odf(src: &str) -> String {
             let s: String = chars[j..k].iter().collect();
             is_cell(&s).then_some((s, k))
         };
+        // Whole columns (`A:C`) and rows (`1:3`).
+        let whole = |j: usize, letters: bool| {
+            let k = (j..chars.len()).find(|&k| !(chars[k] == '$' || if letters { chars[k].is_ascii_alphabetic() } else { chars[k].is_ascii_digit() })).unwrap_or(chars.len());
+            let s: String = chars[j..k].iter().collect();
+            (k > j && !s.trim_start_matches('$').is_empty() && s.trim_start_matches('$').chars().all(|c| if letters { c.is_ascii_alphabetic() } else { c.is_ascii_digit() })).then_some((s, k))
+        };
+        for letters in [true, false] {
+            if let Some((a, k)) = whole(j, letters)
+                && chars.get(k) == Some(&':')
+                && let Some((b, e)) = whole(k + 1, letters)
+                && !chars.get(e).is_some_and(|c| c.is_ascii_alphanumeric() || *c == '(')
+            {
+                let sheet = sheet.clone().map(|s| {
+                    if s.chars().all(|c| c.is_alphanumeric() || c == '_') { format!("${s}") } else { format!("$'{}'", s.replace('\'', "''")) }
+                });
+                return Some((format!("[{}.{a}:.{b}]", sheet.unwrap_or_default()), e));
+            }
+        }
         let (first, mut k) = cell_at(j)?;
         // A function named like a cell (LOG10) isn't a reference.
         if chars.get(k) == Some(&'(') {
@@ -110,6 +146,20 @@ pub fn to_odf(src: &str) -> String {
             continue;
         }
         let word_before = i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_' || chars[i - 1] == '.');
+        // Whole rows on this sheet: `1:3`.
+        if !word_before && c.is_ascii_digit() {
+            let digits = |from: usize| (from..chars.len()).find(|&k| !chars[k].is_ascii_digit()).unwrap_or(chars.len());
+            let a = digits(i);
+            if chars.get(a) == Some(&':') && chars.get(a + 1).is_some_and(|c| c.is_ascii_digit()) {
+                let b = digits(a + 1);
+                if !chars.get(b).is_some_and(|c| c.is_ascii_alphanumeric() || *c == '.') {
+                    let (x, y): (String, String) = (chars[i..a].iter().collect(), chars[a + 1..b].iter().collect());
+                    out.push_str(&format!("[.{x}:.{y}]"));
+                    i = b;
+                    continue;
+                }
+            }
+        }
         if !word_before && (c == '\'' || c == '$' || c.is_alphabetic()) {
             if let Some((text, next)) = reference(i) {
                 out.push_str(&text);
@@ -126,7 +176,16 @@ pub fn to_odf(src: &str) -> String {
             i = k.max(i + 1);
             continue;
         }
-        out.push(if c == ',' { ';' } else { c });
+        match c {
+            '{' => in_array = true,
+            '}' => in_array = false,
+            _ => {}
+        }
+        out.push(match c {
+            ',' => ';',
+            ';' if in_array => '|',
+            c => c,
+        });
         i += 1;
     }
     out
@@ -218,18 +277,34 @@ pub fn from_odf(f: &str) -> String {
                     Some(k) => (ref_part(&inner[..k]), Some(ref_part(&inner[k + 1..]))),
                     None => (ref_part(&inner), None),
                 };
-                if let Some(sheet) = &a.0 {
-                    out.push_str(&super::summary::sheet_ref(sheet));
-                    out.push('!');
+                match (&a.0, b.as_ref().and_then(|b| b.0.as_ref())) {
+                    // The same cells on a run of sheets.
+                    (Some(first), Some(last)) if !first.eq_ignore_ascii_case(last) => {
+                        let span = format!("{first}:{last}");
+                        let quoted = !span.chars().all(|c| c.is_alphanumeric() || c == '_' || c == ':');
+                        out.push_str(&if quoted { format!("'{}'", span.replace('\'', "''")) } else { span });
+                        out.push('!');
+                    }
+                    (Some(sheet), _) => {
+                        out.push_str(&super::summary::sheet_ref(sheet));
+                        out.push('!');
+                    }
+                    _ => {}
                 }
                 out.push_str(&a.1);
-                if let Some(b) = b {
+                // One cell on a run of sheets is written once.
+                if let Some(b) = b.filter(|b| b.1 != a.1 || b.0.is_none() || a.0 == b.0) {
                     out.push(':');
                     out.push_str(&b.1);
                 }
             }
             ';' => {
                 out.push(',');
+                i += 1;
+            }
+            '|' => {
+                // Rows of an array constant.
+                out.push(';');
                 i += 1;
             }
             c if c.is_alphabetic() || c == '_' => {
@@ -783,7 +858,8 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
         body.push_str("</table:table>");
     }
     let content = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?><office:document-content {ns}><office:font-face-decls><style:font-face style:name="Noto Sans" svg:font-family="'Noto Sans'"/></office:font-face-decls><office:automatic-styles><style:style style:name="ta1" style:family="table" style:master-page-name="Default"><style:table-properties table:display="true" style:writing-mode="lr-tb"/></style:style><style:style style:name="ta2" style:family="table" style:master-page-name="FitWidth"><style:table-properties table:display="true" style:writing-mode="lr-tb"/></style:style><style:style style:name="ta3" style:family="table" style:master-page-name="FitPage"><style:table-properties table:display="true" style:writing-mode="lr-tb"/></style:style>{styles}</office:automatic-styles><office:body><office:spreadsheet>{body}</office:spreadsheet></office:body></office:document-content>"#,
+        r#"<?xml version="1.0" encoding="UTF-8"?><office:document-content {ns}><office:font-face-decls><style:font-face style:name="Noto Sans" svg:font-family="'Noto Sans'"/></office:font-face-decls><office:automatic-styles><style:style style:name="ta1" style:family="table" style:master-page-name="Default"><style:table-properties table:display="true" style:writing-mode="lr-tb"/></style:style><style:style style:name="ta2" style:family="table" style:master-page-name="FitWidth"><style:table-properties table:display="true" style:writing-mode="lr-tb"/></style:style><style:style style:name="ta3" style:family="table" style:master-page-name="FitPage"><style:table-properties table:display="true" style:writing-mode="lr-tb"/></style:style>{styles}</office:automatic-styles><office:body><office:spreadsheet>{body}{names}</office:spreadsheet></office:body></office:document-content>"#,
+        names = named_expressions(wb),
         ns = odf::NAMESPACES,
         styles = names.xml,
     );
@@ -793,6 +869,36 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
     );
     let bytes = odf::package(odf::ODS, &content, &styles, &[])?;
     Ok((bytes, lost))
+}
+
+/// The workbook's names, as OpenDocument keeps them: a range by its address, anything
+/// else as a formula.
+fn named_expressions(wb: &Workbook) -> String {
+    if wb.names.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("<table:named-expressions>");
+    for n in wb.names.iter().filter(|n| n.sheet.is_none()) {
+        let odf = to_odf(&n.formula);
+        let inner = odf.strip_prefix("of:=[").and_then(|x| x.strip_suffix(']')).filter(|x| !x.contains(['[', ']']));
+        match inner {
+            Some(range) => {
+                let base = range.split(':').next().unwrap_or(range);
+                let _ = write!(
+                    out,
+                    r#"<table:named-range table:name="{}" table:base-cell-address="{}" table:cell-range-address="{}"/>"#,
+                    esc(&n.name),
+                    esc(base),
+                    esc(range)
+                );
+            }
+            None => {
+                let _ = write!(out, r#"<table:named-expression table:name="{}" table:expression="{}"/>"#, esc(&n.name), esc(&odf));
+            }
+        }
+    }
+    out.push_str("</table:named-expressions>");
+    out
 }
 
 // ---------- Reading ----------
@@ -874,8 +980,8 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
     let mut pkg = odf::Package::open(bytes, odf::ODS, "spreadsheet")?;
     let content = pkg.content()?;
     let styles_text = pkg.text("styles.xml").unwrap_or_default();
-    let cdoc = roxmltree::Document::parse(&content).context("the spreadsheet is damaged")?;
-    let sdoc = roxmltree::Document::parse(&styles_text).ok();
+    let cdoc = crate::xml::parse(&content).context("the spreadsheet is damaged")?;
+    let sdoc = crate::xml::parse(&styles_text).ok();
     let mut parts = Vec::new();
     if let Some(s) = &sdoc {
         parts.push(s);
@@ -889,6 +995,7 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
     let body = cdoc.descendants().find(|n| n.has_tag_name((OFFICE, "spreadsheet"))).context("it isn't a spreadsheet")?;
     let mut sheets = Vec::new();
     let mut truncated = false;
+    let mut text_budget: usize = READ_BUDGET;
     for table in body.children().filter(|n| n.has_tag_name((TABLE, "table"))) {
         if sheets.len() >= MAX_SHEETS {
             break;
@@ -897,13 +1004,7 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
         let mut sheet = Sheet::new(&name);
         sheet.print_area = attr(&table, TABLE, "print-ranges").and_then(|p| {
             // The first range ("$'Sheet 1'.$A$1:.$C$9"), read as a formula's reference would be.
-            let mut quoted = false;
-            let end = p.char_indices().find(|(_, c)| {
-                quoted ^= *c == '\'';
-                *c == ' ' && !quoted
-            });
-            let first = &p[..end.map_or(p.len(), |(i, _)| i)];
-            let ours = from_odf(&format!("of:=[{first}]"));
+            let ours = from_odf(&format!("of:=[{}]", first_range(p)));
             Area::parse(&ours.rsplit('!').next()?.replace('$', ""))
         });
         if let Some(layout) = attr(&table, TABLE, "style-name")
@@ -983,7 +1084,7 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
                     Some("boolean") => {
                         if attr(&cell, OFFICE, "boolean-value") == Some("true") { "TRUE" } else { "FALSE" }.into()
                     }
-                    _ => cell_text(&cell),
+                    _ => super::model::cell_text(cell_text(&cell)),
                 };
                 let mut format = format;
                 if attr(&cell, OFFICE, "value-type") == Some("date") && format.number == NumFmt::General && format.pattern.is_none() {
@@ -1018,7 +1119,10 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
                     attr(&cell, TABLE, "number-columns-spanned").and_then(|v| v.parse::<u32>().ok()).unwrap_or(1),
                 );
                 let merge = (span.0 > 1 || span.1 > 1).then_some(span);
-                let blank = raw.is_empty() && format == Format::default() && comment.is_none() && merge.is_none();
+                // An empty cell is kept for its formatting, but not when it's repeated
+                // across the rest of the sheet (LibreOffice writes columns' styles that way).
+                let blank =
+                    raw.is_empty() && comment.is_none() && merge.is_none() && (format == Format::default() || k > 16 || repeat > 16);
                 if !blank {
                     // A styled cell repeated across the whole sheet only needs the columns we have.
                     for i in 0..k {
@@ -1061,6 +1165,12 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
                             let right = (cc + cs - 1).min(COLS - 1);
                             sheet.merges.push(Area::new(rr, *cc, bottom, right));
                         }
+                        // Repeated rows of long text could fill memory: past a budget, the rest goes.
+                        text_budget = text_budget.saturating_sub(cell.raw.len() + CELL_COST);
+                        if text_budget == 0 {
+                            truncated = true;
+                            continue;
+                        }
                         sheet.cells.insert((rr, *cc), cell.clone());
                     }
                 }
@@ -1072,7 +1182,21 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
     if sheets.is_empty() {
         sheets.push(Sheet::new("Sheet 1"));
     }
-    let mut workbook = Workbook { sheets, active: 0 };
+    let mut workbook = Workbook { sheets, active: 0, names: Vec::new() };
+    // Names: ranges (`table:named-range`) and formulas (`table:named-expression`), the
+    // workbook's or (inside a table) one sheet's.
+    for n in body.descendants().filter(|n| n.has_tag_name((TABLE, "named-range")) || n.has_tag_name((TABLE, "named-expression"))) {
+        let Some(name) = attr(&n, TABLE, "name") else { continue };
+        let sheet = n.ancestors().find(|a| a.has_tag_name((TABLE, "table"))).and_then(|t| attr(&t, TABLE, "name")).map(String::from);
+        let formula = match (attr(&n, TABLE, "cell-range-address"), attr(&n, TABLE, "expression")) {
+            (Some(range), _) => from_odf(&format!("of:=[{}]", first_range(range))),
+            (None, Some(e)) => from_odf(e),
+            _ => continue,
+        };
+        if workbook.names.len() < 10_000 {
+            workbook.names.push(DefinedName { name: name.to_string(), sheet, formula: formula.trim_start_matches('=').to_string() });
+        }
+    }
     // Pivot tables ("data pilots"): rebuilt as live summaries.
     let pivots: Vec<super::xlsx::Pivot> = body
         .descendants()
@@ -1081,6 +1205,16 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
         .collect();
     let pivots = super::xlsx::rebuild_pivots(&mut workbook, &pivots);
     Ok(Opened { workbook, truncated, dropped_rules: false, pivots })
+}
+
+/// The first of a list of range addresses (they're split by spaces outside quotes).
+fn first_range(list: &str) -> &str {
+    let mut quoted = false;
+    let end = list.char_indices().find(|(_, c)| {
+        quoted ^= *c == '\'';
+        *c == ' ' && !quoted
+    });
+    &list[..end.map_or(list.len(), |(i, _)| i)]
 }
 
 /// A sheet and its cells from an ODF range address ("'Sheet 1'.A3:'Sheet 1'.B6").
@@ -1149,13 +1283,25 @@ mod tests {
         // LibreOffice repeats the sheet on both ends of a range.
         assert_eq!(from_odf("of:=SUM([$Sheet2.A1:$Sheet2.B2])"), "=SUM(Sheet2!A1:B2)");
         assert_eq!(from_odf("of:=[.#REF!]+1"), "=#REF!+1");
+        // Arrays, whole columns and rows, runs of sheets, names.
+        for (ours, odf) in [
+            ("SUM(H2:J2*{1,2,3})", "of:=SUM([.H2:.J2]*{1;2;3})"),
+            ("MMULT({1,2;3,4},A1:B2)", "of:=MMULT({1;2|3;4};[.A1:.B2])"),
+            ("VLOOKUP(A4,$D:$E,2,0)", "of:=VLOOKUP([.A4];[.$D:.$E];2;0)"),
+            ("SUM(1:3)", "of:=SUM([.1:.3])"),
+            ("SUM(Jan:Mar!B4)", "of:=SUM([$Jan.B4:$Mar.B4])"),
+            ("TotalIncome*2", "of:=TotalIncome*2"),
+        ] {
+            assert_eq!(to_odf(ours), odf, "{ours}");
+            assert_eq!(from_odf(odf), format!("={ours}"), "{odf}");
+        }
     }
 
     #[test]
     fn number_styles_round_trip() {
         for code in ["#,##0.00", "0.0%", "$#,##0.00", "yyyy-mm-dd", "d mmm yyyy", "0.000", "h:mm"] {
             let xml = format!(r#"<office:styles {}>{}</office:styles>"#, odf::NAMESPACES, code_style("N1", code));
-            let doc = roxmltree::Document::parse(&xml).unwrap();
+            let doc = crate::xml::parse(&xml).unwrap();
             let codes = number_styles(&[&doc]);
             assert_eq!(codes["N1"], code);
         }
@@ -1271,4 +1417,22 @@ mod tests {
         let calc = Calc::new(&wb, 0.0);
         assert_eq!((calc.value(&wb, 1, 3, 1), calc.value(&wb, 1, 4, 1)), (Value::Num(10.0), Value::Num(7.0)));
     }
+
+    #[test]
+    fn names_round_trip() {
+        let mut wb = Workbook::default();
+        wb.sheets.push(Sheet::new("Data 2"));
+        wb.set(0, 0, "4");
+        wb.set(1, 0, "=Total*2");
+        wb.names.push(DefinedName { name: "Total".into(), sheet: None, formula: "'Sheet 1'!$A$1".into() });
+        wb.names.push(DefinedName { name: "Rate".into(), sheet: None, formula: "0.25".into() });
+        let (bytes, _) = write(&wb, &Calc::new(&wb, 0.0)).unwrap();
+        let back = read(&bytes).unwrap().workbook;
+        let find = |n: &str| back.names.iter().find(|x| x.name == n).map(|x| x.formula.clone());
+        assert_eq!(find("Total").as_deref(), Some("'Sheet 1'!$A$1"));
+        assert_eq!(find("Rate").as_deref(), Some("0.25"));
+        let calc = Calc::new(&back, 0.0);
+        assert_eq!(calc.value(&back, 0, 1, 0), formula::Value::Num(8.0));
+    }
 }
+

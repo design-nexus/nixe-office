@@ -114,7 +114,7 @@ pub fn draw(
     cr.rectangle(0.0, 0.0, W, H);
     cr.fill().ok();
 
-    if let Some(f) = title_frame(slide.layout)
+    if let Some(f) = slide.title_frame()
         && !hints.skip_title
     {
         let size = slide.title_size.unwrap_or(f.4);
@@ -124,7 +124,7 @@ pub fn draw(
             text_box(cr, ctx, slide, "Click to add a title", f, Look { size, title: true, faint: true, top: false });
         }
     }
-    if let Some(f) = body_frame(slide.layout)
+    if let Some(f) = slide.body_frame()
         && !hints.skip_body
     {
         let size = slide.body_size.unwrap_or(f.4);
@@ -140,7 +140,7 @@ pub fn draw(
             text_box(cr, ctx, slide, hint, f, Look { size, title: false, faint: true, top });
         }
     }
-    if let Some(f) = body2_frame(slide.layout)
+    if let Some(f) = slide.body2_frame()
         && !hints.skip_body2
     {
         let size = slide.body_size.unwrap_or(f.4);

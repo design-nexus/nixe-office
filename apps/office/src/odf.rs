@@ -147,7 +147,7 @@ pub struct Package<'b> {
 impl<'b> Package<'b> {
     /// Opens the package, checking its `mimetype` (when it has one) names `mime`.
     pub fn open(bytes: &'b [u8], mime: &str, what: &str) -> Result<Package<'b>> {
-        let zip = zip::ZipArchive::new(Cursor::new(bytes)).with_context(|| format!("it isn't an OpenDocument {what}"))?;
+        let zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| anyhow::anyhow!(crate::container::not_a_package(bytes, &format!("OpenDocument {what}"))))?;
         let mut p = Package { zip };
         if let Some(m) = p.file("mimetype") {
             let m = String::from_utf8_lossy(&m);
@@ -159,7 +159,8 @@ impl<'b> Package<'b> {
     }
 
     pub fn file(&mut self, path: &str) -> Option<Vec<u8>> {
-        let f = self.zip.by_name(path.trim_start_matches("./").trim_start_matches('/')).ok()?;
+        let i = crate::container::entry_index(&self.zip, path.trim_start_matches("./"))?;
+        let f = self.zip.by_index(i).ok()?;
         if f.size() > MAX_PART {
             return None;
         }
@@ -171,6 +172,10 @@ impl<'b> Package<'b> {
     }
 
     pub fn content(&mut self) -> Result<String> {
+        // An encrypted package says so in its manifest; its parts are unreadable.
+        if self.text("META-INF/manifest.xml").is_some_and(|m| m.contains("encryption-data")) {
+            bail!("it's protected with a password, which Nexus can't open");
+        }
         self.text("content.xml").context("the file has no content.xml")
     }
 }
@@ -425,10 +430,18 @@ impl Styles {
 
     /// The font family a text style names (through `style:font-name` or `fo:font-family`).
     pub fn font(&self, family: &str, name: &str) -> Option<String> {
-        if let Some(f) = self.get(family, name, "text/font-name") {
-            return Some(self.fonts.get(f).cloned().unwrap_or_else(|| f.to_string()));
+        // The nearest style that names a font, either way, wins.
+        let named = |st: &Style| {
+            st.props.get("text/font-name").map(|f| self.face(f)).or_else(|| {
+                st.props.get("text/font-family").map(|f| f.trim_matches(['\'', '"']).to_string())
+            })
+        };
+        for n in self.lineage(family, name) {
+            if let Some(f) = self.named.get(&(family.to_string(), n)).and_then(named) {
+                return Some(f);
+            }
         }
-        self.get(family, name, "text/font-family").map(|f| f.trim_matches(['\'', '"']).to_string())
+        self.defaults.get(family).and_then(named)
     }
 }
 
@@ -475,7 +488,7 @@ mod tests {
         assert_eq!(length("auto"), None);
         assert_eq!(text_xml("a  b\tc\nd"), r#"a <text:s text:c="1"/>b<text:tab/>c<text:line-break/>d"#);
         let xml = format!(r#"<text:p xmlns:text="{TEXT}">a <text:s text:c="2"/>b<text:tab/>c<text:line-break/>d</text:p>"#);
-        let doc = roxmltree::Document::parse(&xml).unwrap();
+        let doc = crate::xml::parse(&xml).unwrap();
         assert_eq!(plain_text(&doc.root_element()), "a   b\tc\nd");
     }
 }

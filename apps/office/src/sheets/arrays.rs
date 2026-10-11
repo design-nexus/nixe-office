@@ -5,11 +5,12 @@
 //! the right (`Calc` does that); inside another function it's a range.
 
 use super::formula::{self, Arg, Cells, Expr, Value};
+use super::model::{COLS, ROWS};
 
 /// Functions whose answer is a block.
-pub const FUNCTIONS: [&str; 15] = [
+pub const FUNCTIONS: [&str; 21] = [
     "UNIQUE", "FILTER", "SORT", "SEQUENCE", "SORTBY", "TEXTSPLIT", "CHOOSECOLS", "CHOOSEROWS", "TAKE", "DROP", "TRANSPOSE",
-    "VSTACK", "HSTACK", "TOCOL", "TOROW",
+    "VSTACK", "HSTACK", "TOCOL", "TOROW", "ROW", "COLUMN", "INDIRECT", "OFFSET", "MMULT", "MINVERSE",
 ];
 
 /// The most cells a block may hold.
@@ -83,7 +84,7 @@ impl Block {
 /// Whether the expression can give a block (so its cell may spill).
 pub fn may_spill(e: &Expr) -> bool {
     match e {
-        Expr::Range { .. } => true,
+        Expr::Range { .. } | Expr::Name(_) | Expr::Table(..) | Expr::Array(..) => true,
         Expr::Call(name, _) => FUNCTIONS.contains(&name.as_str()),
         Expr::Neg(x) | Expr::Percent(x) => may_spill(x),
         Expr::Bin(_, a, b) | Expr::Cmp(_, a, b) => may_spill(a) || may_spill(b),
@@ -102,6 +103,8 @@ pub fn block(e: &Expr, cells: &dyn Cells) -> Option<Block> {
             Arg::One(v) => Block::one(v),
         },
         Expr::Call(name, args) => call(name, args, cells),
+        Expr::Name(_) | Expr::Table(..) => formula::with_resolved(e, cells, Block::err("#NAME?"), |t| whole(t, cells), Block::err),
+        Expr::Array(rows, cols, values) => Block { rows: *rows, cols: *cols, values: values.clone() },
         Expr::Neg(x) => {
             let b = whole(x, cells);
             Block::zip(b, Block::one(Value::Num(-1.0)), |a, k| formula::binary('*', a, k))
@@ -390,8 +393,132 @@ fn call_inner(name: &str, args: &[Expr], cells: &dyn Cells) -> Result<Block, &'s
             let k = values.len();
             Ok(if name == "TOCOL" { Block { rows: k, cols: 1, values } } else { Block { rows: 1, cols: k, values } })
         }
+        "ROW" | "COLUMN" if n <= 1 => {
+            let row = name == "ROW";
+            let (r1, c1, r2, c2) = match args.first() {
+                None => {
+                    let (r, c) = cells.here();
+                    (r, c, r, c)
+                }
+                Some(Expr::Ref { r, c, .. }) => (*r, *c, *r, *c),
+                Some(Expr::Range { r1, c1, r2, c2, .. }) => (*r1, *c1, *r2, *c2),
+                Some(_) => return Err("#VALUE!"),
+            };
+            // A range gives one number per row (or column) of it.
+            let values: Vec<Value> =
+                if row { (r1..=r2).map(|r| Value::Num(r as f64 + 1.0)).collect() } else { (c1..=c2).map(|c| Value::Num(c as f64 + 1.0)).collect() };
+            let k = values.len();
+            Ok(if row { Block { rows: k, cols: 1, values } } else { Block { rows: 1, cols: k, values } })
+        }
+        "INDIRECT" if (1..=2).contains(&n) => {
+            // The text names cells ("B4", "'Sheet 2'!A1:C9"); what they hold comes back.
+            let t = formula::eval(&args[0], cells);
+            if let Value::Err(e) = t {
+                return Err(e);
+            }
+            match formula::parse(t.text().trim()) {
+                e @ (Expr::Ref { .. } | Expr::Range { .. }) => Ok(whole(&e, cells)),
+                _ => Err("#REF!"),
+            }
+        }
+        "OFFSET" if (3..=5).contains(&n) => {
+            let (sheet, r1, c1, r2, c2) = match &args[0] {
+                Expr::Ref { sheet, r, c } => (sheet.clone(), *r, *c, *r, *c),
+                Expr::Range { sheet, r1, c1, r2, c2 } => (sheet.clone(), *r1, *c1, *r2, *c2),
+                _ => return Err("#VALUE!"),
+            };
+            let dr = number(args, 1, 0.0, cells)?.trunc() as i64;
+            let dc = number(args, 2, 0.0, cells)?.trunc() as i64;
+            let h = number(args, 3, (r2 - r1 + 1) as f64, cells)?.trunc() as i64;
+            let w = number(args, 4, (c2 - c1 + 1) as f64, cells)?.trunc() as i64;
+            let (top, left) = (r1 as i64 + dr, c1 as i64 + dc);
+            let (bottom, right) = (top + h - 1, left + w - 1);
+            if h < 1 || w < 1 || top < 0 || left < 0 || bottom >= ROWS as i64 || right >= COLS as i64 {
+                return Err("#REF!");
+            }
+            let e = if h == 1 && w == 1 {
+                Expr::Ref { sheet, r: top as u32, c: left as u32 }
+            } else {
+                Expr::Range { sheet, r1: top as u32, c1: left as u32, r2: bottom as u32, c2: right as u32 }
+            };
+            Ok(whole(&e, cells))
+        }
+        "MMULT" if n == 2 => {
+            let (a, b) = (matrix(&whole(&args[0], cells))?, matrix(&whole(&args[1], cells))?);
+            if a[0].len() != b.len() {
+                return Err("#VALUE!");
+            }
+            let rows: Vec<Vec<Value>> = a
+                .iter()
+                .map(|row| (0..b[0].len()).map(|j| Value::Num(row.iter().zip(&b).map(|(x, brow)| x * brow[j]).sum())).collect())
+                .collect();
+            Ok(Block::from_rows(rows))
+        }
+        "MINVERSE" if n == 1 => {
+            let m = matrix(&whole(&args[0], cells))?;
+            let k = m.len();
+            if m.iter().any(|r| r.len() != k) {
+                return Err("#VALUE!");
+            }
+            // Gauss–Jordan beside the identity.
+            let mut a: Vec<Vec<f64>> = m.iter().enumerate().map(|(i, r)| r.iter().copied().chain((0..k).map(|j| if i == j { 1.0 } else { 0.0 })).collect()).collect();
+            for col in 0..k {
+                let pivot = (col..k).max_by(|x, y| a[*x][col].abs().total_cmp(&a[*y][col].abs())).unwrap_or(col);
+                if a[pivot][col].abs() < 1e-12 {
+                    return Err("#NUM!");
+                }
+                a.swap(col, pivot);
+                let p = a[col][col];
+                for v in &mut a[col] {
+                    *v /= p;
+                }
+                for r in 0..k {
+                    if r != col {
+                        let f = a[r][col];
+                        let pr = a[col].clone();
+                        for (v, pv) in a[r].iter_mut().zip(&pr) {
+                            *v -= f * pv;
+                        }
+                    }
+                }
+            }
+            Ok(Block::from_rows(a.into_iter().map(|r| r[k..].iter().map(|v| Value::Num(*v)).collect()).collect()))
+        }
         _ => Err("#ERROR!"),
     }
+}
+
+/// A block's numbers, row by row (#VALUE! if any isn't one).
+fn matrix(b: &Block) -> Result<Vec<Vec<f64>>, &'static str> {
+    if b.rows * b.cols > 10_000 {
+        return Err("#NUM!");
+    }
+    b.rows().iter().map(|r| r.iter().map(|v| v.num().map_err(|_| "#VALUE!")).collect()).collect()
+}
+
+/// A square matrix's determinant, by elimination.
+pub fn determinant(mut m: Vec<Vec<f64>>) -> f64 {
+    let k = m.len();
+    let mut det = 1.0;
+    for col in 0..k {
+        let Some(pivot) = (col..k).max_by(|x, y| m[*x][col].abs().total_cmp(&m[*y][col].abs())) else { return 0.0 };
+        if m[pivot][col].abs() < 1e-12 {
+            return 0.0;
+        }
+        if pivot != col {
+            m.swap(col, pivot);
+            det = -det;
+        }
+        det *= m[col][col];
+        for r in col + 1..k {
+            let f = m[r][col] / m[col][col];
+            let pr = m[col].clone();
+            for (v, pv) in m[r].iter_mut().zip(&pr) {
+                *v -= f * pv;
+            }
+        }
+    }
+    det
 }
 
 /// Spreadsheet sort order: numbers, then words, then TRUE/FALSE, then errors; empty last.
@@ -496,4 +623,31 @@ mod tests {
         // Where one value is wanted, the block's first.
         assert_eq!(one("UNIQUE(A1:A5)"), "pear");
     }
+}
+
+#[cfg(test)]
+#[test]
+#[ignore]
+fn unknown_names() {
+    struct No;
+    impl Cells for No {
+        fn get(&self, _: Option<&str>, _: u32, _: u32) -> Value {
+            Value::Num(1.0)
+        }
+        fn today(&self) -> f64 {
+            0.0
+        }
+    }
+    let list = std::fs::read_to_string(std::env::var("NXO_NAMES").unwrap()).unwrap();
+    let unknown: Vec<&str> = list
+        .lines()
+        .filter(|n| {
+            // A name we don't know gives #NAME? whatever its arguments.
+            (0..4).all(|k| {
+                let args = vec!["1"; k].join(",");
+                formula::eval(&formula::parse(&format!("{n}({args})")), &No) == Value::Err("#NAME?")
+            })
+        })
+        .collect();
+    println!("UNKNOWN: {}", unknown.join(" "));
 }

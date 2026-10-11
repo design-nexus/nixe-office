@@ -22,7 +22,60 @@ pub struct Document {
     /// New edits are tracked as changes.
     #[serde(skip_serializing_if = "is_false")]
     pub tracking: bool,
+    /// Changes to how paragraph styles look, by style id.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub styles: std::collections::BTreeMap<String, StyleLook>,
 }
+
+/// A paragraph style's look as the document changes it (None: the style's own).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct StyleLook {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<f64>,
+    /// `#rrggbb`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bold: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub italic: Option<bool>,
+}
+
+/// How a paragraph style's text looks, everything worked out.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Look {
+    pub font: String,
+    pub size: f64,
+    pub color: Option<String>,
+    pub bold: bool,
+    pub italic: bool,
+}
+
+/// A style's look with the document's changes to it.
+pub fn look_of(styles: &std::collections::BTreeMap<String, StyleLook>, s: Style) -> Look {
+    let (size, _, _, bold, italic) = s.look();
+    let base = Look {
+        font: DEFAULT_FONT.into(),
+        size,
+        color: (s == Style::Quote).then(|| QUOTE_COLOR.to_string()),
+        bold,
+        italic,
+    };
+    let Some(c) = styles.get(s.id()) else { return base };
+    Look {
+        font: c.font.clone().unwrap_or(base.font),
+        size: c.size.unwrap_or(base.size),
+        color: c.color.clone().or(base.color),
+        bold: c.bold.unwrap_or(base.bold),
+        italic: c.italic.unwrap_or(base.italic),
+    }
+}
+
+/// Quotes' text colour, unless the document changes it.
+pub const QUOTE_COLOR: &str = "#4a5060";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -61,6 +114,11 @@ pub struct PageSetup {
     /// The first page has no header, footer or page number (a letter, a title page).
     #[serde(default, skip_serializing_if = "is_false")]
     pub plain_first_page: bool,
+    /// Even pages' own header and footer (None: the same as odd pages).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub even_header: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub even_footer: Option<String>,
     /// Text columns on the page, 1 to 3.
     pub columns: u8,
     /// Points between columns.
@@ -73,6 +131,8 @@ impl Default for PageSetup {
             footer: String::new(),
             page_numbers: false,
             plain_first_page: false,
+            even_header: None,
+            even_footer: None,
             columns: 1,
             column_gap: 18.0,
         }
@@ -95,6 +155,18 @@ impl PageSetup {
     pub fn column_width(&self) -> f64 {
         let n = self.columns() as f64;
         ((self.content_width() - (n - 1.0) * self.column_gap.max(0.0)) / n).max(72.0)
+    }
+    /// The header and footer on page `index` (from 0): even pages may have their own.
+    pub fn header_footer(&self, index: usize) -> (&str, &str) {
+        if index % 2 == 1 {
+            (self.even_header.as_deref().unwrap_or(&self.header), self.even_footer.as_deref().unwrap_or(&self.footer))
+        } else {
+            (&self.header, &self.footer)
+        }
+    }
+    /// Even pages have their own header or footer.
+    pub fn odd_even(&self) -> bool {
+        self.even_header.is_some() || self.even_footer.is_some()
     }
     pub fn content_height(&self) -> f64 {
         (self.paper().height - self.margins[0] - self.margins[1]).max(72.0)
@@ -458,6 +530,11 @@ impl Table {
 }
 
 impl Document {
+    /// How text in a paragraph of style `s` looks here.
+    pub fn look(&self, s: Style) -> Look {
+        look_of(&self.styles, s)
+    }
+
     /// Names of the pictures the text uses.
     pub fn image_names(&self) -> Vec<String> {
         let mut out = Vec::new();

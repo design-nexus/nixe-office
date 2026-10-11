@@ -107,7 +107,7 @@ pub fn chart_frame(id: usize, o: &Object, rid: &str) -> String {
 pub fn chart_part(chart: ChartKind, names: &[String], labels: &[String], series: &[Vec<f64>]) -> String {
     const COLOURS: [&str; 6] = ["3D7BE0", "E36B55", "4CA878", "D69D3B", "9471D5", "3BADBF"];
     let mut sers = String::new();
-    let take = if chart == ChartKind::Pie { 1 } else { series.len() };
+    let take = if chart.round() { 1 } else { series.len() };
     for (i, values) in series.iter().enumerate().take(take) {
         let scatter = chart == ChartKind::Scatter;
         // A scatter chart's x values are numbers; other charts' labels are text.
@@ -136,7 +136,7 @@ pub fn chart_part(chart: ChartKind, names: &[String], labels: &[String], series:
             ChartKind::Line => {
                 format!(r#"<c:spPr><a:ln w="28575"><a:solidFill><a:srgbClr val="{colour}"/></a:solidFill></a:ln></c:spPr>"#)
             }
-            ChartKind::Pie => String::new(),
+            ChartKind::Pie | ChartKind::Doughnut => String::new(),
             ChartKind::Scatter => r#"<c:spPr><a:ln w="19050"><a:noFill/></a:ln></c:spPr>"#.to_string(),
             _ => format!(r#"<c:spPr><a:solidFill><a:srgbClr val="{colour}"/></a:solidFill></c:spPr>"#),
         };
@@ -164,6 +164,12 @@ pub fn chart_part(chart: ChartKind, names: &[String], labels: &[String], series:
         }
         ChartKind::Area => format!(r#"<c:areaChart><c:grouping val="standard"/><c:varyColors val="0"/>{sers}{axes_ids}</c:areaChart>"#),
         ChartKind::Pie => format!(r#"<c:pieChart><c:varyColors val="1"/>{sers}<c:firstSliceAng val="0"/></c:pieChart>"#),
+        ChartKind::Doughnut => {
+            format!(r#"<c:doughnutChart><c:varyColors val="1"/>{sers}<c:firstSliceAng val="0"/><c:holeSize val="55"/></c:doughnutChart>"#)
+        }
+        ChartKind::HBar => format!(
+            r#"<c:barChart><c:barDir val="bar"/><c:grouping val="clustered"/><c:varyColors val="0"/>{sers}<c:gapWidth val="80"/>{axes_ids}</c:barChart>"#
+        ),
         ChartKind::StackedBar => format!(
             r#"<c:barChart><c:barDir val="col"/><c:grouping val="stacked"/><c:varyColors val="0"/>{sers}<c:gapWidth val="80"/><c:overlap val="100"/>{axes_ids}</c:barChart>"#
         ),
@@ -174,8 +180,11 @@ pub fn chart_part(chart: ChartKind, names: &[String], labels: &[String], series:
             format!(r#"<c:scatterChart><c:scatterStyle val="lineMarker"/><c:varyColors val="0"/>{sers}{axes_ids}</c:scatterChart>"#)
         }
     };
-    let axes = if chart == ChartKind::Pie {
+    let axes = if chart.round() {
         String::new()
+    } else if chart == ChartKind::HBar {
+        // Labels down the side, values along the bottom; the first label at the top.
+        r#"<c:catAx><c:axId val="111"/><c:scaling><c:orientation val="maxMin"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:numFmt formatCode="General" sourceLinked="0"/><c:tickLblPos val="nextTo"/><c:crossAx val="222"/><c:crosses val="autoZero"/></c:catAx><c:valAx><c:axId val="222"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:majorGridlines/><c:numFmt formatCode="General" sourceLinked="0"/><c:tickLblPos val="nextTo"/><c:crossAx val="111"/><c:crosses val="max"/></c:valAx>"#.to_string()
     } else if chart == ChartKind::Scatter {
         // Two value axes: x along the bottom, y up the side.
         r#"<c:valAx><c:axId val="111"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:numFmt formatCode="General" sourceLinked="0"/><c:tickLblPos val="nextTo"/><c:crossAx val="222"/><c:crosses val="autoZero"/></c:valAx><c:valAx><c:axId val="222"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:majorGridlines/><c:numFmt formatCode="General" sourceLinked="0"/><c:tickLblPos val="nextTo"/><c:crossAx val="111"/><c:crosses val="autoZero"/></c:valAx>"#.to_string()
@@ -189,7 +198,7 @@ pub fn chart_part(chart: ChartKind, names: &[String], labels: &[String], series:
 
 /// A chart part's kind and numbers (cached values, whatever they're linked to).
 pub fn read_chart(xml: &str) -> Option<Kind> {
-    let doc = roxmltree::Document::parse(xml).ok()?;
+    let doc = crate::xml::parse(xml).ok()?;
     let plot = doc.descendants().find(|n| n.has_tag_name((C, "plotArea")))?;
     let (chart, node) = plot.children().find_map(|n| {
         let stacked = n
@@ -199,11 +208,13 @@ pub fn read_chart(xml: &str) -> Option<Kind> {
             .is_some_and(|v| v.contains("tacked"));
         let kind = match n.tag_name().name() {
             "barChart" | "bar3DChart" if stacked => ChartKind::StackedBar,
+            "barChart" | "bar3DChart" if bar_dir(&n) => ChartKind::HBar,
             "barChart" | "bar3DChart" => ChartKind::Bar,
             "lineChart" | "line3DChart" => ChartKind::Line,
             "areaChart" | "area3DChart" if stacked => ChartKind::StackedArea,
             "areaChart" | "area3DChart" => ChartKind::Area,
-            "pieChart" | "pie3DChart" | "doughnutChart" => ChartKind::Pie,
+            "doughnutChart" => ChartKind::Doughnut,
+            "pieChart" | "pie3DChart" => ChartKind::Pie,
             "scatterChart" | "bubbleChart" => ChartKind::Scatter,
             _ => return None,
         };
@@ -388,4 +399,9 @@ pub fn read_builds(doc: &roxmltree::Document) -> Vec<(String, u32, Effect, bool)
         }
     }
     out
+}
+
+/// A bar chart whose bars lie along (`<c:barDir val="bar"/>`).
+pub(crate) fn bar_dir(n: &roxmltree::Node) -> bool {
+    n.children().any(|c| c.tag_name().name() == "barDir" && c.attribute("val") == Some("bar"))
 }

@@ -16,6 +16,7 @@ pub mod model;
 mod picture;
 mod spacing;
 mod painter;
+mod styles;
 mod symbols;
 mod table;
 mod templates;
@@ -101,6 +102,8 @@ pub struct Writer {
     syncing: Cell<bool>,
     /// The formatting the next typed text gets.
     typing: RefCell<TextRun>,
+    /// The document's changes to how paragraph styles look.
+    styles: RefCell<BTreeMap<String, StyleLook>>,
     /// The format painter's copied look, while it's on.
     painter: RefCell<Option<painter::Painter>>,
     painter_button: RefCell<Option<gtk::ToggleButton>>,
@@ -213,6 +216,7 @@ impl Writer {
             loading: Cell::new(false),
             syncing: Cell::new(false),
             typing: RefCell::new(TextRun::default()),
+            styles: RefCell::new(BTreeMap::new()),
             painter: RefCell::new(None),
             painter_button: RefCell::new(None),
             insert_at: Cell::new(None),
@@ -313,6 +317,7 @@ impl Writer {
             }
         });
         g.append(&style);
+        g.append(&self.style_menu());
         let fonts = font_families(&self.view);
         let font_refs: Vec<&str> = fonts.iter().map(String::as_str).collect();
         let font = gtk::DropDown::from_strings(&font_refs);
@@ -610,16 +615,17 @@ impl Writer {
         let p = buffer::para_props(self.tb(), &cursor);
         let r = self.typing.borrow().clone();
         style_dd.set_selected(Style::ALL.iter().position(|s| *s == p.style).unwrap_or(0) as u32);
-        let family = r.font.clone().unwrap_or_else(|| DEFAULT_FONT.to_string());
+        let look = look_of(&self.styles.borrow(), p.style);
+        let family = r.font.clone().unwrap_or_else(|| look.font.clone());
         if let Some(i) = fonts.iter().position(|f| f.eq_ignore_ascii_case(&family)) {
             font_dd.set_selected(i as u32);
         }
-        let size = r.size.unwrap_or(p.style.look().0);
+        let size = r.size.unwrap_or(look.size);
         let label = buffer::fmt_size(size);
         size_dd.set_selected(SIZES.iter().position(|s| *s == label).map(|i| i as u32).unwrap_or(gtk::INVALID_LIST_POSITION));
         if let Some(c) = self.controls.borrow().as_ref() {
-            c.bold.set_active(r.bold || p.style.look().3);
-            c.italic.set_active(r.italic);
+            c.bold.set_active(r.bold || look.bold);
+            c.italic.set_active(r.italic || look.italic);
             c.underline.set_active(r.underline);
             c.strike.set_active(r.strike);
             c.superscript.set_active(r.superscript);
@@ -918,6 +924,7 @@ impl Writer {
             comments: self.comments.borrow().clone(),
             revisions: self.revisions.borrow().clone(),
             tracking: self.tracking.get(),
+            styles: self.styles.borrow().clone(),
         };
         d.prune_comments();
         d
@@ -958,6 +965,8 @@ impl Writer {
         *self.comments.borrow_mut() = d.comments.clone();
         *self.revisions.borrow_mut() = d.revisions.clone();
         self.tracking.set(d.tracking);
+        *self.styles.borrow_mut() = d.styles.clone();
+        buffer::apply_looks(self.tb(), &d.styles);
         let make = self.make_table();
         let make_mark = self.make_mark();
         buffer::Loader {
@@ -1119,6 +1128,27 @@ impl Writer {
         let numbers = gtk::Switch::new();
         numbers.set_active(s.page_numbers);
         list.append(&widgets::row("Page numbers", "At the bottom of every page.", Some(numbers.upcast_ref())));
+        // Even pages: their own header and footer (a book's facing pages).
+        let odd_even = gtk::Switch::new();
+        odd_even.set_active(s.odd_even());
+        list.append(&widgets::row("Different on even pages", "Even pages get their own header and footer.", Some(odd_even.upcast_ref())));
+        let even_header = gtk::Entry::new();
+        even_header.set_text(s.even_header.as_deref().unwrap_or(&s.header));
+        even_header.set_max_length(120);
+        even_header.set_placeholder_text(Some("None"));
+        let even_header_row = widgets::row("Even header", "At the top of even pages.", Some(even_header.upcast_ref()));
+        list.append(&even_header_row);
+        let even_footer = gtk::Entry::new();
+        even_footer.set_text(s.even_footer.as_deref().unwrap_or(&s.footer));
+        even_footer.set_max_length(120);
+        even_footer.set_placeholder_text(Some("None"));
+        let even_footer_row = widgets::row("Even footer", "At the bottom of even pages.", Some(even_footer.upcast_ref()));
+        list.append(&even_footer_row);
+        for r in [&even_header_row, &even_footer_row] {
+            r.set_visible(s.odd_even());
+            let r = r.clone();
+            odd_even.connect_active_notify(move |sw| r.set_visible(sw.is_active()));
+        }
         let plain_first = gtk::Switch::new();
         plain_first.set_active(s.plain_first_page);
         list.append(&widgets::row(
@@ -1164,6 +1194,8 @@ impl Writer {
                 footer: footer.text().to_string(),
                 page_numbers: numbers.is_active(),
                 plain_first_page: plain_first.is_active(),
+                even_header: odd_even.is_active().then(|| even_header.text().to_string()),
+                even_footer: odd_even.is_active().then(|| even_footer.text().to_string()),
                 columns: columns.get() as u8,
                 column_gap: w.setup.borrow().column_gap,
             };
@@ -1706,8 +1738,16 @@ impl doc::Editor for Writer {
         let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
         let (d, media) = match ext.as_str() {
             "nwrite" => Writer::read_native(&std::fs::read(path)?)?,
-            "docx" => docx::read(&std::fs::read(path)?)?,
-            "odt" => odt::read(&std::fs::read(path)?)?,
+            // Word or OpenDocument by what's inside, whatever the name says.
+            "docx" | "odt" => {
+                let bytes = std::fs::read(path)?;
+                match crate::container::package_kind(&bytes) {
+                    Some(crate::container::Package::Open) => odt::read(&bytes)?,
+                    Some(crate::container::Package::Office) => docx::read(&bytes)?,
+                    None if ext == "odt" => odt::read(&bytes)?,
+                    None => docx::read(&bytes)?,
+                }
+            }
             "md" | "markdown" => markdown::read(&String::from_utf8_lossy(&std::fs::read(path)?), path.parent()),
             "txt" | "text" => (markdown::read_text(&String::from_utf8_lossy(&std::fs::read(path)?)), BTreeMap::new()),
             _ => bail!("Nexus Write opens .nwrite, .docx, .odt, .md and .txt files"),
@@ -2028,6 +2068,18 @@ pub fn write_sample(path: &Path) {
     std::fs::write(path, bytes).expect("written");
 }
 
+/// Reads a Word or OpenDocument text file, for the corpus check: a short summary.
+#[cfg(test)]
+pub fn corpus_read(bytes: &[u8], odt_file: bool) -> anyhow::Result<String> {
+    let (d, media) = if odt_file { odt::read(bytes)? } else { docx::read(bytes)? };
+    let words: usize = d
+        .blocks
+        .iter()
+        .filter_map(|b| if let Block::Paragraph(p) = b { Some(p.plain_text_any().split_whitespace().count()) } else { None })
+        .sum();
+    Ok(format!("{} blocks, {words} words, {} pictures", d.blocks.len(), media.len()))
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
@@ -2193,6 +2245,11 @@ pub mod tests {
         let odt = dir.join("journal.odt");
         assert!(Editor::save(&*w, &odt).unwrap().is_empty());
         Editor::open(&*w, &odt).unwrap();
+        assert_eq!(w.document().headings(), before.headings());
+        // An OpenDocument file called .docx still opens, by what's inside.
+        let renamed = dir.join("really-odt.docx");
+        std::fs::copy(&odt, &renamed).unwrap();
+        Editor::open(&*w, &renamed).unwrap();
         assert_eq!(w.document().headings(), before.headings());
         Editor::open(&*w, &path).unwrap();
 
@@ -2419,6 +2476,32 @@ pub mod tests {
         let Block::Paragraph(p) = &w.document().blocks[3] else { panic!() };
         assert_eq!((p.style, p.align), (Style::H2, Align::Center));
         w.stop_painting();
+
+        // A heading style takes the look of the text at the cursor, and goes back.
+        let doc = Document {
+            blocks: vec![Block::Paragraph(Paragraph {
+                style: Style::H1,
+                runs: vec![Run::styled("Red", |r| {
+                    r.color = Some("#cc0000".into());
+                    r.size = Some(30.0);
+                })],
+                ..Default::default()
+            })],
+            ..Default::default()
+        };
+        w.load_fresh(&doc, &BTreeMap::new());
+        let b = w.tb().clone();
+        b.place_cursor(&b.iter_at_offset(1));
+        w.match_style(Style::H1);
+        let look = w.document().look(Style::H1);
+        assert_eq!((look.size, look.color.as_deref(), look.bold), (30.0, Some("#cc0000"), true));
+        let tag = b.tag_table().lookup("style:h1").unwrap();
+        assert_eq!(tag.size_points(), 30.0);
+        Editor::undo(&*w);
+        assert!(w.document().styles.is_empty());
+        Editor::redo(&*w);
+        w.set_style_look(Style::H1, None);
+        assert!(w.document().styles.is_empty());
 
         let _ = std::fs::remove_dir_all(dir);
     }

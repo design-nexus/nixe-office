@@ -66,6 +66,10 @@
   hover tooltip); in Word they're `w:hyperlink` with an external relationship, in a
   PDF a cairo `Link` tag per line. Superscript and subscript are the `sup`/`sub` flags.
   Typing at the end of a link or comment doesn't extend it (`pick_up_format`).
+  Style looks: `Document.styles` changes a style's font, size, colour, bold and italic
+  (`look_of`/`Document::look`); the editor's `style:` tags get them through
+  `buffer::apply_looks`, print and the Word and OpenDocument styles through `look`.
+  Even pages may have their own header and footer (`PageSetup::header_footer`).
   The format painter (`painter.rs`) copies a `TextRun`'s look and the paragraph's
   style, alignment and spacing; it paints when a click or drag in the text ends.
   Smart quotes and symbols (`autocorrect.rs`) replace a single typed character in
@@ -109,6 +113,14 @@
   in Excel they're drawing anchors and tables (the cells a chart spans get explicit
   sizes, as Excel's defaults differ). Formulas parse with a depth limit
   (`formula::MAX_DEPTH`) and `^` works left to right, as in Excel.
+  Formulas also take defined names (`Workbook.names`, `Expr::Name`; a sheet's own
+  name wins), table references (`Expr::Table`, resolved by `table_reference`: `[#All]`,
+  `[#Totals]`, `[#This Row]`/`@`, column ranges), array constants (`{1,2;3,4}`), whole
+  columns and rows (ranges to the grid's edge, read only to `Cells::last_used`) and
+  sheet runs (`Jan:Dec!B4`, `Expr::Sheets`). `extra.rs` has SUBTOTAL (it skips cells
+  holding SUBTOTAL, via `Cells::raw`), trigonometry, LOOKUP, WORKDAY and the like;
+  ROW()/COLUMN() use `Cells::here`. VLOOKUP over a reference reads down the first
+  column only. `Calc` caches typed values too.
   Blocks of values (`arrays.rs`): a range, an operator over ranges, or UNIQUE /
   FILTER / SORT / SEQUENCE give a `Block`; as a function argument it's an
   `Arg::Grid`, as a cell's whole formula `Calc` spills it into the empty cells
@@ -144,11 +156,22 @@
   changes away), and picture with caption has `picture_frame`, which the slide's first
   picture fills. In PowerPoint they're placeholders, recognised on the way back by
   position (two bodies side by side; a title low on a slide with a picture).
+  A slide's placeholders can be moved: `Slide.frames` (None is the layout's place;
+  always go through `slide.title_frame()` etc., not `title_frame(layout)`, except to
+  recognise layouts), and `Deck.layouts` per layout id, set on the master
+  (`Deck::set_layout_frame` moves every slide of that layout).
   The slide sorter (`sorter.rs`) is a `FlowBox` in the `views` stack beside the slide
   view; dragging a tile calls `Deck::move_to`.
 - **Office files** are written by hand as XML strings (`write/docx.rs`,
   `present/pptx.rs`, `present/pptx_more.rs` for tables, charts, transitions and
-  timing) and read with roxmltree.
+  timing) and read with roxmltree, always through `xml::parse` (it refuses XML nested
+  over 1,000 deep, and parses deep-but-allowed XML on a big-stack thread: roxmltree
+  recurses per level). Parts are found with `container::entry_index` (exact, then any
+  case and `\` for `/`); Strict OOXML parts go through `container::transitional`; the
+  apps pick the reader by `container::package_kind`, not the extension; a non-zip or
+  encrypted file gets `container::not_a_package`'s words. Spreadsheet readers cap a
+  cell at 32,767 characters and all cells at `READ_BUDGET`, and skip formatting-only
+  empty cells repeated across the sheet.
 - **OpenDocument** (`.odt`, `.ods`, `.odp`): `odf.rs` has the package (mimetype first
   and stored, manifest, `content.xml`, `styles.xml`, `Pictures/`), lengths and
   `Styles` (named and automatic styles from both parts, looked up through parents;
@@ -171,6 +194,12 @@
   path) and kept in `data/icons/`. To add one: fetch it from `lucide-static`, replace
   `currentColor` with `#000000`, run it through `picosvg`, save it as
   `data/icons/<name>.svg`, and add the name to `install_icons` in `window.rs`.
+- Real-world and damaged files: `NXO_CORPUS=dir cargo test --release -- --ignored
+  read_corpus --nocapture` opens every Office/OpenDocument file under a folder (it
+  was run on Apache POI's and LibreOffice's test files: no crashes) and lists refusals,
+  crashes, slow files and formulas that come out #NAME?; `fuzz_readers` (with
+  `NXO_FUZZ_SEEDS`, `NXO_FUZZ_OUT`, `NXO_FUZZ_N`) mangles seed files' XML and saves
+  any crash or slow read. Run both on the debug build too: it catches overflow.
 - Checks: `cargo clippy --all-targets -- -D warnings`, `cargo test`. The editors'
   offscreen checks need a display and GTK on one thread, so they run in turn from
   `gtk_tests::editors_behave` (`main.rs`); add new GTK checks there, never as their own

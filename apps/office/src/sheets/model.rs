@@ -11,6 +11,23 @@ pub const ROWS: u32 = 1_048_576;
 pub const COLS: u32 = 104;
 pub const MAX_SHEETS: usize = 50;
 pub const ROW_H: u32 = 30;
+/// The most characters a cell holds, as in Excel.
+pub const MAX_CELL_TEXT: usize = 32_767;
+
+/// Memory a file's cells may take when read (their text, plus `CELL_COST` each):
+/// beyond any real workbook, short of filling the machine.
+pub const READ_BUDGET: usize = 512 << 20;
+pub const CELL_COST: usize = 200;
+
+/// Text cut to what a cell holds.
+pub fn cell_text(mut s: String) -> String {
+    if s.len() > MAX_CELL_TEXT
+        && let Some((i, _)) = s.char_indices().nth(MAX_CELL_TEXT)
+    {
+        s.truncate(i);
+    }
+    s
+}
 pub const COL_W: u32 = 112;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -128,16 +145,23 @@ pub enum ChartKind {
     StackedArea,
     /// Points: the first column holds the x values.
     Scatter,
+    /// Bars lying along, labels down the side.
+    #[serde(rename = "hbar")]
+    HBar,
+    /// A pie with a hole in the middle.
+    Doughnut,
 }
 
 impl ChartKind {
-    pub const ALL: [ChartKind; 7] = [
+    pub const ALL: [ChartKind; 9] = [
         ChartKind::Bar,
+        ChartKind::HBar,
         ChartKind::StackedBar,
         ChartKind::Line,
         ChartKind::Area,
         ChartKind::StackedArea,
         ChartKind::Pie,
+        ChartKind::Doughnut,
         ChartKind::Scatter,
     ];
     pub fn name(self) -> &'static str {
@@ -149,7 +173,13 @@ impl ChartKind {
             ChartKind::StackedBar => "Stacked bar",
             ChartKind::StackedArea => "Stacked area",
             ChartKind::Scatter => "Scatter",
+            ChartKind::HBar => "Horizontal bar",
+            ChartKind::Doughnut => "Doughnut",
         }
+    }
+    /// A pie or doughnut: slices of one series, no axes.
+    pub fn round(self) -> bool {
+        matches!(self, ChartKind::Pie | ChartKind::Doughnut)
     }
     pub fn stacked(self) -> bool {
         matches!(self, ChartKind::StackedBar | ChartKind::StackedArea)
@@ -407,11 +437,24 @@ impl Sheet {
 pub struct Workbook {
     pub sheets: Vec<Sheet>,
     pub active: usize,
+    /// Names for cells or formulas (Excel's defined names).
+    pub names: Vec<DefinedName>,
+}
+
+/// A name standing for cells or a formula: `TotalIncome` → `Budget!$B$20`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DefinedName {
+    pub name: String,
+    /// Only on this sheet (None: on every sheet).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sheet: Option<String>,
+    /// What it stands for, as a formula without its `=`.
+    pub formula: String,
 }
 
 impl Default for Workbook {
     fn default() -> Self {
-        Workbook { sheets: vec![Sheet::new("Sheet 1")], active: 0 }
+        Workbook { sheets: vec![Sheet::new("Sheet 1")], active: 0, names: Vec::new() }
     }
 }
 
@@ -522,12 +565,15 @@ pub struct Calc {
     spills: RefCell<HashMap<(usize, u32, u32), Area>>,
     /// Every formula has been worked out, so every spill is known.
     ready: std::cell::Cell<bool>,
+    /// Per sheet, the last row and column holding anything (whole-column references stop there).
+    used: RefCell<HashMap<usize, (u32, u32)>>,
 }
 
 struct Ctx<'a> {
     wb: &'a Workbook,
     calc: &'a Calc,
     sheet: usize,
+    at: (u32, u32),
 }
 
 impl Cells for Ctx<'_> {
@@ -547,6 +593,157 @@ impl Cells for Ctx<'_> {
     fn today(&self) -> f64 {
         self.calc.today
     }
+    fn here(&self) -> (u32, u32) {
+        self.at
+    }
+    fn name(&self, name: &str) -> Option<String> {
+        // This sheet's own name first, then the workbook's.
+        let here = &self.wb.sheets[self.sheet].name;
+        let named = |n: &&DefinedName| n.name.eq_ignore_ascii_case(name);
+        self.wb
+            .names
+            .iter()
+            .filter(named)
+            .find(|n| n.sheet.as_deref().is_some_and(|s| s.eq_ignore_ascii_case(here)))
+            .or_else(|| self.wb.names.iter().filter(named).find(|n| n.sheet.is_none()))
+            .map(|n| n.formula.clone())
+    }
+    fn table(&self, table: &str, spec: &str) -> Option<formula::Expr> {
+        table_reference(self.wb, self.sheet, self.at, table, spec)
+    }
+    fn sheets_between(&self, first: &str, last: &str) -> Vec<String> {
+        let at = |n: &str| self.wb.sheets.iter().position(|s| s.name.eq_ignore_ascii_case(n));
+        match (at(first), at(last)) {
+            (Some(a), Some(b)) => self.wb.sheets[a.min(b)..=a.max(b)].iter().map(|s| s.name.clone()).collect(),
+            _ => Vec::new(),
+        }
+    }
+    fn last_used(&self, sheet: Option<&str>) -> (u32, u32) {
+        let si = match sheet {
+            None => Some(self.sheet),
+            Some(name) => self.wb.sheets.iter().position(|s| s.name.eq_ignore_ascii_case(name)),
+        };
+        let Some(si) = si else { return (0, 0) };
+        if let Some(u) = self.calc.used.borrow().get(&si) {
+            return *u;
+        }
+        let s = &self.wb.sheets[si];
+        let (mut r, mut c) = s.cells.keys().fold((0, 0), |(r, c), (kr, kc)| (r.max(*kr), c.max(*kc)));
+        if let Some((sr, sc)) = self.calc.spill_extent(si) {
+            (r, c) = (r.max(sr), c.max(sc));
+        }
+        self.calc.used.borrow_mut().insert(si, (r, c));
+        (r, c)
+    }
+    fn raw(&self, sheet: Option<&str>, r: u32, c: u32) -> String {
+        let si = match sheet {
+            None => Some(self.sheet),
+            Some(name) => self.wb.sheets.iter().position(|s| s.name.eq_ignore_ascii_case(name)),
+        };
+        si.and_then(|i| self.wb.sheets.get(i)).map(|s| s.raw(r, c).to_string()).unwrap_or_default()
+    }
+}
+
+/// A table reference's cells (`Sales[Amount]`, `Sales[[#This Row],[Qty]]`, `[@Qty]`):
+/// the table by name (or the one at the formula), its rows by the specifiers, its
+/// columns by their headings.
+fn table_reference(wb: &Workbook, here_sheet: usize, here: (u32, u32), table: &str, spec: &str) -> Option<formula::Expr> {
+    let (si, t, a) = if table.is_empty() {
+        let t = wb.sheets[here_sheet].table_at(here.0, here.1)?;
+        (here_sheet, t, t.area()?)
+    } else {
+        wb.sheets.iter().enumerate().find_map(|(i, s)| {
+            s.tables.iter().find(|t| t.name.eq_ignore_ascii_case(table)).and_then(|t| Some((i, t, t.area()?)))
+        })?
+    };
+    let s = &wb.sheets[si];
+    let first_data = a.top + t.header as u32;
+    let last_data = if t.total { a.bottom.saturating_sub(1) } else { a.bottom };
+    let heading = |c: u32| if t.header { s.raw(a.top, c).trim().to_lowercase() } else { format!("column{}", c - a.left + 1) };
+    // `'` lets a heading hold brackets and the like: `Price ['#]`.
+    let unescape = |x: &str| {
+        let mut out = String::new();
+        let mut esc = false;
+        for ch in x.chars() {
+            if ch == '\'' && !esc {
+                esc = true;
+                continue;
+            }
+            esc = false;
+            out.push(ch);
+        }
+        out.trim().to_lowercase()
+    };
+    let column = |name: &str| (a.left..=a.right).find(|c| heading(*c) == unescape(name));
+    // The items: `[#This Row],[Qty]` or one bare item; `@Qty` is this row's Qty.
+    let mut items: Vec<String> = Vec::new();
+    let (mut depth, mut cur) = (0, String::new());
+    let mut quoted = false;
+    for ch in spec.chars() {
+        match ch {
+            '\'' if !quoted => {
+                quoted = true;
+                cur.push(ch);
+                continue;
+            }
+            '[' if !quoted => depth += 1,
+            ']' if !quoted => depth -= 1,
+            ',' if depth == 0 && !quoted => {
+                items.push(std::mem::take(&mut cur));
+                continue;
+            }
+            _ => {}
+        }
+        quoted = false;
+        cur.push(ch);
+    }
+    items.push(cur);
+    // First and last row, and column, picked out so far.
+    type Span = Option<(u32, u32)>;
+    let (mut rows, mut cols): (Span, Span) = (None, None);
+    let mut add_rows = |r: (u32, u32)| rows = Some(rows.map_or(r, |(a, b)| (a.min(r.0), b.max(r.1))));
+    for item in items {
+        let item = item.trim();
+        let (this_row, item) = match item.strip_prefix('@') {
+            Some(rest) => (true, rest.trim()),
+            None => (false, item),
+        };
+        if this_row {
+            add_rows((here.0, here.0));
+        }
+        // A column range `[A]:[B]`, or one item in its own brackets.
+        let bare = |x: &str| x.trim().trim_start_matches('[').trim_end_matches(']').to_string();
+        if let Some((x, y)) = item.split_once("]:[") {
+            let (cx, cy) = (column(&bare(x))?, column(&bare(y))?);
+            cols = Some((cx.min(cy), cx.max(cy)));
+            continue;
+        }
+        let it = bare(item);
+        match it.to_lowercase().as_str() {
+            "" => {}
+            "#all" => add_rows((a.top, a.bottom)),
+            "#data" => add_rows((first_data, last_data)),
+            "#headers" if t.header => add_rows((a.top, a.top)),
+            "#totals" if t.total => add_rows((a.bottom, a.bottom)),
+            "#this row" => add_rows((here.0, here.0)),
+            "#headers" | "#totals" => return None,
+            _ => {
+                let c = column(&it)?;
+                cols = Some(cols.map_or((c, c), |(x, y)| (x.min(c), y.max(c))));
+            }
+        }
+    }
+    let (r1, r2) = rows.unwrap_or((first_data, last_data));
+    let (c1, c2) = cols.unwrap_or((a.left, a.right));
+    if r1 > r2 {
+        return None;
+    }
+    let sheet = Some(s.name.clone());
+    Some(if r1 == r2 && c1 == c2 {
+        formula::Expr::Ref { sheet, r: r1, c: c1 }
+    } else {
+        formula::Expr::Range { sheet, r1, c1, r2, c2 }
+    })
 }
 
 /// Formulas nested deeper than this give up (a very long chain).
@@ -574,6 +771,7 @@ impl Calc {
             spilled: RefCell::new(HashMap::new()),
             spills: RefCell::new(HashMap::new()),
             ready: std::cell::Cell::new(false),
+            used: RefCell::new(HashMap::new()),
         };
         // Work through formulas top to bottom, so a chain that refers upwards
         // (each row adding to the last) never recurses deeply.
@@ -665,12 +863,13 @@ impl Calc {
         let Some(sheet) = wb.sheets.get(si) else { return Value::Err("#REF!") };
         let raw = sheet.raw(r, c);
         let Some(src) = raw.strip_prefix('=') else {
-            if raw.is_empty()
-                && let Some(v) = self.spilled_at(wb, si, r, c)
-            {
-                return v;
+            if raw.is_empty() {
+                return self.spilled_at(wb, si, r, c).unwrap_or(Value::Empty);
             }
-            return literal(raw);
+            // Typed values are read over and over by lookups: work each out once.
+            let v = literal(raw);
+            self.values.borrow_mut().insert(key, v.clone());
+            return v;
         };
         if self.visiting.borrow().contains(&key) {
             return Value::Err("#CYCLE!");
@@ -680,7 +879,7 @@ impl Calc {
         }
         self.visiting.borrow_mut().insert(key);
         let expr = formula::parse(src);
-        let ctx = Ctx { wb, calc: self, sheet: si };
+        let ctx = Ctx { wb, calc: self, sheet: si, at: (r, c) };
         let v = match super::arrays::block(&expr, &ctx) {
             Some(b) if b.values.len() > 1 => self.spill(wb, si, r, c, b),
             Some(b) => b.values.into_iter().next().unwrap_or(Value::Empty),
@@ -1371,11 +1570,14 @@ pub const MAX_FROZEN: u32 = 50;
 struct WorkbookFile {
     active: usize,
     sheets: Vec<SheetFile>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    names: Vec<DefinedName>,
 }
 
 impl Workbook {
     pub fn to_json(&self) -> Vec<u8> {
         let file = WorkbookFile {
+            names: self.names.clone(),
             active: self.active,
             sheets: self
                 .sheets
@@ -1418,7 +1620,7 @@ impl Workbook {
 
     pub fn from_json(bytes: &[u8]) -> anyhow::Result<Workbook> {
         let f: WorkbookFile = serde_json::from_slice(bytes)?;
-        let mut wb = Workbook { sheets: Vec::new(), active: 0 };
+        let mut wb = Workbook { sheets: Vec::new(), active: 0, names: f.names.into_iter().take(10_000).collect() };
         for sf in f.sheets.into_iter().take(MAX_SHEETS) {
             let mut s = Sheet::new(&sf.name);
             for cf in sf.cells {
@@ -1532,7 +1734,7 @@ impl Workbook {
             _ => anyhow::bail!("it was made by a newer version of Nexus Sheets"),
         };
         let sorts: Vec<Option<Sort>> = parts.iter().map(|(_, s)| *s).collect();
-        let mut wb = Workbook { sheets: parts.into_iter().map(|(s, _)| s).collect(), active };
+        let mut wb = Workbook { sheets: parts.into_iter().map(|(s, _)| s).collect(), active, names: Vec::new() };
         for (i, sort) in sorts.into_iter().enumerate() {
             if let Some(sort) = sort {
                 let calc = Calc::new(&wb, 0.0);
@@ -1638,6 +1840,55 @@ mod tests {
 
     fn calc(wb: &Workbook) -> Calc {
         Calc::new(wb, formula::date_serial(2026, 10, 5))
+    }
+
+    #[test]
+    fn names_tables_arrays_and_spans() {
+        let mut wb = Workbook::default();
+        wb.sheets.push(Sheet::new("Feb"));
+        wb.sheets[0].name = "Jan".into();
+        // A table: Item, Qty, Price; three rows of data and a total row.
+        for (r, row) in [["Item", "Qty", "Price"], ["Pens", "2", "1.5"], ["Ink", "1", "4"], ["Pads", "3", "2"], ["Total", "", ""]].iter().enumerate() {
+            for (c, v) in row.iter().enumerate() {
+                wb.sheets[0].cells.insert((r as u32, c as u32), Cell { raw: v.to_string(), ..Default::default() });
+            }
+        }
+        wb.sheets[0].cells.insert((0, 3), Cell { raw: "Cost".into(), ..Default::default() });
+        wb.sheets[0].tables.push(TableRegion { name: "Stock".into(), range: "A1:D5".into(), look: 0, header: true, banded: true, total: true });
+        wb.sheets[1].cells.insert((0, 1), Cell { raw: "10".into(), ..Default::default() });
+        wb.names.push(DefinedName { name: "Rate".into(), sheet: None, formula: "Jan!$C$2".into() });
+        wb.names.push(DefinedName { name: "Qtys".into(), sheet: None, formula: "Jan!$B$2:$B$4".into() });
+        wb.names.push(DefinedName { name: "Rate".into(), sheet: Some("Feb".into()), formula: "100".into() });
+        wb.names.push(DefinedName { name: "Loop".into(), sheet: None, formula: "Loop+1".into() });
+        let put = |wb: &mut Workbook, si: usize, r: u32, c: u32, f: &str| {
+            wb.sheets[si].cells.insert((r, c), Cell { raw: f.into(), ..Default::default() });
+        };
+        put(&mut wb, 0, 0, 5, "=SUM(Qtys)*Rate");
+        put(&mut wb, 1, 0, 5, "=Rate");
+        put(&mut wb, 0, 1, 5, "=SUM(B:B)");
+        put(&mut wb, 0, 2, 5, "=SUM(Jan:Feb!B1)+SUM(2:2)");
+        put(&mut wb, 0, 3, 5, "=SUM({1,2;3,4})+SUMPRODUCT(B2:B4*{1;1;1})");
+        put(&mut wb, 0, 4, 5, "=SUM(Stock[Qty])");
+        put(&mut wb, 0, 5, 5, "=Stock[[#Totals],[Item]]");
+        put(&mut wb, 0, 6, 5, "=SUMPRODUCT(Stock[Qty],Stock[Price])");
+        put(&mut wb, 0, 7, 5, "=Loop");
+        put(&mut wb, 0, 8, 5, "=ROWS(Stock[#All])");
+        // A formula in the table, on its own row.
+        put(&mut wb, 0, 2, 3, "=[@Qty]*Stock[[#This Row],[Price]]");
+        let c = calc(&wb);
+        let v = |si: usize, r: u32, col: u32| c.value(&wb, si, r, col).text();
+        assert_eq!(v(0, 0, 5), "9", "names, and a name for cells");
+        assert_eq!(v(1, 0, 5), "100", "a sheet's own name wins");
+        assert_eq!(v(0, 1, 5), "6", "a whole column");
+        // Feb!B1 (10), and row 2: 2, 1.5 and F2's 6.
+        assert_eq!(v(0, 2, 5), "19.5", "a run of sheets, and a whole row");
+        assert_eq!(v(0, 3, 5), "16", "array constants");
+        assert_eq!(v(0, 4, 5), "6");
+        assert_eq!(v(0, 5, 5), "Total");
+        assert_eq!(v(0, 6, 5), "13");
+        assert_eq!(v(0, 7, 5), "#NAME?", "a name that leads to itself");
+        assert_eq!(v(0, 8, 5), "5");
+        assert_eq!(v(0, 2, 3), "4", "this row of the table");
     }
 
     #[test]

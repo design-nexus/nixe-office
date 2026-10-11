@@ -332,7 +332,7 @@ fn header_footer(tag: &str, text: &str, numbers: bool) -> String {
     if text.is_empty() && !numbers {
         return String::new();
     }
-    let style = if tag == "header" { "Header" } else { "Footer" };
+    let style = if tag.starts_with("header") { "Header" } else { "Footer" };
     let style = if numbers && text.is_empty() { format!("{style}Centre") } else { style.to_string() };
     let mut body = odf::text_xml(text);
     if numbers {
@@ -502,10 +502,22 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
         pt(ml),
         pt(mr)
     );
+    // Even ("left") pages' own header and footer come after the usual ones.
+    let (even_header, even_footer) = page.header_footer(1);
+    let left = |tag: &str, text: &str, numbers: bool| {
+        if !page.odd_even() {
+            return String::new();
+        }
+        // An empty left header still has to be there, to leave even pages blank.
+        let x = header_footer(tag, text, numbers);
+        if x.is_empty() { format!("<style:{tag}/>") } else { x }
+    };
     let mut masters = format!(
-        r#"<style:master-page style:name="Standard" style:page-layout-name="pm1">{}{}</style:master-page>"#,
+        r#"<style:master-page style:name="Standard" style:page-layout-name="pm1">{}{}{}{}</style:master-page>"#,
         header_footer("header", &page.header, false),
-        header_footer("footer", &page.footer, page.page_numbers)
+        left("header-left", even_header, false),
+        header_footer("footer", &page.footer, page.page_numbers),
+        left("footer-left", even_footer, page.page_numbers)
     );
     if plain_first {
         masters.push_str(r#"<style:master-page style:name="First_20_Page" style:display-name="First Page" style:page-layout-name="pm1" style:next-style-name="Standard"/>"#);
@@ -541,13 +553,20 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
     };
     let mut styles_xml = String::new();
     for s in Style::ALL {
-        let (size, above, below, bold, italic) = s.look();
-        let text = format!(
-            r#" fo:font-size="{}"{}{}"#,
-            pt(size),
-            if bold { r#" fo:font-weight="bold""# } else { "" },
-            if italic { r#" fo:font-style="italic""# } else { "" }
+        let (_, above, below, _, _) = s.look();
+        let look = doc.look(s);
+        let mut text = format!(
+            r#" fo:font-size="{}" fo:font-weight="{}" fo:font-style="{}""#,
+            pt(look.size),
+            if look.bold { "bold" } else { "normal" },
+            if look.italic { "italic" } else { "normal" }
         );
+        if look.font != DEFAULT_FONT {
+            let _ = write!(text, r#" fo:font-family="'{}'""#, esc(&look.font));
+        }
+        if let Some(c) = &look.color {
+            let _ = write!(text, r#" fo:color="{}""#, esc(c));
+        }
         let para = format!(r#" fo:margin-top="{}" fo:margin-bottom="{}""#, pt(above), pt(below));
         let (display, extra) = match s {
             Style::Normal => ("Default Paragraph Style", ""),
@@ -1049,8 +1068,8 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
     let mut pkg = odf::Package::open(bytes, odf::ODT, "text document")?;
     let content = pkg.content()?;
     let styles_text = pkg.text("styles.xml").unwrap_or_default();
-    let cdoc = roxmltree::Document::parse(&content).context("the document is damaged")?;
-    let sdoc = roxmltree::Document::parse(&styles_text).ok();
+    let cdoc = crate::xml::parse(&content).context("the document is damaged")?;
+    let sdoc = crate::xml::parse(&styles_text).ok();
     let mut parts = Vec::new();
     if let Some(s) = &sdoc {
         parts.push(s);
@@ -1059,6 +1078,22 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
     let styles = Styles::read(&parts);
 
     let mut doc = Document::default();
+    // How the named styles look, where that differs from ours.
+    for s in Style::ALL.into_iter().filter(|s| *s != Style::Normal) {
+        let name = style_name(s);
+        let ours = look_of(&Default::default(), s);
+        let g = |k: &str| styles.get("paragraph", name, k);
+        let look = StyleLook {
+            font: styles.font("paragraph", name).filter(|f| *f != ours.font),
+            size: g("text/font-size").and_then(odf::length).filter(|v| (*v - ours.size).abs() > 0.01),
+            color: g("text/color").and_then(odf::color).filter(|c| Some(c) != ours.color.as_ref() && c != DEFAULT_COLOR),
+            bold: g("text/font-weight").map(|w| w == "bold" || w.parse::<u32>().is_ok_and(|n| n >= 600)).filter(|b| *b != ours.bold),
+            italic: g("text/font-style").map(|v| v == "italic" || v == "oblique").filter(|i| *i != ours.italic),
+        };
+        if look != StyleLook::default() {
+            doc.styles.insert(s.id().to_string(), look);
+        }
+    }
     // The page: the master page the first paragraph names, else "Standard".
     let body = cdoc
         .descendants()
@@ -1110,6 +1145,12 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
         doc.page.header = header;
         doc.page.footer = footer;
         doc.page.page_numbers = hn || fnum;
+        // Left (even) pages' own, when there are any.
+        let (hl, fl) = (child("header-left"), child("footer-left"));
+        if hl.is_some() || fl.is_some() {
+            doc.page.even_header = Some(hl.map(|n| header_text(Some(n)).0).unwrap_or_else(|| doc.page.header.clone()));
+            doc.page.even_footer = Some(fl.map(|n| header_text(Some(n)).0).unwrap_or_else(|| doc.page.footer.clone()));
+        }
         let has = !doc.page.header.is_empty() || !doc.page.footer.is_empty() || doc.page.page_numbers;
         // A first page with nothing at its top and foot: a master of its own, or the main one's first-page parts.
         let first_plain = match first_master.as_deref().filter(|f| *f != main_name).and_then(master_node) {
@@ -1214,6 +1255,8 @@ mod tests {
                 footer: "Draft".into(),
                 page_numbers: true,
                 plain_first_page: true,
+                even_header: Some("Even report".into()),
+                even_footer: Some(String::new()),
                 columns: 2,
                 column_gap: 20.0,
             },
@@ -1272,6 +1315,11 @@ mod tests {
             ],
             tracking: true,
             comments: vec![Comment { id: 1, author: "Ken".into(), date: "2026-01-02T03:04:05Z".into(), text: "Check this".into(), resolved: false }],
+            styles: [
+                ("h1".to_string(), StyleLook { font: Some("Noto Serif".into()), size: Some(24.0), color: Some("#1a5fb4".into()), bold: Some(false), italic: Some(true) }),
+                ("quote".to_string(), StyleLook { color: Some("#802020".into()), ..Default::default() }),
+            ]
+            .into(),
         };
         let (bytes, lost) = write(&doc, &media).unwrap();
         assert!(lost.is_empty(), "{lost:?}");
@@ -1280,6 +1328,7 @@ mod tests {
         assert_eq!(back.page, doc.page);
         assert_eq!(back.comments, doc.comments);
         assert_eq!((&back.revisions, back.tracking), (&doc.revisions, true));
+        assert_eq!(back.styles, doc.styles);
         assert_eq!(back_media.values().next(), Some(&png()));
         let mut want = doc.clone();
         // The picture comes back under the reader's name.

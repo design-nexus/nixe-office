@@ -12,16 +12,16 @@ use std::io::Cursor;
 const MAX_PART: u64 = 64 * 1024 * 1024;
 
 fn part(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Option<String> {
-    let mut f = zip.by_name(name.trim_start_matches('/')).ok()?;
+    let mut f = zip.by_index(crate::container::entry_index(zip, name)?).ok()?;
     if f.size() > MAX_PART {
         return None;
     }
-    String::from_utf8(crate::container::read_capped(&mut f, MAX_PART).ok()?).ok()
+    String::from_utf8(crate::container::read_capped(&mut f, MAX_PART).ok()?).ok().map(crate::container::transitional)
 }
 
 /// Relationship id → target, resolved against `base` (the folder of the part).
 fn relationships(xml: &str, base: &str) -> HashMap<String, String> {
-    let Ok(doc) = roxmltree::Document::parse(xml) else { return HashMap::new() };
+    let Ok(doc) = crate::xml::parse(xml) else { return HashMap::new() };
     doc.descendants()
         .filter(|n| n.has_tag_name("Relationship"))
         .filter_map(|n| {
@@ -189,7 +189,7 @@ pub(super) fn rebuild_pivots(wb: &mut Workbook, pivots: &[Pivot]) -> usize {
 fn read_pivot(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, path: &str, sheet: usize) -> Option<Pivot> {
     use super::summary::Summary;
     let xml = part(zip, path)?;
-    let doc = roxmltree::Document::parse(&xml).ok()?;
+    let doc = crate::xml::parse(&xml).ok()?;
     let at = doc.descendants().find(|n| n.has_tag_name("location")).and_then(|n| n.attribute("ref")).and_then(Area::parse)?;
     let fields = |list: &str| -> Vec<usize> {
         doc.descendants()
@@ -218,14 +218,14 @@ fn read_pivot(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, path: &str, sheet: usize
     let rels = relationships(&part(zip, &rels_of(path)).unwrap_or_default(), folder(path));
     let cache = rels.values().find(|t| t.contains("pivotCacheDefinition"))?;
     let cxml = part(zip, cache)?;
-    let cdoc = roxmltree::Document::parse(&cxml).ok()?;
+    let cdoc = crate::xml::parse(&cxml).ok()?;
     let ws = cdoc.descendants().find(|n| n.has_tag_name("worksheetSource"))?;
     let source = (ws.attribute("sheet")?.to_string(), Area::parse(&ws.attribute("ref")?.replace('$', ""))?);
     Some(Pivot { sheet, at, source, rows, across, value, how })
 }
 
 pub fn read(bytes: &[u8]) -> Result<Opened> {
-    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).context("it isn't an Excel workbook")?;
+    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| anyhow::anyhow!(crate::container::not_a_package(bytes, "Excel workbook")))?;
     let root = relationships(&part(&mut zip, "_rels/.rels").unwrap_or_default(), "");
     let wb_path = root
         .values()
@@ -233,7 +233,7 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
         .cloned()
         .unwrap_or_else(|| "xl/workbook.xml".into());
     let wb_xml = part(&mut zip, &wb_path).context("the workbook is missing")?;
-    let wb_doc = roxmltree::Document::parse(&wb_xml).context("the workbook is damaged")?;
+    let wb_doc = crate::xml::parse(&wb_xml).context("the workbook is damaged")?;
     let rels = relationships(&part(&mut zip, &rels_of(&wb_path)).unwrap_or_default(), folder(&wb_path));
     let dir = folder(&wb_path).to_string();
 
@@ -258,15 +258,17 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
     // Shared strings.
     let shared: Vec<String> = part(&mut zip, &format!("{dir}/sharedStrings.xml"))
         .and_then(|x| {
-            let doc = roxmltree::Document::parse(&x).ok()?;
+            let doc = crate::xml::parse(&x).ok()?;
             Some(
                 doc.descendants()
                     .filter(|n| n.has_tag_name("si"))
                     .map(|si| {
-                        si.descendants()
-                            .filter(|t| t.has_tag_name("t") && !t.ancestors().any(|a| a.has_tag_name("rPh")))
-                            .filter_map(|t| t.text())
-                            .collect()
+                        cell_text(
+                            si.descendants()
+                                .filter(|t| t.has_tag_name("t") && !t.ancestors().any(|a| a.has_tag_name("rPh")))
+                                .filter_map(|t| t.text())
+                                .collect(),
+                        )
                     })
                     .collect(),
             )
@@ -277,7 +279,7 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
     let mut xfs: Vec<Format> = Vec::new();
     let mut dxfs: Vec<Look> = Vec::new();
     if let Some(x) = part(&mut zip, &format!("{dir}/styles.xml"))
-        && let Ok(doc) = roxmltree::Document::parse(&x)
+        && let Ok(doc) = crate::xml::parse(&x)
     {
         let codes: HashMap<u32, String> = doc
             .descendants()
@@ -391,10 +393,27 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
         }
     }
 
-    let mut out = Workbook { sheets: Vec::new(), active: 0 };
+    let mut out = Workbook { sheets: Vec::new(), active: 0, names: Vec::new() };
     let mut pivots: Vec<Pivot> = Vec::new();
+    let mut text_budget: usize = READ_BUDGET;
     let mut truncated = false;
     let mut dropped_rules = false;
+    // Defined names: Excel's own (print areas and the like) start with _xlnm.
+    let sheet_names: Vec<String> = sheets.iter().map(|(n, _)| n.clone()).collect();
+    let names: Vec<DefinedName> = wb_doc
+        .descendants()
+        .filter(|n| n.has_tag_name("definedName"))
+        .filter_map(|n| {
+            let name = n.attribute("name")?;
+            if name.starts_with("_xlnm.") || name.starts_with('_') && n.attribute("hidden") == Some("1") {
+                return None;
+            }
+            let sheet = n.attribute("localSheetId").and_then(|i| i.parse::<usize>().ok()).and_then(|i| sheet_names.get(i).cloned());
+            let formula = n.text()?.trim().replace("_xlfn._xlws.", "").replace("_xlfn.", "");
+            (!formula.is_empty()).then(|| DefinedName { name: name.to_string(), sheet, formula })
+        })
+        .take(10_000)
+        .collect();
     // Print areas are names in the workbook, one per sheet by its position.
     let print_areas: HashMap<usize, Area> = wb_doc
         .descendants()
@@ -415,7 +434,7 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
             out.sheets.push(sheet);
             continue;
         };
-        let doc = roxmltree::Document::parse(&xml).with_context(|| format!("the sheet “{name}” is damaged"))?;
+        let doc = crate::xml::parse(&xml).with_context(|| format!("the sheet “{name}” is damaged"))?;
         for col in doc.descendants().filter(|n| n.has_tag_name("col")) {
             let hidden = col.attribute("hidden").is_some_and(|v| v == "1" || v == "true");
             if hidden
@@ -538,6 +557,14 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
                 if raw.is_empty() && format == Format::default() {
                     continue;
                 }
+                // A file can repeat one long string in every cell; past a sensible
+                // amount of text in all, the rest is left out.
+                let raw = cell_text(raw);
+                text_budget = text_budget.saturating_sub(raw.len() + CELL_COST);
+                if text_budget == 0 {
+                    truncated = true;
+                    continue;
+                }
                 sheet.cells.insert((r, col), Cell { raw, format, comment: None });
             }
         }
@@ -599,7 +626,7 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
         // Tables: their range, name and look.
         for target in sheet_rels.values().filter(|t| t.contains("/tables/")) {
             let Some(x) = part(&mut zip, target) else { continue };
-            let Ok(tdoc) = roxmltree::Document::parse(&x) else { continue };
+            let Ok(tdoc) = crate::xml::parse(&x) else { continue };
             let t = tdoc.root_element();
             let Some(a) = t.attribute("ref").and_then(Area::parse) else { continue };
             let info = t.children().find(|n| n.has_tag_name("tableStyleInfo"));
@@ -616,7 +643,7 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
         // Charts drawn on the sheet: where they sit, and the cells they chart.
         for target in sheet_rels.values().filter(|t| t.contains("/drawings/") && t.ends_with(".xml")) {
             let Some(x) = part(&mut zip, target) else { continue };
-            let Ok(ddoc) = roxmltree::Document::parse(&x) else { continue };
+            let Ok(ddoc) = crate::xml::parse(&x) else { continue };
             let drels = relationships(&part(&mut zip, &rels_of(target)).unwrap_or_default(), folder(target));
             for anchor in ddoc.root_element().children().filter(|n| n.tag_name().name().ends_with("Anchor")) {
                 let Some(rid) = anchor
@@ -652,7 +679,7 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
         }
         for target in sheet_rels.values().filter(|t| t.contains("comments")) {
             let Some(x) = part(&mut zip, target) else { continue };
-            let Ok(cdoc) = roxmltree::Document::parse(&x) else { continue };
+            let Ok(cdoc) = crate::xml::parse(&x) else { continue };
             let authors: Vec<&str> =
                 cdoc.descendants().filter(|n| n.has_tag_name("author")).map(|a| a.text().unwrap_or("")).collect();
             for c in cdoc.descendants().filter(|n| n.has_tag_name("comment")) {
@@ -681,13 +708,14 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
         out.sheets.push(sheet);
     }
     out.active = active.min(out.sheets.len().saturating_sub(1));
+    out.names = names;
     let pivots = rebuild_pivots(&mut out, &pivots);
     Ok(Opened { workbook: out, truncated, dropped_rules, pivots })
 }
 
 /// An Excel chart's kind and the block of cells it charts (on its own sheet).
 fn chart_source(xml: &str) -> Option<(ChartKind, String)> {
-    let doc = roxmltree::Document::parse(xml).ok()?;
+    let doc = crate::xml::parse(xml).ok()?;
     let plot = doc.descendants().find(|n| n.tag_name().name() == "plotArea")?;
     let node = plot.children().find(|n| n.tag_name().name().ends_with("Chart"))?;
     let stacked = node
@@ -697,11 +725,13 @@ fn chart_source(xml: &str) -> Option<(ChartKind, String)> {
         .is_some_and(|v| v.contains("tacked"));
     let kind = match node.tag_name().name() {
         "barChart" | "bar3DChart" if stacked => ChartKind::StackedBar,
+        "barChart" | "bar3DChart" if crate::present::pptx_more::bar_dir(&node) => ChartKind::HBar,
         "barChart" | "bar3DChart" => ChartKind::Bar,
         "lineChart" | "line3DChart" => ChartKind::Line,
         "areaChart" | "area3DChart" if stacked => ChartKind::StackedArea,
         "areaChart" | "area3DChart" => ChartKind::Area,
-        "pieChart" | "pie3DChart" | "doughnutChart" => ChartKind::Pie,
+        "doughnutChart" => ChartKind::Doughnut,
+        "pieChart" | "pie3DChart" => ChartKind::Pie,
         "scatterChart" => ChartKind::Scatter,
         _ => return None,
     };
@@ -829,7 +859,7 @@ fn cell_at(pos: f64, size: impl Fn(u32) -> u32, max: u32) -> (u32, u32) {
 /// A chart of `range` for Excel, its series named by a first row of words.
 /// A chart part's title and axis titles.
 fn chart_titles(xml: &str) -> ChartText {
-    let Ok(doc) = roxmltree::Document::parse(xml) else { return ChartText::default() };
+    let Ok(doc) = crate::xml::parse(xml) else { return ChartText::default() };
     // A title's words: its runs, put together.
     let words = |t: roxmltree::Node| -> String {
         t.descendants().filter(|n| n.tag_name().name() == "t").filter_map(|n| n.text()).collect::<String>().trim().to_string()
@@ -866,6 +896,8 @@ fn excel_chart(wb: &Workbook, calc: &Calc, si: usize, range: &str, kind: ChartKi
         ChartKind::StackedBar => ChartType::ColumnStacked,
         ChartKind::StackedArea => ChartType::AreaStacked,
         ChartKind::Scatter => ChartType::Scatter,
+        ChartKind::HBar => ChartType::Bar,
+        ChartKind::Doughnut => ChartType::Doughnut,
     };
     let mut chart = Chart::new(kind);
     let label_col = (c2 > c1).then_some(c1);
@@ -982,6 +1014,16 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
     use rust_xlsxwriter::Workbook as X;
     let mut book = X::new();
     let mut lost = Vec::new();
+    // Names (a sheet's own ones as `Sheet!Name`).
+    for n in &wb.names {
+        let name = match &n.sheet {
+            Some(sheet) => format!("{}!{}", super::summary::sheet_ref(sheet), n.name),
+            None => n.name.clone(),
+        };
+        if book.define_name(name, &format!("={}", n.formula)).is_err() && !lost.iter().any(|l: &String| l.starts_with("names")) {
+            lost.push("names Excel doesn't accept".into());
+        }
+    }
     for (si, s) in wb.sheets.iter().enumerate() {
         let ws = book.add_worksheet();
         ws.set_name(&s.name)?;
@@ -1433,6 +1475,21 @@ mod tests {
     }
 
     #[test]
+    fn every_chart_kind_round_trips() {
+        for kind in ChartKind::ALL {
+            let mut wb = Workbook::default();
+            for (r, (l, v)) in [("Q", "Sales"), ("Q1", "3"), ("Q2", "5")].iter().enumerate() {
+                wb.set(r as u32, 0, l);
+                wb.set(r as u32, 1, v);
+            }
+            wb.sheet_mut().chart = Some(Chart { range: "A1:B3".into(), kind, text: ChartText::default() });
+            let (bytes, _) = write(&wb, &Calc::new(&wb, 0.0)).unwrap();
+            let back = read(&bytes).unwrap().workbook;
+            assert_eq!(back.sheets[0].charts.first().map(|c| c.kind), Some(kind), "{kind:?}");
+        }
+    }
+
+    #[test]
     fn pivot_tables_become_live_summaries() {
         let opened = read(&pivot_workbook()).unwrap();
         assert_eq!(opened.pivots, 1);
@@ -1446,6 +1503,23 @@ mod tests {
         wb.sheets[0].cells.insert((1, 2), Cell { raw: "50".into(), ..Default::default() });
         let calc = Calc::new(&wb, 0.0);
         assert_eq!(calc.value(&wb, 1, 3, 1), formula::Value::Num(55.0));
+    }
+
+    #[test]
+    fn names_round_trip() {
+        let mut wb = Workbook::default();
+        wb.sheets.push(Sheet::new("Data 2"));
+        wb.set(0, 0, "4");
+        wb.set(1, 0, "=Total*2");
+        wb.names.push(DefinedName { name: "Total".into(), sheet: None, formula: "'Sheet 1'!$A$1".into() });
+        wb.names.push(DefinedName { name: "Rate".into(), sheet: None, formula: "0.25".into() });
+        let (bytes, _) = write(&wb, &Calc::new(&wb, 0.0)).unwrap();
+        let back = read(&bytes).unwrap().workbook;
+        let find = |n: &str| back.names.iter().find(|x| x.name == n).map(|x| x.formula.clone());
+        assert_eq!(find("Total").as_deref(), Some("'Sheet 1'!$A$1"));
+        assert_eq!(find("Rate").as_deref(), Some("0.25"));
+        let calc = Calc::new(&back, 0.0);
+        assert_eq!(calc.value(&back, 0, 1, 0), formula::Value::Num(8.0));
     }
 }
 

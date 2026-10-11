@@ -372,7 +372,7 @@ pub fn write(deck: &Deck, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u8>,
         let mut tree = String::from(empty_tree.trim_end_matches("</p:spTree>"));
         out.slide_rels = vec![("rId1".to_string(), "slideLayout", "../slideLayouts/slideLayout1.xml".to_string())];
         let mut id = 2;
-        if let Some(f) = title_frame(s.layout) {
+        if let Some(f) = s.title_frame() {
             let ph = if s.layout == Layout::Title { "ctrTitle" } else { "title" };
             tree.push_str(&text_shape(
                 TextShape {
@@ -391,7 +391,7 @@ pub fn write(deck: &Deck, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u8>,
             ));
             id += 1;
         }
-        if let Some(f) = body_frame(s.layout) {
+        if let Some(f) = s.body_frame() {
             let ph = if s.layout == Layout::Title { "subTitle" } else { "body" };
             tree.push_str(&text_shape(
                 TextShape {
@@ -410,7 +410,7 @@ pub fn write(deck: &Deck, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u8>,
             ));
             id += 1;
         }
-        if let Some(f) = body2_frame(s.layout) {
+        if let Some(f) = s.body2_frame() {
             tree.push_str(&text_shape(
                 TextShape {
                     id,
@@ -542,7 +542,7 @@ fn read_media(
         .and_then(|m| attr_ns(&m, "embed"))
         .or_else(|| attr_ns(&file, "link"))?;
     let (_, target) = srels.get(rid)?;
-    let mut f = zip.by_name(target.trim_start_matches('/')).ok()?;
+    let mut f = zip.by_index(crate::container::entry_index(zip, target)?).ok()?;
     if f.size() > MAX_CLIP {
         return None;
     }
@@ -561,7 +561,7 @@ fn read_master(
     (fx, fy): (f64, f64),
 ) -> Vec<Object> {
     let Some(xml) = text_part(zip, path) else { return Vec::new() };
-    let Ok(doc) = roxmltree::Document::parse(&xml) else { return Vec::new() };
+    let Ok(doc) = crate::xml::parse(&xml) else { return Vec::new() };
     let rels = read_rels(&text_part(zip, &rels_of(path)).unwrap_or_default(), folder(path));
     let mut out: Vec<Object> = Vec::new();
     let next = |out: &Vec<Object>| out.iter().map(|o| o.id).max().unwrap_or(0) + 1;
@@ -624,7 +624,7 @@ fn read_master(
 }
 
 fn part(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Option<Vec<u8>> {
-    let mut f = zip.by_name(name.trim_start_matches('/')).ok()?;
+    let mut f = zip.by_index(crate::container::entry_index(zip, name)?).ok()?;
     if f.size() > 64 * 1024 * 1024 {
         return None;
     }
@@ -632,7 +632,7 @@ fn part(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Option<Vec<u8>>
 }
 
 fn text_part(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Option<String> {
-    part(zip, name).map(|b| String::from_utf8_lossy(&b).into_owned())
+    part(zip, name).map(|b| crate::container::transitional(String::from_utf8_lossy(&b).into_owned()))
 }
 
 fn resolve(base: &str, rel: &str) -> String {
@@ -665,7 +665,7 @@ fn rels_of(p: &str) -> String {
 
 /// id → (type ending, absolute path)
 fn read_rels(xml: &str, base: &str) -> HashMap<String, (String, String)> {
-    let Ok(doc) = roxmltree::Document::parse(xml) else { return HashMap::new() };
+    let Ok(doc) = crate::xml::parse(xml) else { return HashMap::new() };
     doc.descendants()
         .filter(|n| n.has_tag_name("Relationship"))
         .filter_map(|n| {
@@ -821,7 +821,7 @@ fn as_png(bytes: &[u8]) -> Option<Vec<u8>> {
 }
 
 pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
-    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).context("it isn't a PowerPoint file")?;
+    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| anyhow::anyhow!(crate::container::not_a_package(bytes, "PowerPoint file")))?;
     let root = read_rels(&text_part(&mut zip, "_rels/.rels").unwrap_or_default(), "");
     let pres_path = root
         .values()
@@ -829,7 +829,7 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
         .map(|(_, p)| p.clone())
         .unwrap_or_else(|| "ppt/presentation.xml".into());
     let pres = text_part(&mut zip, &pres_path).context("the presentation is missing")?;
-    let pdoc = roxmltree::Document::parse(&pres).context("the presentation is damaged")?;
+    let pdoc = crate::xml::parse(&pres).context("the presentation is damaged")?;
     let prels = read_rels(&text_part(&mut zip, &rels_of(&pres_path)).unwrap_or_default(), folder(&pres_path));
     // The slide size, to scale everything onto our 960 × 540 canvas.
     let (sw, sh) = pdoc
@@ -845,7 +845,7 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
     for id in ids.into_iter().take(MAX_SLIDES) {
         let Some((_, path)) = prels.get(&id) else { continue };
         let Some(xml) = text_part(&mut zip, path) else { continue };
-        let doc = roxmltree::Document::parse(&xml).with_context(|| format!("{path} is damaged"))?;
+        let doc = crate::xml::parse(&xml).with_context(|| format!("{path} is damaged"))?;
         let srels = read_rels(&text_part(&mut zip, &rels_of(path)).unwrap_or_default(), folder(path));
         let mut s = Slide { layout: Layout::Blank, ..Default::default() };
         s.hide_master = doc.root_element().attribute("showMasterSp") == Some("0");
@@ -860,6 +860,7 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
         }
         let (mut title, mut body, mut centre_title, mut section) = (None::<String>, Vec::<String>::new(), false, false);
         let (mut title_y, mut body_geo) = (None::<f64>, Vec::<Option<(f64, f64, f64, f64)>>::new());
+        let mut title_geo: Option<Rect> = None;
         let mut colour = None;
         // Lines and connectors.
         for ln in doc.descendants().filter(|n| n.has_tag_name((P, "sp")) || n.has_tag_name((P, "cxnSp"))) {
@@ -920,6 +921,7 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
                         && sp.descendants().any(|n| n.has_tag_name((A, "pPr")) && n.attribute("algn") == Some("ctr"));
                     title = Some(text);
                     title_y = geo.map(|g| g.1);
+                    title_geo = geo;
                 }
                 Some("body") | Some("subTitle") | Some("obj") => {
                     body.push(text);
@@ -1047,7 +1049,7 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
         // Speaker notes, from the notes slide's body.
         if let Some((_, npath)) = srels.values().find(|(k, _)| k == "notesSlide")
             && let Some(nx) = text_part(&mut zip, npath)
-            && let Ok(nd) = roxmltree::Document::parse(&nx)
+            && let Ok(nd) = crate::xml::parse(&nx)
         {
             s.notes = nd
                 .descendants()
@@ -1087,6 +1089,11 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
         };
         s.title = title.unwrap_or_default();
         s.body = body.join("\n");
+        // Placeholders where the slide has them, if not where the layout would.
+        s.frames.title = moved(title_geo, title_frame(s.layout));
+        if s.layout != Layout::TwoColumns {
+            s.frames.body = moved(body_geo.first().copied().flatten(), body_frame(s.layout));
+        }
         slides.push(s);
     }
     if slides.is_empty() {
@@ -1098,7 +1105,7 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
         .map(|(_, path)| path.clone())
         .map(|path| read_master(&path, &mut zip, &mut media, (fx, fy)))
         .unwrap_or_default();
-    Ok((Deck { slides, master }, media))
+    Ok((Deck { slides, master, layouts: Default::default() }, media))
 }
 
 #[cfg(test)]
@@ -1120,13 +1127,15 @@ mod tests {
         deck.slides[2].font = "Noto Serif".into();
         deck.slides[2].italic = true;
         deck.slides[2].notes = "First line\n\nAfter a gap & more".into();
+        deck.slides[2].frames.title = Some((120.0, 30.0, 600.0, 90.0));
         let (bytes, lost) = write(&deck, &media).unwrap();
         assert!(lost.is_empty(), "{lost:?}");
         let (back, back_media) = read(&bytes).unwrap();
         assert_eq!(back.slides.len(), 5);
-        // Speaker notes come back on each slide.
+        // Speaker notes and moved placeholders come back on each slide.
         for (a, b) in deck.slides.iter().zip(&back.slides) {
             assert_eq!(a.notes, b.notes);
+            assert_eq!(a.frames, b.frames, "{}", a.title);
         }
         assert_eq!(back.slides[4].layout, Layout::Section);
         let (a, b) = (&deck.slides[0], &back.slides[0]);
@@ -1189,7 +1198,7 @@ mod tests {
         for kind in TransitionKind::ALL {
             let t = super::super::pptx_more::transition(&Transition { kind, secs: 1.5 });
             let xml = format!(r#"<p:sld xmlns:p="{P}">{t}</p:sld>"#);
-            let doc = roxmltree::Document::parse(&xml).unwrap();
+            let doc = crate::xml::parse(&xml).unwrap();
             assert_eq!(super::super::pptx_more::read_transition(&doc).map(|t| t.kind), Some(kind));
         }
         let find = |f: fn(&Kind) -> bool| s.objects.iter().find(|o| f(&o.kind)).expect("the object came back");

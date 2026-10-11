@@ -116,9 +116,9 @@ fn rgb(hex: &str) -> Option<(u16, u16, u16)> {
 }
 
 /// A Pango layout for some text runs in a paragraph of `style`.
-fn text_layout(ctx: &pango::Context, runs: &[&TextRun], style: Style, align: Align, width: f64) -> pango::Layout {
+fn text_layout(ctx: &pango::Context, runs: &[&TextRun], look: &Look, align: Align, width: f64) -> pango::Layout {
     let pieces: Vec<Piece> = runs.iter().map(|r| Piece::Text((*r).clone())).collect();
-    pieces_layout(ctx, &pieces, style, align, width, 1.0).0
+    pieces_layout(ctx, &pieces, look, align, width, 1.0).0
 }
 
 /// A layout for runs and footnote marks; also where each mark is: (byte index,
@@ -126,14 +126,14 @@ fn text_layout(ctx: &pango::Context, runs: &[&TextRun], style: Style, align: Ali
 fn pieces_layout(
     ctx: &pango::Context,
     pieces: &[Piece],
-    style: Style,
+    look: &Look,
     align: Align,
     width: f64,
     line: f64,
 ) -> (pango::Layout, Vec<(usize, usize)>, Vec<LinkSpan>) {
     let layout = pango::Layout::new(ctx);
-    let (size, _, _, bold, italic) = style.look();
-    let mut font = pango::FontDescription::from_string(DEFAULT_FONT);
+    let (size, bold, italic) = (look.size, look.bold, look.italic);
+    let mut font = pango::FontDescription::from_string(&look.font);
     font.set_size((size * pango::SCALE as f64) as i32);
     if bold {
         font.set_weight(pango::Weight::Semibold);
@@ -215,9 +215,8 @@ fn pieces_layout(
                 _ => links.push((start, end, uri.clone())),
             }
         }
-        let quote = if style == Style::Quote { Some("#4a5060") } else { None };
         let link = r.link.as_ref().map(|_| super::buffer::LINK_INK);
-        let color = r.color.as_deref().or(link).or(quote);
+        let color = r.color.as_deref().or(link).or(look.color.as_deref());
         if let Some((cr, cg, cb)) = color.and_then(rgb) {
             add(pango::AttrColor::new_foreground(cr, cg, cb).into());
         }
@@ -426,7 +425,8 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
         let width = pg.col_w;
         match block {
             Block::Paragraph(p) => {
-                let size = p.style.look().0;
+                let look = doc.look(p.style);
+                let size = look.size;
                 let (above, below) = p.spacing();
                 let line = p.line_spacing.unwrap_or(1.0);
                 let steps = p.indent as f64 + if p.list.is_some() || p.style == Style::Quote { 1.0 } else { 0.0 };
@@ -491,7 +491,7 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
                             {
                                 let narrow = width - left - fw - WRAP_GAP;
                                 let nx = if side == Side::Left { left + fw + WRAP_GAP } else { left };
-                                let (l, ..) = pieces_layout(&ctx, &parts[0].0, p.style, p.align, narrow, line);
+                                let (l, ..) = pieces_layout(&ctx, &parts[0].0, &look, p.align, narrow, line);
                                 let (tops, _) = line_tops(&l);
                                 let beside = tops.iter().take_while(|t| **t < fh).count();
                                 let at = l.line(beside as i32).map(|line| line.start_index() as usize);
@@ -508,7 +508,7 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
                             }
                             for (pi, (pieces, left, text_w)) in parts.into_iter().enumerate() {
                                 let first_part = pi == 0;
-                                let (layout, marks, links) = pieces_layout(&ctx, &pieces, p.style, p.align, text_w, line);
+                                let (layout, marks, links) = pieces_layout(&ctx, &pieces, &look, p.align, text_w, line);
                                 let layout = Rc::new(layout);
                                 let links = Rc::new(links);
                                 let marker = match (first && first_part, p.list) {
@@ -522,7 +522,7 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
                                         Some(Rc::new(text_layout(
                                             &ctx,
                                             &[&TextRun { text: label, size: Some(first_size), ..Default::default() }],
-                                            Style::Normal,
+                                            &doc.look(Style::Normal),
                                             Align::Right,
                                             INDENT_STEP * 0.7,
                                         )))
@@ -650,7 +650,7 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
                         .map(|c| {
                             let text = row.get(c).cloned().unwrap_or_default();
                             let run = TextRun { text, bold: header, ..Default::default() };
-                            Rc::new(text_layout(&ctx, &[&run], Style::Normal, Align::Left, col_w - 2.0 * CELL_PAD))
+                            Rc::new(text_layout(&ctx, &[&run], &doc.look(Style::Normal), Align::Left, col_w - 2.0 * CELL_PAD))
                         })
                         .collect();
                     let h = cells.iter().map(|l| line_tops(l).1).fold(DEFAULT_SIZE, f64::max) + 2.0 * CELL_PAD;
@@ -672,7 +672,7 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
                 let title = TextRun { text: "Contents".into(), ..Default::default() };
                 let (_, above, below, _, _) = Style::H2.look();
                 pg.space(above);
-                let l = Rc::new(text_layout(&ctx, &[&title], Style::H2, Align::Left, width));
+                let l = Rc::new(text_layout(&ctx, &[&title], &doc.look(Style::H2), Align::Left, width));
                 let h = line_tops(&l).1;
                 if pg.room() < h * 3.0 && pg.y > 0.0 {
                     pg.next_column();
@@ -683,7 +683,7 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
                     let indent = level.saturating_sub(1) as f64 * 14.0;
                     let page = heading_pages.get(&hb).map(|p| p.to_string()).unwrap_or_default();
                     let run = TextRun { text: format!("{text}\t{page}"), bold: level <= 1, ..Default::default() };
-                    let l = text_layout(&ctx, &[&run], Style::Normal, Align::Left, width - indent);
+                    let l = text_layout(&ctx, &[&run], &doc.look(Style::Normal), Align::Left, width - indent);
                     // The page number sits against the right edge.
                     let mut tabs = pango::TabArray::new(1, false);
                     tabs.set_tab(0, pango::TabAlign::Right, ((width - indent - 1.0) * pango::SCALE as f64) as i32);
@@ -708,7 +708,7 @@ fn paginate_with(doc: &Document, media: &BTreeMap<String, Vec<u8>>, heading_page
 fn note_layout(ctx: &pango::Context, n: usize, text: &str, width: f64) -> pango::Layout {
     let num = TextRun { text: format!("{n}  "), size: Some(NOTE_SIZE), bold: true, ..Default::default() };
     let words = TextRun { text: text.replace('\n', " "), size: Some(NOTE_SIZE), ..Default::default() };
-    text_layout(ctx, &[&num, &words], Style::Normal, Align::Left, width)
+    text_layout(ctx, &[&num, &words], &look_of(&Default::default(), Style::Normal), Align::Left, width)
 }
 
 impl Rendered {
@@ -798,16 +798,17 @@ impl Pages for Rendered {
         let width = self.setup.content_width();
         // A plain first page goes without its header, footer and number.
         let plain = index == 0 && self.setup.plain_first_page;
-        if !self.setup.header.is_empty() && !plain {
-            self.draw_note(cr, &self.setup.header, ml, mt / 2.0, width, pango::Alignment::Left);
+        let (header, footer) = self.setup.header_footer(index);
+        if !header.is_empty() && !plain {
+            self.draw_note(cr, header, ml, mt / 2.0, width, pango::Alignment::Left);
         }
         let numbers = self.setup.page_numbers && !plain;
-        if !self.setup.footer.is_empty() && !plain {
+        if !footer.is_empty() && !plain {
             let w = if numbers { width * 0.75 } else { width };
-            self.draw_note(cr, &self.setup.footer, ml, ph - mb / 2.0, w, pango::Alignment::Left);
+            self.draw_note(cr, footer, ml, ph - mb / 2.0, w, pango::Alignment::Left);
         }
         if numbers {
-            let align = if self.setup.footer.is_empty() { pango::Alignment::Center } else { pango::Alignment::Right };
+            let align = if footer.is_empty() { pango::Alignment::Center } else { pango::Alignment::Right };
             self.draw_note(cr, &format!("{}", index + 1), ml, ph - mb / 2.0, width, align);
         }
         let Some(page) = self.pages.get(index) else { return };

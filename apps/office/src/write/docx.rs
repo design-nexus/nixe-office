@@ -2,7 +2,7 @@
 //! tables and the page setup, both ways.
 
 use super::model::*;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::io::{Cursor, Write};
@@ -460,6 +460,18 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
         extra_parts.push(("word/footer1.xml".into(), header_footer("ftr", &doc.page.footer, doc.page.page_numbers)));
         let _ = write!(sect, r#"<w:footerReference w:type="default" r:id="{rid}"/>"#);
     }
+    // Even pages' own header and footer (Word's "different odd and even").
+    if doc.page.odd_even() {
+        let (eh, ef) = doc.page.header_footer(1);
+        for (tag, kind, file, text, numbers) in
+            [("hdr", "header", "header3.xml", eh, false), ("ftr", "footer", "footer3.xml", ef, doc.page.page_numbers)]
+        {
+            let rid = format!("rId{}", rels.len() + 1);
+            rels.push((rid.clone(), kind.into(), file.into()));
+            extra_parts.push((format!("word/{file}"), header_footer(tag, text, numbers)));
+            let _ = write!(sect, r#"<w:{kind}Reference w:type="even" r:id="{rid}"/>"#);
+        }
+    }
     // A plain first page: its own empty header and footer.
     let has_hf = !doc.page.header.is_empty() || !doc.page.footer.is_empty() || doc.page.page_numbers;
     if doc.page.plain_first_page && has_hf {
@@ -489,12 +501,16 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
         body = body.replace(&format!("<!--SECT{k}-->"), &format!("<w:sectPr>{}</w:sectPr>", section(*cols, kind)));
     }
     sect = section(sec_cols, sec_type);
-    if doc.tracking {
+    if doc.tracking || doc.page.odd_even() {
         let rid = format!("rId{}", rels.len() + 1);
         rels.push((rid, "settings".into(), "settings.xml".into()));
         extra_parts.push((
             "word/settings.xml".into(),
-            format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="{W_NS}"><w:trackRevisions/></w:settings>"#),
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="{W_NS}">{}{}</w:settings>"#,
+                if doc.tracking { "<w:trackRevisions/>" } else { "" },
+                if doc.page.odd_even() { "<w:evenAndOddHeaders/>" } else { "" }
+            ),
         ));
     }
     // Footnotes and comments get parts of their own.
@@ -574,7 +590,9 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
         sz = (DEFAULT_SIZE * 2.0) as i64
     );
     for s in [Style::Title, Style::H1, Style::H2, Style::H3, Style::Quote] {
-        let (size, above, below, bold, italic) = s.look();
+        let (_, above, below, _, _) = s.look();
+        let look = doc.look(s);
+        let (size, bold, italic) = (look.size, look.bold, look.italic);
         let id = style_id(s).unwrap_or("Normal");
         let outline = match s {
             Style::H1 => "<w:outlineLvl w:val=\"0\"/>",
@@ -585,14 +603,15 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
         let ind = if s == Style::Quote { format!(r#"<w:ind w:left="{}"/>"#, (INDENT_STEP * TWIP) as i64) } else { String::new() };
         let _ = write!(
             styles,
-            r#"<w:style w:type="paragraph" w:styleId="{id}"><w:name w:val="{name}"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="{}" w:after="{}"/>{ind}{outline}</w:pPr><w:rPr>{}{}<w:sz w:val="{}"/><w:szCs w:val="{}"/>{}</w:rPr></w:style>"#,
+            r#"<w:style w:type="paragraph" w:styleId="{id}"><w:name w:val="{name}"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="{}" w:after="{}"/>{ind}{outline}</w:pPr><w:rPr>{}{}{}<w:sz w:val="{}"/><w:szCs w:val="{}"/>{}</w:rPr></w:style>"#,
             (above * TWIP) as i64,
             (below * TWIP) as i64,
-            if bold { "<w:b/>" } else { "" },
-            if italic { "<w:i/>" } else { "" },
+            if look.font != DEFAULT_FONT { format!(r#"<w:rFonts w:ascii="{0}" w:hAnsi="{0}" w:cs="{0}"/>"#, esc(&look.font)) } else { String::new() },
+            if bold { "<w:b/>" } else { r#"<w:b w:val="0"/>"# },
+            if italic { "<w:i/>" } else { r#"<w:i w:val="0"/>"# },
             (size * 2.0) as i64,
             (size * 2.0) as i64,
-            if s == Style::Quote { r#"<w:color w:val="4A5060"/>"# } else { "" },
+            look.color.as_deref().map(|c| format!(r#"<w:color w:val="{}"/>"#, c.trim_start_matches('#').to_uppercase())).unwrap_or_default(),
             name = match s {
                 Style::Title => "Title",
                 Style::H1 => "heading 1",
@@ -700,7 +719,7 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
 // ---------- Reading ----------
 
 fn part(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Option<Vec<u8>> {
-    let mut f = zip.by_name(name.trim_start_matches('/')).ok()?;
+    let mut f = zip.by_index(crate::container::entry_index(zip, name)?).ok()?;
     if f.size() > 64 * 1024 * 1024 {
         return None;
     }
@@ -708,7 +727,7 @@ fn part(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Option<Vec<u8>>
 }
 
 fn text_part(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Option<String> {
-    part(zip, name).map(|b| String::from_utf8_lossy(&b).into_owned())
+    part(zip, name).map(|b| crate::container::transitional(String::from_utf8_lossy(&b).into_owned()))
 }
 
 fn resolve(base: &str, rel: &str) -> String {
@@ -726,6 +745,47 @@ fn resolve(base: &str, rel: &str) -> String {
         }
     }
     parts.join("/")
+}
+
+/// A header or footer part's words (field results left out), and whether it shows
+/// the page number.
+fn header_part(xml: &str) -> (String, bool) {
+    let Ok(d) = crate::xml::parse(xml) else { return (String::new(), false) };
+    let mut numbers = false;
+    let mut lines = Vec::new();
+    for p in d.descendants().filter(|n| n.has_tag_name((W_NS, "p"))) {
+        // Inside a field: its code, then its last result, neither of them words.
+        let mut field = 0u8;
+        let mut line = String::new();
+        for n in p.descendants() {
+            match n.tag_name().name() {
+                "fldChar" if n.tag_name().namespace() == Some(W_NS) => {
+                    field = match wattr(&n, "fldCharType") {
+                        Some("begin") => 1,
+                        Some("separate") => 2,
+                        _ => 0,
+                    }
+                }
+                "instrText" => {
+                    let code = n.text().unwrap_or("").trim().to_uppercase();
+                    numbers |= code.starts_with("PAGE");
+                }
+                "fldSimple" => {
+                    let code = wattr(&n, "instr").unwrap_or("").trim().to_uppercase();
+                    numbers |= code.starts_with("PAGE");
+                }
+                "t" if field == 0 && !n.ancestors().any(|a| a.has_tag_name((W_NS, "fldSimple"))) => {
+                    line.push_str(n.text().unwrap_or(""));
+                }
+                _ => {}
+            }
+        }
+        let line = line.trim();
+        if !line.is_empty() {
+            lines.push(line.to_string());
+        }
+    }
+    (lines.join(" "), numbers)
 }
 
 fn wattr<'a>(n: &roxmltree::Node<'a, '_>, local: &str) -> Option<&'a str> {
@@ -831,6 +891,20 @@ fn block_text(n: &roxmltree::Node) -> String {
         .join(" ")
         .trim()
         .to_string()
+}
+
+/// The children of `n`, seeing through content controls (`w:sdt`) to what they hold;
+/// a table of contents' control is kept whole.
+fn unwrapped<'a, 'i>(n: &roxmltree::Node<'a, 'i>) -> Vec<roxmltree::Node<'a, 'i>> {
+    let mut out = Vec::new();
+    for c in n.children().filter(|c| c.is_element()) {
+        let toc = || c.descendants().any(|d| d.has_tag_name((W_NS, "instrText")) && d.text().is_some_and(|t| t.trim_start().starts_with("TOC")));
+        match child(&c, "sdtContent") {
+            Some(content) if c.has_tag_name((W_NS, "sdt")) && !toc() => out.extend(unwrapped(&content)),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Does this paragraph begin a field of this kind (`TOC`)?
@@ -1168,9 +1242,9 @@ fn style_from_id(id: &str) -> Style {
 }
 
 pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
-    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).context("it isn't a Word document")?;
+    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| anyhow::anyhow!(crate::container::not_a_package(bytes, "Word document")))?;
     let root = text_part(&mut zip, "_rels/.rels").unwrap_or_default();
-    let doc_path = roxmltree::Document::parse(&root)
+    let doc_path = crate::xml::parse(&root)
         .ok()
         .and_then(|d| {
             d.descendants()
@@ -1182,7 +1256,7 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
     let xml = text_part(&mut zip, &doc_path).context("the document is missing")?;
     let rels_path = format!("{base}/_rels/{}.rels", doc_path.rsplit('/').next().unwrap_or("document.xml"));
     let rels_xml = text_part(&mut zip, &rels_path).unwrap_or_default();
-    let rels_doc = roxmltree::Document::parse(&rels_xml).ok();
+    let rels_doc = crate::xml::parse(&rels_xml).ok();
     let rel_nodes = || rels_doc.iter().flat_map(|d| d.descendants()).filter(|n| n.has_tag_name("Relationship"));
     let external = |n: &roxmltree::Node| n.attribute("TargetMode") == Some("External");
     let rels: HashMap<String, String> = rel_nodes()
@@ -1197,7 +1271,7 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
     // Which numbering instances are bullets, level by level.
     let mut numbering = HashMap::new();
     if let Some(x) = text_part(&mut zip, &format!("{base}/numbering.xml"))
-        && let Ok(d) = roxmltree::Document::parse(&x)
+        && let Ok(d) = crate::xml::parse(&x)
     {
         let mut abstracts: HashMap<String, Vec<bool>> = HashMap::new();
         for a in d.descendants().filter(|n| n.has_tag_name((W_NS, "abstractNum"))) {
@@ -1220,19 +1294,44 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
     }
     // Paragraph styles by id, through their names.
     let mut styles = HashMap::new();
+    let mut looks: std::collections::BTreeMap<String, StyleLook> = std::collections::BTreeMap::new();
     if let Some(x) = text_part(&mut zip, &format!("{base}/styles.xml"))
-        && let Ok(d) = roxmltree::Document::parse(&x)
+        && let Ok(d) = crate::xml::parse(&x)
     {
         for s in d.descendants().filter(|n| n.has_tag_name((W_NS, "style")) && wattr(n, "type") == Some("paragraph")) {
             let (Some(id), name) = (wattr(&s, "styleId"), child(&s, "name").and_then(|n| wattr(&n, "val"))) else { continue };
             let style = name.map(style_from_id).filter(|s| *s != Style::Normal).unwrap_or_else(|| style_from_id(id));
             styles.insert(id.to_string(), style);
+            // How the style looks, where that differs from ours.
+            if style != Style::Normal
+                && !looks.contains_key(style.id())
+                && let Some(rpr) = child(&s, "rPr")
+            {
+                let ours = look_of(&Default::default(), style);
+                let size = child(&rpr, "sz").and_then(|n| wattr(&n, "val")).and_then(|v| v.parse::<f64>().ok()).map(|v| v / 2.0);
+                let font = child(&rpr, "rFonts").and_then(|n| wattr(&n, "ascii").or(wattr(&n, "hAnsi"))).map(String::from);
+                let color = child(&rpr, "color")
+                    .and_then(|n| wattr(&n, "val"))
+                    .filter(|v| v.len() == 6 && v.chars().all(|c| c.is_ascii_hexdigit()))
+                    .map(|v| format!("#{}", v.to_lowercase()));
+                let flag = |k: &str| child(&rpr, k).map(|_| on(&rpr, k));
+                let look = StyleLook {
+                    font: font.filter(|f| *f != ours.font),
+                    size: size.filter(|v| (*v - ours.size).abs() > 0.01),
+                    color: color.filter(|c| Some(c) != ours.color.as_ref()),
+                    bold: flag("b").filter(|b| *b != ours.bold),
+                    italic: flag("i").filter(|i| *i != ours.italic),
+                };
+                if look != StyleLook::default() {
+                    looks.insert(style.id().to_string(), look);
+                }
+            }
         }
     }
 
-    let d = roxmltree::Document::parse(&xml).context("the document is damaged")?;
+    let d = crate::xml::parse(&xml).context("the document is damaged")?;
     let body = d.descendants().find(|n| n.has_tag_name((W_NS, "body"))).context("the document has no body")?;
-    let mut doc = Document::default();
+    let mut doc = Document { styles: looks, ..Default::default() };
     // The page: size and margins from the last section.
     if let Some(sect) = body.children().rfind(|n| n.has_tag_name((W_NS, "sectPr"))) {
         if let Some(sz) = child(&sect, "pgSz") {
@@ -1242,6 +1341,27 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
             doc.page.landscape = w > h || wattr(&sz, "orient") == Some("landscape");
         }
         doc.page.plain_first_page = child(&sect, "titlePg").is_some_and(|t| wattr(&t, "val").is_none_or(|v| v != "0" && v != "false"));
+        // Headers and footers: the usual ones, and even pages' when the settings ask for them.
+        let odd_even = rels
+            .values()
+            .find(|t| t.ends_with("settings.xml"))
+            .and_then(|p| text_part(&mut zip, p))
+            .is_some_and(|x| x.contains("evenAndOddHeaders") && !x.contains(r#"evenAndOddHeaders w:val="0""#));
+        for r in sect.children().filter(|n| n.has_tag_name((W_NS, "headerReference")) || n.has_tag_name((W_NS, "footerReference"))) {
+            let kind = wattr(&r, "type").unwrap_or("default");
+            let Some(path) = r.attribute((R_NS, "id")).and_then(|id| rels.get(id)) else { continue };
+            let Some(xml) = text_part(&mut zip, path) else { continue };
+            let (text, numbers) = header_part(&xml);
+            let header = r.tag_name().name() == "headerReference";
+            match (kind, header) {
+                ("default", true) => doc.page.header = text,
+                ("default", false) => doc.page.footer = text,
+                ("even", true) if odd_even => doc.page.even_header = Some(text),
+                ("even", false) if odd_even => doc.page.even_footer = Some(text),
+                _ => continue,
+            }
+            doc.page.page_numbers |= numbers;
+        }
         if let Some(m) = child(&sect, "pgMar") {
             let g = |k: &str| wattr(&m, k).and_then(|v| v.parse::<f64>().ok()).map(|v| (v / TWIP).clamp(18.0, 216.0));
             doc.page.margins = [
@@ -1260,7 +1380,7 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
         let mut out = HashMap::new();
         if let Some(path) = part_of(part)
             && let Some(x) = text_part(&mut zip, &path)
-            && let Ok(d) = roxmltree::Document::parse(&x)
+            && let Ok(d) = crate::xml::parse(&x)
         {
             for f in d.descendants().filter(|n| n.has_tag_name((W_NS, tag)) && wattr(n, "type").is_none()) {
                 let Some(id) = wattr(&f, "id") else { continue };
@@ -1274,7 +1394,7 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
     let mut comment_text = HashMap::new();
     if let Some(path) = part_of("comments")
         && let Some(x) = text_part(&mut zip, &path)
-        && let Ok(d) = roxmltree::Document::parse(&x)
+        && let Ok(d) = crate::xml::parse(&x)
     {
         for c in d.descendants().filter(|n| n.has_tag_name((W_NS, "comment"))) {
             let Some(id) = wattr(&c, "id") else { continue };
@@ -1322,7 +1442,7 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
         max_width,
         in_field: false,
     };
-    for n in body.children() {
+    for n in unwrapped(&body) {
         if n.has_tag_name((W_NS, "p")) {
             // A table of contents field: kept as one block, its entries left to us.
             if field_starts(&n, "TOC") {
@@ -1338,12 +1458,12 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
             push_paragraph(&mut reader, &n, &mut doc);
         } else if n.has_tag_name((W_NS, "tbl")) {
             let mut t = Table { rows: Vec::new(), header: false };
-            for tr in n.children().filter(|c| c.has_tag_name((W_NS, "tr"))) {
+            for tr in unwrapped(&n).into_iter().filter(|c| c.has_tag_name((W_NS, "tr"))) {
                 if t.rows.is_empty() && child(&tr, "trPr").is_some_and(|p| child(&p, "tblHeader").is_some()) {
                     t.header = true;
                 }
-                let row: Vec<String> = tr
-                    .children()
+                let row: Vec<String> = unwrapped(&tr)
+                    .into_iter()
                     .filter(|c| c.has_tag_name((W_NS, "tc")))
                     .map(|tc| {
                         tc.descendants()
@@ -1401,9 +1521,6 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
         doc.tracking = x.contains("trackRevisions") && !x.contains(r#"trackRevisions w:val="0""#) && !x.contains(r#"trackRevisions w:val="false""#);
     }
     let media = std::mem::take(&mut reader.media);
-    if doc.blocks.is_empty() {
-        bail!("the document is empty");
-    }
     doc.tidy();
     Ok((doc, media))
 }
@@ -1452,15 +1569,22 @@ mod tests {
             footer: String::new(),
             page_numbers: true,
             plain_first_page: false,
+            even_header: Some("Even head".into()),
+            even_footer: None,
             columns: 2,
             column_gap: 24.0,
         };
+        doc.styles.insert("h2".into(), StyleLook { font: Some("Noto Serif".into()), size: Some(18.0), color: Some("#1a5fb4".into()), bold: Some(false), italic: Some(true) });
         doc.tidy();
 
         let (bytes, lost) = write(&doc, &media).unwrap();
         assert!(lost.is_empty());
         let (back, back_media) = read(&bytes).unwrap();
+        assert_eq!(back.styles, doc.styles);
         assert_eq!(back.page.paper, "a4");
+        // Headers, footers and page numbers come back, even pages' too.
+        assert_eq!((back.page.header.as_str(), back.page.footer.as_str(), back.page.page_numbers), ("Head", "", true));
+        assert_eq!((back.page.even_header.as_deref(), back.page.even_footer.as_deref()), (Some("Even head"), Some("")));
         assert!(!back.page.plain_first_page);
         let mut plain = doc.clone();
         plain.page.plain_first_page = true;

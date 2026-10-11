@@ -315,14 +315,14 @@ pub fn write(deck: &Deck, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u8>,
             i + 1,
             layout_id(s.layout)
         );
-        if let Some(f) = title_frame(s.layout) {
+        if let Some(f) = s.title_frame() {
             pages.push_str(&w.placeholder(s, "title", &s.title, f, s.title_size.unwrap_or(f.4)));
         }
-        if let Some(f) = body_frame(s.layout) {
+        if let Some(f) = s.body_frame() {
             let class = if matches!(s.layout, Layout::Title | Layout::Section | Layout::Picture) { "subtitle" } else { "outline" };
             pages.push_str(&w.placeholder(s, class, &s.body, f, s.body_size.unwrap_or(f.4)));
         }
-        if let Some(f) = body2_frame(s.layout) {
+        if let Some(f) = s.body2_frame() {
             pages.push_str(&w.placeholder(s, "outline", &s.body2, f, s.body_size.unwrap_or(f.4)));
         }
         for o in &s.objects {
@@ -636,8 +636,8 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
     let mut pkg = odf::Package::open(bytes, odf::ODP, "presentation")?;
     let content = pkg.content()?;
     let styles_text = pkg.text("styles.xml").unwrap_or_default();
-    let cdoc = roxmltree::Document::parse(&content).context("the presentation is damaged")?;
-    let sdoc = roxmltree::Document::parse(&styles_text).ok();
+    let cdoc = crate::xml::parse(&content).context("the presentation is damaged")?;
+    let sdoc = crate::xml::parse(&styles_text).ok();
     let mut parts = Vec::new();
     if let Some(s) = &sdoc {
         parts.push(s);
@@ -785,6 +785,11 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
                 s.body = if s.body.is_empty() { more } else { format!("{}\n{more}", s.body) };
             }
         }
+        // Placeholders where the slide has them, if not where the layout would.
+        s.frames.title = moved(frames[0], title_frame(s.layout));
+        if s.layout != Layout::TwoColumns {
+            s.frames.body = moved(frames[1], body_frame(s.layout));
+        }
         // A layout's own sizes aren't overrides.
         if s.title_size.is_some() && s.title_size == title_frame(s.layout).map(|f| f.4) {
             s.title_size = None;
@@ -809,7 +814,7 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
         }
     }
     let media = std::mem::take(&mut r.media);
-    Ok((Deck { slides, master }, media))
+    Ok((Deck { slides, master, layouts: Default::default() }, media))
 }
 
 #[cfg(test)]
@@ -840,6 +845,8 @@ mod tests {
         s.objects.push(line);
         s.objects.push(Object::new(4, Kind::Table { rows: vec![vec!["A".into(), "B".into()], vec!["1".into(), "2".into()]], header: true }, (60.0, 60.0, 300.0, 120.0)));
         deck.master.push(Object::new(1, Kind::Text { text: "{n}".into() }, (880.0, 500.0, 60.0, 30.0)));
+        // A title moved from its layout's place.
+        deck.slides[2].frames.title = Some((120.0, 30.0, 600.0, 90.0));
         let (bytes, lost) = write(&deck, &media).unwrap();
         assert!(lost.is_empty(), "{lost:?}");
         let (back, back_media) = read(&bytes).unwrap();
@@ -849,6 +856,7 @@ mod tests {
             assert_eq!((a.layout, &a.title, &a.body, &a.body2, &a.notes), (b.layout, &b.title, &b.body, &b.body2, &b.notes));
             assert_eq!((&a.background, &a.color, &a.font, a.bold, a.italic), (&b.background, &b.color, &b.font, b.bold, b.italic));
             assert_eq!((a.title_size, a.body_size), (b.title_size, b.body_size));
+            assert_eq!(a.frames, b.frames, "{}", a.title);
             assert_eq!(a.objects.len(), b.objects.len());
             for (oa, ob) in a.objects.iter().zip(&b.objects) {
                 if !matches!(oa.kind, Kind::Image { .. }) {

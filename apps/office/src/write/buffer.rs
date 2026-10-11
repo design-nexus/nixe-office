@@ -93,6 +93,21 @@ pub fn setup_tags(buffer: &gtk::TextBuffer) {
     table.add(&f);
 }
 
+/// Give each paragraph style's tag its look, with the document's changes to it.
+/// (Normal text has no tag: it takes the editor's own look.)
+pub fn apply_looks(buffer: &gtk::TextBuffer, styles: &std::collections::BTreeMap<String, StyleLook>) {
+    let table = buffer.tag_table();
+    for style in Style::ALL.into_iter().filter(|s| *s != Style::Normal) {
+        let Some(t) = table.lookup(&format!("style:{}", style.id())) else { continue };
+        let look = look_of(styles, style);
+        t.set_size_points(look.size);
+        t.set_family(Some(&look.font));
+        t.set_weight(if look.bold { 650 } else { 400 });
+        t.set_style(if look.italic { gtk::pango::Style::Italic } else { gtk::pango::Style::Normal });
+        t.set_foreground(look.color.as_deref());
+    }
+}
+
 /// A named tag, created on first use (fonts, sizes, colours, margins).
 pub fn tag(buffer: &gtk::TextBuffer, name: &str) -> gtk::TextTag {
     let table = buffer.tag_table();

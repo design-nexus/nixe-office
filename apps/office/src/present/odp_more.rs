@@ -210,6 +210,8 @@ fn class_of(kind: ChartKind) -> &'static str {
         ChartKind::Area | ChartKind::StackedArea => "chart:area",
         ChartKind::Pie => "chart:circle",
         ChartKind::Scatter => "chart:scatter",
+        ChartKind::HBar => "chart:bar",
+        ChartKind::Doughnut => "chart:ring",
     }
 }
 
@@ -227,8 +229,9 @@ pub fn chart_document(kind: ChartKind, names: &[String], labels: &[String], seri
     );
     let _ = write!(
         styles,
-        r#"<style:style style:name="chP" style:family="chart"><style:chart-properties chart:stacked="{}" chart:vertical="false"/></style:style>"#,
-        kind.stacked()
+        r#"<style:style style:name="chP" style:family="chart"><style:chart-properties chart:stacked="{}" chart:vertical="{}"/></style:style>"#,
+        kind.stacked(),
+        kind == ChartKind::HBar
     );
     let mut sers = String::new();
     for (i, _) in series.iter().enumerate() {
@@ -250,7 +253,7 @@ pub fn chart_document(kind: ChartKind, names: &[String], labels: &[String], seri
             class_of(kind)
         );
     }
-    let axes = if kind == ChartKind::Pie {
+    let axes = if kind.round() {
         String::new()
     } else {
         format!(
@@ -289,7 +292,7 @@ pub fn chart_document(kind: ChartKind, names: &[String], labels: &[String], seri
         table.push_str("</table:table-row>");
     }
     table.push_str("</table:table-rows></table:table>");
-    let legend = if series.len() > 1 || kind == ChartKind::Pie {
+    let legend = if series.len() > 1 || kind.round() {
         r#"<chart:legend chart:legend-position="bottom" style:legend-expansion="wide"/>"#
     } else {
         ""
@@ -312,7 +315,7 @@ pub const CHART_STYLES: &str = concat!(
 
 /// A chart from its embedded document: kind, series names, labels, values.
 pub fn read_chart(xml: &str) -> Option<Kind> {
-    let doc = roxmltree::Document::parse(xml).ok()?;
+    let doc = crate::xml::parse(xml).ok()?;
     let chart = doc.descendants().find(|n| n.has_tag_name((CHART, "chart")))?;
     let class = attr(&chart, CHART, "class").unwrap_or("chart:bar");
     let styles = odf::Styles::read(&[&doc]);
@@ -321,13 +324,16 @@ pub fn read_chart(xml: &str) -> Option<Kind> {
         .and_then(|p| attr(&p, CHART, "style-name"))
         .and_then(|s| styles.get("chart", s, "chart/stacked").or_else(|| styles.get("chart", s, "chart/percentage")))
         == Some("true");
+    let sideways = plot.and_then(|p| attr(&p, CHART, "style-name")).and_then(|s| styles.get("chart", s, "chart/vertical")) == Some("true");
     let kind = match class.trim_start_matches("chart:") {
         "line" => ChartKind::Line,
         "area" if stacked => ChartKind::StackedArea,
         "area" => ChartKind::Area,
-        "circle" | "ring" => ChartKind::Pie,
+        "ring" => ChartKind::Doughnut,
+        "circle" => ChartKind::Pie,
         "scatter" | "bubble" => ChartKind::Scatter,
         _ if stacked => ChartKind::StackedBar,
+        _ if sideways => ChartKind::HBar,
         _ => ChartKind::Bar,
     };
     // The numbers: header row names the series, the first column labels the points.
@@ -357,3 +363,21 @@ pub fn read_chart(xml: &str) -> Option<Kind> {
         (0..n).map(|i| body.iter().map(|r| r.get(i + 1).and_then(|(t, v)| v.or_else(|| t.parse().ok())).unwrap_or(0.0)).collect()).collect();
     Some(Kind::Chart { chart: kind, names, labels, series })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_chart_kind_round_trips() {
+        let Kind::Chart { names, labels, series, .. } = Kind::sample_chart() else { unreachable!() };
+        for kind in ChartKind::ALL {
+            // OpenDocument's embedded chart, and PowerPoint's chart part.
+            let odf = chart_document(kind, &names, &labels, &series, (300.0, 200.0));
+            assert!(matches!(read_chart(&odf), Some(Kind::Chart { chart, .. }) if chart == kind), "{kind:?} in OpenDocument");
+            let pptx = super::super::pptx_more::chart_part(kind, &names, &labels, &series);
+            assert!(matches!(super::super::pptx_more::read_chart(&pptx), Some(Kind::Chart { chart, .. }) if chart == kind), "{kind:?} in PowerPoint");
+        }
+    }
+}
+
