@@ -65,7 +65,7 @@ fn argb(v: &str) -> Option<String> {
 }
 
 /// A cell's number format: one of ours when it matches, else Excel's code kept as is.
-fn num_fmt(id: u32, code: Option<&str>) -> (NumFmt, Option<String>) {
+pub(super) fn num_fmt(id: u32, code: Option<&str>) -> (NumFmt, Option<String>) {
     // Excel's built-in formats, by number.
     let builtin = match id {
         0 | 49 => return (NumFmt::General, None),

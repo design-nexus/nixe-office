@@ -9,6 +9,7 @@ pub(super) mod grid;
 mod lists;
 pub mod model;
 mod numfmt;
+mod ods;
 mod pages;
 mod menu;
 mod placed;
@@ -1579,8 +1580,8 @@ impl doc::Editor for Sheets {
         let wb = match ext.as_str() {
             "nsheets" => Sheets::read_native(&bytes)?,
             "csv" => Workbook::from_csv(&String::from_utf8_lossy(&bytes))?,
-            "xlsx" => {
-                let opened = xlsx::read(&bytes)?;
+            "xlsx" | "ods" => {
+                let opened = if ext == "ods" { ods::read(&bytes)? } else { xlsx::read(&bytes)? };
                 if opened.truncated {
                     window::toast(&format!(
                         "Only the first {} rows and {COLS} columns of each sheet were opened.",
@@ -1591,7 +1592,7 @@ impl doc::Editor for Sheets {
                 }
                 opened.workbook
             }
-            _ => bail!("Nexus Sheets opens .nsheets, .xlsx and .csv files"),
+            _ => bail!("Nexus Sheets opens .nsheets, .xlsx, .ods and .csv files"),
         };
         let chart = wb.sheet().chart.is_some();
         self.load(wb);
@@ -1620,12 +1621,17 @@ impl doc::Editor for Sheets {
                 }
                 Ok(lost)
             }
+            "ods" => {
+                let (bytes, lost) = ods::write(&self.wb.borrow(), &self.calc.borrow())?;
+                crate::cmd::atomic_write(path, bytes)?;
+                Ok(lost)
+            }
             "xlsx" => {
                 let (bytes, lost) = xlsx::write(&self.wb.borrow(), &self.calc.borrow())?;
                 crate::cmd::atomic_write(path, bytes)?;
                 Ok(lost)
             }
-            _ => bail!("Nexus Sheets saves .nsheets, .xlsx and .csv files"),
+            _ => bail!("Nexus Sheets saves .nsheets, .xlsx, .ods and .csv files"),
         }
     }
 
@@ -1761,7 +1767,8 @@ pub fn write_sample(path: &Path) {
     wb.set(1, 2, "1150");
     wb.set(2, 1, "200");
     let calc = Calc::new(&wb, 0.0);
-    let (bytes, _) = xlsx::write(&wb, &calc).expect("an xlsx");
+    let ods = path.extension().is_some_and(|e| e == "ods");
+    let (bytes, _) = if ods { ods::write(&wb, &calc) } else { xlsx::write(&wb, &calc) }.expect("a workbook");
     std::fs::write(path, bytes).expect("written");
 }
 
@@ -1962,6 +1969,11 @@ pub mod tests {
         Editor::new_document(&*s, None);
         Editor::open(&*s, &path).unwrap();
         assert_eq!(*s.wb.borrow(), before);
+        let ods = dir.join("book.ods");
+        Editor::save(&*s, &ods).unwrap();
+        Editor::open(&*s, &ods).unwrap();
+        assert_eq!(s.wb.borrow().sheet().cells, before.sheet().cells);
+        Editor::open(&*s, &path).unwrap();
         let lost = Editor::save(&*s, &dir.join("book.csv")).unwrap();
         assert!(!lost.is_empty(), "bold can't go in a CSV");
 

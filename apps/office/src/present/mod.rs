@@ -5,6 +5,7 @@ mod arrange;
 mod export;
 mod looks;
 mod media;
+mod odp;
 pub(crate) mod data;
 mod pptx;
 pub(crate) mod pptx_more;
@@ -1690,7 +1691,8 @@ impl doc::Editor for Present {
         let (deck, media) = match ext.as_str() {
             "npresent" => Present::read_native(&bytes)?,
             "pptx" => pptx::read(&bytes)?,
-            _ => bail!("Nexus Present opens .npresent and .pptx files"),
+            "odp" => odp::read(&bytes)?,
+            _ => bail!("Nexus Present opens .npresent, .pptx and .odp files"),
         };
         self.load(deck, media);
         Ok(())
@@ -1709,7 +1711,12 @@ impl doc::Editor for Present {
                 crate::cmd::atomic_write(path, bytes)?;
                 Ok(lost)
             }
-            _ => bail!("Nexus Present saves .npresent and .pptx files"),
+            "odp" => {
+                let (bytes, lost) = odp::write(&self.deck.borrow(), &self.media.borrow())?;
+                crate::cmd::atomic_write(path, bytes)?;
+                Ok(lost)
+            }
+            _ => bail!("Nexus Present saves .npresent, .pptx and .odp files"),
         }
     }
 
@@ -1859,7 +1866,8 @@ pub fn write_sample(path: &Path) {
     deck.slides[0].hide_master = true;
     deck.slides[1].objects.push(Object::new(30, Kind::Media { media: "clip-1.mp4".into(), video: true }, (560.0, 360.0, 300.0, 168.0)));
     let media: BTreeMap<String, Vec<u8>> = [("clip-1.mp4".to_string(), b"sample".to_vec())].into();
-    let (bytes, _) = pptx::write(&deck, &media).expect("a pptx");
+    let odp = path.extension().is_some_and(|e| e == "odp");
+    let (bytes, _) = if odp { odp::write(&deck, &media) } else { pptx::write(&deck, &media) }.expect("a presentation");
     std::fs::write(path, bytes).expect("written");
 }
 
@@ -1914,6 +1922,9 @@ pub mod tests {
         let lost = Editor::save(&*p, &dir.join("deck.pptx")).unwrap();
         assert_eq!(lost, vec!["speaker notes"]);
         Editor::open(&*p, &dir.join("deck.pptx")).unwrap();
+        assert_eq!(p.deck.borrow().slides[1].title, "Hello");
+        assert!(Editor::save(&*p, &dir.join("deck.odp")).unwrap().is_empty());
+        Editor::open(&*p, &dir.join("deck.odp")).unwrap();
         assert_eq!(p.deck.borrow().slides[1].title, "Hello");
 
         // Find, replace and the PDF.

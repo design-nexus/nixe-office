@@ -87,9 +87,9 @@ impl Kind {
     /// Every extension this app opens.
     pub fn opens(self) -> &'static [&'static str] {
         match self {
-            Kind::Write => &["nwrite", "docx", "md", "markdown", "txt"],
-            Kind::Sheets => &["nsheets", "xlsx", "csv"],
-            Kind::Present => &["npresent", "pptx"],
+            Kind::Write => &["nwrite", "docx", "odt", "md", "markdown", "txt"],
+            Kind::Sheets => &["nsheets", "xlsx", "ods", "csv"],
+            Kind::Present => &["npresent", "pptx", "odp"],
         }
     }
 
@@ -108,13 +108,21 @@ impl Kind {
             Kind::Write => &[
                 ("Nexus Write document", "nwrite"),
                 ("Word document", "docx"),
+                ("OpenDocument text", "odt"),
                 ("Markdown", "md"),
                 ("Plain text", "txt"),
             ],
             Kind::Sheets => {
-                &[("Nexus Sheets workbook", "nsheets"), ("Excel workbook", "xlsx"), ("CSV (one sheet, values only)", "csv")]
+                &[
+                    ("Nexus Sheets workbook", "nsheets"),
+                    ("Excel workbook", "xlsx"),
+                    ("OpenDocument spreadsheet", "ods"),
+                    ("CSV (one sheet, values only)", "csv"),
+                ]
             }
-            Kind::Present => &[("Nexus Present slides", "npresent"), ("PowerPoint slides", "pptx")],
+            Kind::Present => {
+                &[("Nexus Present slides", "npresent"), ("PowerPoint slides", "pptx"), ("OpenDocument presentation", "odp")]
+            }
         }
     }
 }

@@ -10,6 +10,7 @@ mod layout;
 mod legacy;
 mod links;
 mod markdown;
+mod odt;
 mod marks;
 pub mod model;
 mod picture;
@@ -1699,9 +1700,10 @@ impl doc::Editor for Writer {
         let (d, media) = match ext.as_str() {
             "nwrite" => Writer::read_native(&std::fs::read(path)?)?,
             "docx" => docx::read(&std::fs::read(path)?)?,
+            "odt" => odt::read(&std::fs::read(path)?)?,
             "md" | "markdown" => markdown::read(&String::from_utf8_lossy(&std::fs::read(path)?), path.parent()),
             "txt" | "text" => (markdown::read_text(&String::from_utf8_lossy(&std::fs::read(path)?)), BTreeMap::new()),
-            _ => bail!("Nexus Write opens .nwrite, .docx, .md and .txt files"),
+            _ => bail!("Nexus Write opens .nwrite, .docx, .odt, .md and .txt files"),
         };
         self.load_fresh(&d, &media);
         Ok(())
@@ -1717,6 +1719,12 @@ impl doc::Editor for Writer {
             "docx" => {
                 let d = self.document();
                 let (bytes, lost) = docx::write(&d, &self.media.borrow())?;
+                crate::cmd::atomic_write(path, bytes)?;
+                Ok(lost)
+            }
+            "odt" => {
+                let d = self.document();
+                let (bytes, lost) = odt::write(&d, &self.media.borrow())?;
                 crate::cmd::atomic_write(path, bytes)?;
                 Ok(lost)
             }
@@ -1741,7 +1749,7 @@ impl doc::Editor for Writer {
                 crate::cmd::atomic_write(path, markdown::write_text(&self.document()))?;
                 Ok(vec!["formatting, pictures and tables' layout".into()])
             }
-            _ => bail!("Nexus Write saves .nwrite, .docx, .md and .txt files"),
+            _ => bail!("Nexus Write saves .nwrite, .docx, .odt, .md and .txt files"),
         }
     }
 
@@ -2004,7 +2012,8 @@ pub fn write_sample(path: &Path) {
     )
     .expect("a png");
     let media: BTreeMap<String, Vec<u8>> = [("dot.png".to_string(), dot)].into();
-    let (bytes, _) = docx::write(&d, &media).expect("a docx");
+    let odt = path.extension().is_some_and(|e| e == "odt");
+    let (bytes, _) = if odt { odt::write(&d, &media) } else { docx::write(&d, &media) }.expect("a document");
     std::fs::write(path, bytes).expect("written");
 }
 
@@ -2169,6 +2178,12 @@ pub mod tests {
         w.load_fresh(&Document::default(), &BTreeMap::new());
         Editor::open(&*w, &path).unwrap();
         assert_eq!(w.document(), before);
+        // As OpenDocument: the words and headings come back.
+        let odt = dir.join("journal.odt");
+        assert!(Editor::save(&*w, &odt).unwrap().is_empty());
+        Editor::open(&*w, &odt).unwrap();
+        assert_eq!(w.document().headings(), before.headings());
+        Editor::open(&*w, &path).unwrap();
 
         // PDF export.
         let pdf = dir.join("journal.pdf");

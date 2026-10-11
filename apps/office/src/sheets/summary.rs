@@ -50,7 +50,7 @@ pub struct Request {
 }
 
 /// A sheet name as a formula writes it.
-fn sheet_ref(name: &str) -> String {
+pub(super) fn sheet_ref(name: &str) -> String {
     if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !name.starts_with(|c: char| c.is_ascii_digit()) {
         name.to_string()
     } else {

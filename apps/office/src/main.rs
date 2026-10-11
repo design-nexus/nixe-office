@@ -8,6 +8,7 @@ mod container;
 mod doc;
 mod fmt;
 mod home;
+mod odf;
 mod paths;
 mod prefs;
 mod present;
@@ -153,7 +154,7 @@ mod gtk_tests {
     }
 }
 
-/// Writes one file of each Office kind to `$NXO_SAMPLE_DIR`, for checking them
+/// Writes one file of each Office and OpenDocument kind to `$NXO_SAMPLE_DIR`, for checking them
 /// in other software: `cargo test -- --ignored write_office_samples`.
 #[cfg(test)]
 mod samples {
@@ -166,6 +167,9 @@ mod samples {
         crate::write::write_sample(&dir.join("sample.docx"));
         crate::sheets::write_sample(&dir.join("sample.xlsx"));
         crate::present::write_sample(&dir.join("sample.pptx"));
+        crate::write::write_sample(&dir.join("sample.odt"));
+        crate::sheets::write_sample(&dir.join("sample.ods"));
+        crate::present::write_sample(&dir.join("sample.odp"));
         crate::present::write_export_samples(&dir);
     }
 }

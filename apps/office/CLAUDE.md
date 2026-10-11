@@ -136,6 +136,18 @@
 - **Office files** are written by hand as XML strings (`write/docx.rs`,
   `present/pptx.rs`, `present/pptx_more.rs` for tables, charts, transitions and
   timing) and read with roxmltree.
+- **OpenDocument** (`.odt`, `.ods`, `.odp`): `odf.rs` has the package (mimetype first
+  and stored, manifest, `content.xml`, `styles.xml`, `Pictures/`), lengths and
+  `Styles` (named and automatic styles from both parts, looked up through parents;
+  `own` for a style's own settings). `write/odt.rs` maps our styles to LibreOffice's
+  named ones (Heading 1, Quotations…); a paragraph naming one of those takes none of
+  its settings as overrides. Lists are nested `text:list`s by indent; the plain first
+  page is a "First Page" master named by the first paragraph. `sheets/ods.rs`
+  translates formulas (`to_odf`/`from_odf`: `[.A1]`, `;`, `COM.MICROSOFT.` names) and
+  turns number styles into Excel format codes so `xlsx::num_fmt` maps them.
+  `present/odp.rs` names its page layouts `Nexus-<layout>` so they come back exactly;
+  other files' layouts are guessed from their placeholders. `{n}` on the master is
+  `text:page-number`.
 - Icons: Lucide, converted from strokes to fills (GTK's symbolic loader fills every
   path) and kept in `data/icons/`. To add one: fetch it from `lucide-static`, replace
   `currentColor` with `#000000`, run it through `picosvg`, save it as

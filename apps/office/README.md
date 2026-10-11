@@ -2,9 +2,9 @@
 
 Three home office apps for [Omarchy](https://omarchy.org): **Nexus Write** for
 documents, **Nexus Sheets** for spreadsheets and **Nexus Present** for slides. They
-open and save Word, Excel and PowerPoint files, export PDF and print. The window takes
-its colors from your Omarchy theme and fits a half-screen tile; the page itself keeps
-its own colors, so what you see is what prints.
+open and save Word, Excel and PowerPoint files and their OpenDocument counterparts,
+export PDF and print. The window takes its colors from your Omarchy theme and fits a
+half-screen tile; the page itself keeps its own colors, so what you see is what prints.
 
 ## What they do
 
@@ -135,7 +135,8 @@ All three:
 
 - **Files:** their own formats (`.nwrite`, `.nsheets`, `.npresent`) keep everything.
   Word (`.docx`), Excel (`.xlsx`) and PowerPoint (`.pptx`) files open and save in
-  place; the first time a file can't hold something (speaker notes in a PowerPoint
+  place, and so do OpenDocument files (`.odt`, `.ods`, `.odp`, as LibreOffice
+  writes them); the first time a file can't hold something (speaker notes in a PowerPoint
   file, for instance), a note says what. Sheets also opens and saves CSV; Write also
   opens and saves Markdown (`.md`, with its pictures in a folder beside it) and plain
   text (`.txt`).
@@ -186,7 +187,7 @@ Launching an app again while it's running brings its window forward.
 | Key | What |
 | --- | --- |
 | <kbd>Ctrl</kbd>+<kbd>N</kbd> / <kbd>Ctrl</kbd>+<kbd>O</kbd> | New blank file / open a file |
-| <kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> | Save / save as (also as a Word, Excel or PowerPoint file) |
+| <kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> | Save / save as (also as a Word, Excel, PowerPoint or OpenDocument file) |
 | <kbd>Ctrl</kbd>+<kbd>E</kbd> / <kbd>Ctrl</kbd>+<kbd>P</kbd> | Export as PDF / print |
 | <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> | Undo / redo |
 | <kbd>Ctrl</kbd>+<kbd>F</kbd> / <kbd>Ctrl</kbd>+<kbd>H</kbd> | Find / find and replace |
