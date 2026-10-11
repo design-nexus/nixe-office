@@ -66,6 +66,8 @@
   hover tooltip); in Word they're `w:hyperlink` with an external relationship, in a
   PDF a cairo `Link` tag per line. Superscript and subscript are the `sup`/`sub` flags.
   Typing at the end of a link or comment doesn't extend it (`pick_up_format`).
+  The format painter (`painter.rs`) copies a `TextRun`'s look and the paragraph's
+  style, alignment and spacing; it paints when a click or drag in the text ends.
   Smart quotes and symbols (`autocorrect.rs`) replace a single typed character in
   `after_change`, only while the page has focus; multi-character ones are skipped while
   tracking changes.
@@ -107,6 +109,14 @@
   in Excel they're drawing anchors and tables (the cells a chart spans get explicit
   sizes, as Excel's defaults differ). Formulas parse with a depth limit
   (`formula::MAX_DEPTH`) and `^` works left to right, as in Excel.
+  Blocks of values (`arrays.rs`): a range, an operator over ranges, or UNIQUE /
+  FILTER / SORT / SEQUENCE give a `Block`; as a function argument it's an
+  `Arg::Grid`, as a cell's whole formula `Calc` spills it into the empty cells
+  below and right (`spilled`, `spills`; `#SPILL!` when blocked). An empty cell asks
+  the formulas above-left that `may_spill` before it's known to be empty. In Excel
+  they're dynamic array formulas; in OpenDocument, matrix formulas with their values
+  in the cells (readers skip those values). Print area and fit are
+  `Sheet.print_area` / `print_fit` (print scales the cells with cairo).
 - **Present** (`present/`): slides are 960 × 540 (points; PowerPoint's 16:9 page).
   `render.rs` draws a slide for the canvas, thumbnails, slideshow, presenter view and
   PDF alike. Text is edited in an overlay `TextView` styled to the slide's font at the
@@ -124,7 +134,8 @@
   `export.rs` has pictures, handouts and notes pages (the file menu's extra items). Slide charts
   reuse `sheets::chart::draw`. Builds are `Object::build` (in) and `build_out`,
   played in `Slide::steps` order; Magic Move pairs objects with `Object::same_as` and
-  is written as PowerPoint's Morph. In the slideshow, digits then Enter go to a slide and
+  is written as PowerPoint's Morph. Speaker notes are written to PowerPoint as notes
+  pages under a notes master. In the slideshow, digits then Enter go to a slide and
   L toggles the laser pointer (drawn by `Show::paint_extras` over the live slide).
   Layouts are `model::Layout` with fixed frames (`title_frame`, `body_frame`); two
   columns adds `body2_frame` (`Slide.body2`, folded into the body when the layout

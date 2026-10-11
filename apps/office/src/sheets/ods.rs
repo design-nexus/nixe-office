@@ -592,7 +592,23 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
         if s.cells.values().any(|c| c.format.checkbox) {
             note("checkboxes (they show as TRUE and FALSE)", &mut lost);
         }
-        let _ = write!(body, r#"<table:table table:name="{}" table:style-name="ta1">"#, esc(&s.name));
+        // Each way of fitting on paper has its page style, through the table's style.
+        let table_style = match s.print_fit {
+            Fit::Actual => "ta1",
+            Fit::Width => "ta2",
+            Fit::Page => "ta3",
+        };
+        let print = s
+            .print_area
+            .map(|a| {
+                let sheet = format!("$'{}'", s.name.replace('\'', "''"));
+                format!(
+                    r#" table:print-ranges="{}""#,
+                    esc(&format!("{sheet}.{}:{sheet}.{}", formula::cell_name(a.top, a.left), formula::cell_name(a.bottom, a.right)))
+                )
+            })
+            .unwrap_or_default();
+        let _ = write!(body, r#"<table:table table:name="{}" table:style-name="{table_style}"{print}>"#, esc(&s.name));
         // Columns, alike ones together.
         let mut c = 0;
         while c < COLS {
@@ -611,10 +627,14 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
             );
             c += n;
         }
+        // Blocks spilled by formulas: LibreOffice keeps their values in the cells.
+        let spills = calc.spill_areas(si);
+        let in_spill = |r: u32, c: u32| spills.iter().any(|a| a.contains(r, c) && (r, c) != (a.top, a.left));
         let last_row = s
             .cells
             .keys()
             .map(|(r, _)| *r)
+            .chain(spills.iter().map(|a| a.bottom))
             .chain(s.row_heights.keys().copied())
             .chain(s.hidden_rows.iter().copied())
             .chain(s.merges.iter().map(|m| m.bottom))
@@ -625,7 +645,7 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
             && r <= last
         {
             let row_cells: Vec<u32> = s.cells.range((r, 0)..(r + 1, 0)).map(|((_, c), _)| *c).collect();
-            let row_merged = s.merges.iter().any(|m| m.top <= r && r <= m.bottom);
+            let row_merged = s.merges.iter().chain(&spills).any(|m| m.top <= r && r <= m.bottom);
             let height = s.size_of_row(r);
             let hidden = s.hidden_rows.contains(&r);
             // Empty rows alike in a row go as one.
@@ -633,7 +653,7 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
             if row_cells.is_empty() && !row_merged {
                 while r + repeat <= last
                     && s.cells.range((r + repeat, 0)..(r + repeat + 1, 0)).next().is_none()
-                    && !s.merges.iter().any(|m| m.top <= r + repeat && r + repeat <= m.bottom)
+                    && !s.merges.iter().chain(&spills).any(|m| m.top <= r + repeat && r + repeat <= m.bottom)
                     && s.size_of_row(r + repeat) == height
                     && s.hidden_rows.contains(&(r + repeat)) == hidden
                 {
@@ -647,7 +667,12 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
                 if repeat > 1 { format!(r#" table:number-rows-repeated="{repeat}""#) } else { String::new() },
                 if hidden { r#" table:visibility="collapse""# } else { "" }
             );
-            let end = row_cells.iter().copied().chain(s.merges.iter().filter(|m| m.top <= r && r <= m.bottom).map(|m| m.right)).max();
+            let end = row_cells
+                .iter()
+                .copied()
+                .chain(s.merges.iter().chain(&spills).filter(|m| m.top <= r && r <= m.bottom).map(|m| m.right))
+                .max();
+            let empty = Cell::default();
             let mut c = 0;
             let mut blank = 0;
             let flush = |body: &mut String, blank: &mut u32| {
@@ -666,14 +691,15 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
                     c += 1;
                     continue;
                 }
-                let Some(cell) = s.cells.get(&(r, c)) else {
+                let spilled = in_spill(r, c);
+                let Some(cell) = s.cells.get(&(r, c)).or(spilled.then_some(&empty)) else {
                     blank += 1;
                     c += 1;
                     continue;
                 };
                 let merge = s.merges.iter().find(|m| (m.top, m.left) == (r, c));
                 let style = names.cell(&cell.format);
-                if cell.raw.is_empty() && style.is_none() && cell.comment.is_none() && merge.is_none() {
+                if cell.raw.is_empty() && style.is_none() && cell.comment.is_none() && merge.is_none() && !spilled {
                     blank += 1;
                     c += 1;
                     continue;
@@ -692,9 +718,17 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
                     );
                 }
                 let raw = cell.raw.as_str();
-                let value = if raw.starts_with('=') { calc.value(wb, si, r, c) } else { literal(raw) };
+                let value = if raw.starts_with('=') || (raw.is_empty() && spilled) { calc.value(wb, si, r, c) } else { literal(raw) };
                 if let Some(src) = raw.strip_prefix('=') {
                     let _ = write!(attrs, r#" table:formula="{}""#, esc(&to_odf(src)));
+                }
+                if let Some(a) = calc.spill_area(si, r, c) {
+                    let _ = write!(
+                        attrs,
+                        r#" table:number-matrix-columns-spanned="{}" table:number-matrix-rows-spanned="{}""#,
+                        a.right - a.left + 1,
+                        a.bottom - a.top + 1
+                    );
                 }
                 let typed_date = !raw.starts_with('=') && cell.format.number == NumFmt::General && cell.format.pattern.is_none() && formula::parse_date(raw).is_some();
                 match &value {
@@ -748,12 +782,12 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
         body.push_str("</table:table>");
     }
     let content = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?><office:document-content {ns}><office:font-face-decls><style:font-face style:name="Noto Sans" svg:font-family="'Noto Sans'"/></office:font-face-decls><office:automatic-styles><style:style style:name="ta1" style:family="table" style:master-page-name="Default"><style:table-properties table:display="true" style:writing-mode="lr-tb"/></style:style>{styles}</office:automatic-styles><office:body><office:spreadsheet>{body}</office:spreadsheet></office:body></office:document-content>"#,
+        r#"<?xml version="1.0" encoding="UTF-8"?><office:document-content {ns}><office:font-face-decls><style:font-face style:name="Noto Sans" svg:font-family="'Noto Sans'"/></office:font-face-decls><office:automatic-styles><style:style style:name="ta1" style:family="table" style:master-page-name="Default"><style:table-properties table:display="true" style:writing-mode="lr-tb"/></style:style><style:style style:name="ta2" style:family="table" style:master-page-name="FitWidth"><style:table-properties table:display="true" style:writing-mode="lr-tb"/></style:style><style:style style:name="ta3" style:family="table" style:master-page-name="FitPage"><style:table-properties table:display="true" style:writing-mode="lr-tb"/></style:style>{styles}</office:automatic-styles><office:body><office:spreadsheet>{body}</office:spreadsheet></office:body></office:document-content>"#,
         ns = odf::NAMESPACES,
         styles = names.xml,
     );
     let styles = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?><office:document-styles {ns}><office:font-face-decls><style:font-face style:name="Noto Sans" svg:font-family="'Noto Sans'"/></office:font-face-decls><office:styles><style:default-style style:family="table-cell"><style:paragraph-properties style:tab-stop-distance="36pt"/><style:text-properties style:font-name="Noto Sans" fo:font-size="10pt"/></style:default-style><style:style style:name="Default" style:family="table-cell"/></office:styles><office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties style:writing-mode="lr-tb"/></style:page-layout></office:automatic-styles><office:master-styles><style:master-page style:name="Default" style:page-layout-name="pm1"/></office:master-styles></office:document-styles>"#,
+        r#"<?xml version="1.0" encoding="UTF-8"?><office:document-styles {ns}><office:font-face-decls><style:font-face style:name="Noto Sans" svg:font-family="'Noto Sans'"/></office:font-face-decls><office:styles><style:default-style style:family="table-cell"><style:paragraph-properties style:tab-stop-distance="36pt"/><style:text-properties style:font-name="Noto Sans" fo:font-size="10pt"/></style:default-style><style:style style:name="Default" style:family="table-cell"/></office:styles><office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties style:writing-mode="lr-tb"/></style:page-layout><style:page-layout style:name="pm2"><style:page-layout-properties style:writing-mode="lr-tb" style:scale-to-X="1" style:scale-to-Y="0"/></style:page-layout><style:page-layout style:name="pm3"><style:page-layout-properties style:writing-mode="lr-tb" style:scale-to-pages="1"/></style:page-layout></office:automatic-styles><office:master-styles><style:master-page style:name="Default" style:page-layout-name="pm1"/><style:master-page style:name="FitWidth" style:page-layout-name="pm2"/><style:master-page style:name="FitPage" style:page-layout-name="pm3"/></office:master-styles></office:document-styles>"#,
         ns = odf::NAMESPACES
     );
     let bytes = odf::package(odf::ODS, &content, &styles, &[])?;
@@ -860,6 +894,29 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
         }
         let name = attr(&table, TABLE, "name").unwrap_or("Sheet").to_string();
         let mut sheet = Sheet::new(&name);
+        sheet.print_area = attr(&table, TABLE, "print-ranges").and_then(|p| {
+            // The first range ("$'Sheet 1'.$A$1:.$C$9"), read as a formula's reference would be.
+            let mut quoted = false;
+            let end = p.char_indices().find(|(_, c)| {
+                quoted ^= *c == '\'';
+                *c == ' ' && !quoted
+            });
+            let first = &p[..end.map_or(p.len(), |(i, _)| i)];
+            let ours = from_odf(&format!("of:=[{first}]"));
+            Area::parse(&ours.rsplit('!').next()?.replace('$', ""))
+        });
+        if let Some(layout) = attr(&table, TABLE, "style-name")
+            .and_then(|t| styles.own("table", t, "master-page-name"))
+            .and_then(|m| styles.masters.get(m))
+        {
+            let g = |k: &str| styles.get("page-layout", layout, &format!("layout/{k}"));
+            sheet.print_fit = match (g("scale-to-pages"), g("scale-to-X"), g("scale-to-Y")) {
+                (Some("1"), _, _) => Fit::Page,
+                (_, Some("1"), Some("1")) => Fit::Page,
+                (_, Some("1"), None | Some("0")) => Fit::Width,
+                _ => Fit::Actual,
+            };
+        }
         let mine = |n: &roxmltree::Node| n.ancestors().find(|a| a.has_tag_name((TABLE, "table"))) == Some(table);
         // Columns: widths, hidden, and the style a column's cells default to.
         let mut col_styles: Vec<Option<String>> = Vec::new();
@@ -884,6 +941,7 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
             }
         }
         let mut r = 0u32;
+        let mut matrices: Vec<Area> = Vec::new();
         for row in table.descendants().filter(|n| n.has_tag_name((TABLE, "table-row")) && mine(n)) {
             if r >= ROWS {
                 if row.children().any(|c| !cell_text(&c).is_empty()) {
@@ -930,8 +988,18 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
                 if attr(&cell, OFFICE, "value-type") == Some("date") && format.number == NumFmt::General && format.pattern.is_none() {
                     format.number = NumFmt::Date;
                 }
-                if let Some(f) = attr(&cell, TABLE, "formula") {
-                    raw = from_odf(f);
+                match attr(&cell, TABLE, "formula") {
+                    Some(f) => {
+                        raw = from_odf(f);
+                        let span = |k: &str| attr(&cell, TABLE, k).and_then(|v| v.parse::<u32>().ok()).unwrap_or(1).max(1);
+                        let (rows, cols) = (span("number-matrix-rows-spanned"), span("number-matrix-columns-spanned"));
+                        if rows * cols > 1 {
+                            matrices.push(Area::new(r, c, r.saturating_add(rows - 1), c.saturating_add(cols - 1)));
+                        }
+                    }
+                    // A matrix formula's values sit in the cells it covers; we work them out again.
+                    None if matrices.iter().any(|a| a.contains(r, c)) => raw.clear(),
+                    None => {}
                 }
                 let comment = cell
                     .children()
@@ -1088,5 +1156,52 @@ mod tests {
         assert_eq!(s.format(1, 1).number, NumFmt::Currency);
         assert!(s.format(0, 0).bold && s.format(0, 0).fill.is_some());
         assert_eq!(s.col_widths.get(&0), Some(&180));
+    }
+
+    #[test]
+    fn spilled_blocks_round_trip() {
+        let mut wb = Workbook::default();
+        for (r, v) in ["b", "a", "b"].iter().enumerate() {
+            wb.set(r as u32, 0, v);
+        }
+        wb.set(0, 2, "=SORT(UNIQUE(A1:A3))");
+        let calc = Calc::new(&wb, 0.0);
+        let (bytes, _) = write(&wb, &calc).unwrap();
+        let mut pkg = odf::Package::open(&bytes, odf::ODS, "spreadsheet").unwrap();
+        let content = pkg.content().unwrap();
+        assert!(content.contains(r#"table:number-matrix-columns-spanned="1" table:number-matrix-rows-spanned="2""#));
+        assert!(content.contains(r#"office:string-value="b""#) || content.contains("<text:p>b</text:p>"));
+        let back = read(&bytes).unwrap().workbook;
+        assert_eq!(back.sheets[0].raw(0, 2), "=SORT(UNIQUE(A1:A3))");
+        assert_eq!(back.sheets[0].raw(1, 2), "");
+        let calc = Calc::new(&back, 0.0);
+        assert_eq!(calc.value(&back, 0, 1, 2), Value::Text("b".into()));
+    }
+
+    #[test]
+    fn print_settings_round_trip() {
+        let mut wb = Workbook::default();
+        wb.set(0, 0, "x");
+        wb.sheets.push(Sheet::new("Two"));
+        wb.sheets[0].print_area = Area::parse("B2:C9");
+        wb.sheets[0].print_fit = Fit::Width;
+        wb.sheets[1].print_fit = Fit::Page;
+        let (bytes, _) = write(&wb, &Calc::new(&wb, 0.0)).unwrap();
+        let back = read(&bytes).unwrap().workbook;
+        assert_eq!((back.sheets[0].print_area, back.sheets[0].print_fit), (Area::parse("B2:C9"), Fit::Width));
+        assert_eq!((back.sheets[1].print_area, back.sheets[1].print_fit), (None, Fit::Page));
+    }
+
+    #[test]
+    fn reads_spills_and_fit_collabora_saved() {
+        // Our sample with SORT(UNIQUE(...)) and SEQUENCE blocks, fitted to the width, saved by Collabora Office.
+        let wb = read(include_bytes!("../../testdata/collabora/spill.ods")).unwrap().workbook;
+        let s = &wb.sheets[0];
+        assert_eq!(s.print_fit, Fit::Width);
+        assert_eq!(s.raw(1, 6), "=SORT(UNIQUE(A2:A9))");
+        assert_eq!(s.raw(2, 6), "", "the block's values are worked out again");
+        let calc = Calc::new(&wb, 0.0);
+        assert_eq!(calc.value(&wb, 0, 2, 6), Value::Text("Groceries".into()));
+        assert_eq!(calc.value(&wb, 0, 3, 7), Value::Num(30.0));
     }
 }

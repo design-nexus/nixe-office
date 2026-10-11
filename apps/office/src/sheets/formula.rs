@@ -662,7 +662,11 @@ pub(super) fn arg(e: &Expr, cells: &dyn Cells) -> Arg {
             }
             Arg::Grid { rows, cols, values }
         }
-        _ => Arg::One(eval(e, cells)),
+        // A block worked out from ranges (A1:A9*2) or a function that gives one (UNIQUE).
+        _ => match super::arrays::block(e, cells) {
+            Some(b) => Arg::Grid { rows: b.rows, cols: b.cols, values: b.values },
+            None => Arg::One(eval(e, cells)),
+        },
     }
 }
 
@@ -730,51 +734,55 @@ pub fn eval(e: &Expr, cells: &dyn Cells) -> Value {
             Ok(n) => Value::Num(n / 100.0),
             Err(e) => Value::Err(e),
         },
-        Expr::Bin('&', a, b) => {
-            let (a, b) = (eval(a, cells), eval(b, cells));
-            if let Value::Err(e) = a {
-                return Value::Err(e);
-            }
-            if let Value::Err(e) = b {
-                return Value::Err(e);
-            }
-            Value::Text(a.text() + &b.text())
-        }
-        Expr::Bin(op, a, b) => {
-            let (a, b) = match (eval(a, cells).num(), eval(b, cells).num()) {
-                (Ok(a), Ok(b)) => (a, b),
-                (Err(e), _) | (_, Err(e)) => return Value::Err(e),
-            };
-            let r = match op {
-                '+' => a + b,
-                '-' => a - b,
-                '*' => a * b,
-                '/' if b == 0.0 => return Value::Err("#DIV/0!"),
-                '/' => a / b,
-                _ => a.powf(b),
-            };
-            if r.is_finite() { Value::Num(r) } else { Value::Err("#NUM!") }
-        }
-        Expr::Cmp(op, a, b) => {
-            let (a, b) = (eval(a, cells), eval(b, cells));
-            if let Value::Err(e) = a {
-                return Value::Err(e);
-            }
-            if let Value::Err(e) = b {
-                return Value::Err(e);
-            }
-            let ord = compare(&a, &b);
-            Value::Bool(match *op {
-                "=" => ord.is_eq(),
-                "<>" => ord.is_ne(),
-                "<" => ord.is_lt(),
-                ">" => ord.is_gt(),
-                "<=" => ord.is_le(),
-                _ => ord.is_ge(),
-            })
-        }
+        Expr::Bin(op, a, b) => binary(*op, eval(a, cells), eval(b, cells)),
+        Expr::Cmp(op, a, b) => comparison(op, eval(a, cells), eval(b, cells)),
         Expr::Call(name, args) => call(name, args, cells),
     }
+}
+
+/// `a op b` for an arithmetic operator or `&`.
+pub(super) fn binary(op: char, a: Value, b: Value) -> Value {
+    if op == '&' {
+        if let Value::Err(e) = a {
+            return Value::Err(e);
+        }
+        if let Value::Err(e) = b {
+            return Value::Err(e);
+        }
+        return Value::Text(a.text() + &b.text());
+    }
+    let (a, b) = match (a.num(), b.num()) {
+        (Ok(a), Ok(b)) => (a, b),
+        (Err(e), _) | (_, Err(e)) => return Value::Err(e),
+    };
+    let r = match op {
+        '+' => a + b,
+        '-' => a - b,
+        '*' => a * b,
+        '/' if b == 0.0 => return Value::Err("#DIV/0!"),
+        '/' => a / b,
+        _ => a.powf(b),
+    };
+    if r.is_finite() { Value::Num(r) } else { Value::Err("#NUM!") }
+}
+
+/// `a op b` for a comparison.
+pub(super) fn comparison(op: &str, a: Value, b: Value) -> Value {
+    if let Value::Err(e) = a {
+        return Value::Err(e);
+    }
+    if let Value::Err(e) = b {
+        return Value::Err(e);
+    }
+    let ord = compare(&a, &b);
+    Value::Bool(match op {
+        "=" => ord.is_eq(),
+        "<>" => ord.is_ne(),
+        "<" => ord.is_lt(),
+        ">" => ord.is_gt(),
+        "<=" => ord.is_le(),
+        _ => ord.is_ge(),
+    })
 }
 
 fn call(name: &str, args: &[Expr], cells: &dyn Cells) -> Value {
@@ -782,6 +790,10 @@ fn call(name: &str, args: &[Expr], cells: &dyn Cells) -> Value {
     let bad = Value::Err("#ERROR!");
     if let Some(v) = super::functions::call(name, args, cells) {
         return v;
+    }
+    // Where one value is wanted, a block gives its first.
+    if super::arrays::FUNCTIONS.contains(&name) {
+        return super::arrays::call(name, args, cells).values.into_iter().next().unwrap_or(Value::Empty);
     }
     // Functions that look at their arguments lazily or as blocks come first.
     match name {

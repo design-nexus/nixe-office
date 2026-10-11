@@ -15,6 +15,9 @@ Then:
   - Paragraph styles (title, three headings, quote), font, size, bold, italic,
     underline, strikethrough, superscript and subscript, text color and highlight,
     alignment.
+  - Format painter: copy the formatting where the cursor is, then select text to give
+    it the same look, or click a paragraph to give it the paragraph's style. Double-click
+    the brush to paint more than once; <kbd>Esc</kbd> stops.
   - Links (<kbd>Ctrl</kbd>+<kbd>K</kbd>) to web pages, email addresses or files;
     <kbd>Ctrl</kbd>+click opens one. They stay links in Word files and exported PDFs.
   - Line spacing (single, 1.15, 1½, double) and space before and after each
@@ -66,6 +69,9 @@ Then:
     - Logic: IF, IFS, SWITCH, IFERROR, IFNA, AND, OR, XOR, NOT, ISBLANK, ISNUMBER,
       ISTEXT, ISERROR, ISNA.
     - Lookup: VLOOKUP, HLOOKUP, XLOOKUP, INDEX, MATCH, CHOOSE.
+    - Lists: UNIQUE, FILTER, SORT, SEQUENCE. Their results spill into the cells below
+      and to the right (`#SPILL!` when something is in the way), as do ranges and sums
+      over ranges (`=B2:B9*2`, `=FILTER(A2:C9, C2:C9>100)`).
     - Text: CONCAT, TEXTJOIN, TEXT, LEN, LEFT, RIGHT, MID, FIND, SEARCH, SUBSTITUTE,
       REPLACE, REPT, UPPER, LOWER, PROPER, TRIM, VALUE, EXACT.
     - Money: PMT, IPMT, PPMT, PV, FV, NPER, RATE, NPV, IRR, EFFECT, NOMINAL, SLN.
@@ -81,6 +87,8 @@ Then:
     and comments on cells (a corner mark; rest the pointer on it to read).
   - Summarize: totals, counts, averages, largest or smallest by group (and optionally
     split across a second column) on a new sheet, with formulas that stay up to date.
+  - Print setup: print only the selected cells, and shrink a sheet to fit all its
+    columns, or all of it, on one page. Excel and OpenDocument files keep both.
   - Highlight rules: color cells that are above or below a number, between two, equal
     to one, contain some text, are blank or an error, are in the top few, or above
     average.
@@ -136,7 +144,7 @@ All three:
 - **Files:** their own formats (`.nwrite`, `.nsheets`, `.npresent`) keep everything.
   Word (`.docx`), Excel (`.xlsx`) and PowerPoint (`.pptx`) files open and save in
   place, and so do OpenDocument files (`.odt`, `.ods`, `.odp`, as LibreOffice
-  writes them); the first time a file can't hold something (speaker notes in a PowerPoint
+  writes them); the first time a file can't hold something (a chart in an OpenDocument
   file, for instance), a note says what. Sheets also opens and saves CSV; Write also
   opens and saves Markdown (`.md`, with its pictures in a folder beside it) and plain
   text (`.txt`).

@@ -1919,10 +1919,10 @@ pub mod tests {
         Editor::new_document(&*p, None);
         Editor::open(&*p, &path).unwrap();
         assert_eq!(*p.deck.borrow(), before);
-        let lost = Editor::save(&*p, &dir.join("deck.pptx")).unwrap();
-        assert_eq!(lost, vec!["speaker notes"]);
+        assert!(Editor::save(&*p, &dir.join("deck.pptx")).unwrap().is_empty());
         Editor::open(&*p, &dir.join("deck.pptx")).unwrap();
         assert_eq!(p.deck.borrow().slides[1].title, "Hello");
+        assert_eq!(p.deck.borrow().slides[1].notes, "Say hi");
         assert!(Editor::save(&*p, &dir.join("deck.odp")).unwrap().is_empty());
         Editor::open(&*p, &dir.join("deck.odp")).unwrap();
         assert_eq!(p.deck.borrow().slides[1].title, "Hello");

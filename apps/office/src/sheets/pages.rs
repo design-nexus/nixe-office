@@ -23,7 +23,8 @@ struct CellItem {
 }
 
 enum Page {
-    Cells { title: String, cells: Vec<CellItem> },
+    /// Cells laid out in points, drawn at `scale` (below 1 when shrunk to fit).
+    Cells { title: String, cells: Vec<CellItem>, scale: f64 },
     Chart { title: String, kind: ChartKind, text: ChartText, names: Vec<String>, labels: Vec<String>, series: Vec<Vec<f64>> },
 }
 
@@ -38,20 +39,45 @@ impl SheetPages {
         let paper = Paper::preferred();
         // Landscape: spreadsheets are wide.
         let (pw, ph) = (paper.height, paper.width);
-        let (cw, ch) = (pw - 2.0 * MARGIN, ph - 2.0 * MARGIN - TITLE_H);
+        let (page_w, page_h) = (pw - 2.0 * MARGIN, ph - 2.0 * MARGIN - TITLE_H);
         let mut pages = Vec::new();
         for (si, s) in wb.sheets.iter().enumerate() {
-            let Some((lr, lc)) = s.used() else { continue };
+            // What prints: the print area, or everything used (blocks spilled by formulas too).
+            let used = match (s.used(), calc.spill_extent(si)) {
+                (Some(a), Some(b)) => Some((a.0.max(b.0), a.1.max(b.1))),
+                (a, b) => a.or(b),
+            };
+            let area = match s.print_area {
+                Some(a) => a,
+                None => match used {
+                    Some((lr, lc)) => Area::new(0, 0, lr, lc),
+                    None => continue,
+                },
+            };
             // Hidden rows and columns don't print.
-            let rows: Vec<u32> =
-                wb.view_rows(si, calc).into_iter().filter(|r| *r <= lr && !s.hidden_rows.contains(r)).collect();
+            let rows: Vec<u32> = wb
+                .view_rows(si, calc)
+                .into_iter()
+                .filter(|r| (area.top..=area.bottom).contains(r) && !s.hidden_rows.contains(r))
+                .collect();
+            let cols_all: Vec<u32> = (area.left..=area.right).filter(|c| !s.hidden_cols.contains(c)).collect();
             let header = s.header && rows.first() == Some(&0) && rows.len() > 1;
             let body: Vec<u32> = if header { rows[1..].to_vec() } else { rows.clone() };
             let head_h = if header { s.row_h(0) as f64 * PT } else { 0.0 };
+            // Shrinking to fit: lay out on a page that much larger, then draw it smaller.
+            let total_w: f64 = cols_all.iter().map(|c| s.col_w(*c) as f64 * PT).sum();
+            let total_h: f64 = rows.iter().map(|r| s.row_h(*r) as f64 * PT).sum();
+            let scale = match s.print_fit {
+                Fit::Actual => 1.0,
+                Fit::Width => (page_w / total_w.max(1.0)).min(1.0),
+                Fit::Page => (page_w / total_w.max(1.0)).min(page_h / total_h.max(1.0)).min(1.0),
+            }
+            .max(0.05);
+            let (cw, ch) = (page_w / scale + 0.01, page_h / scale + 0.01);
             // Columns that fit across a page.
             let mut col_groups: Vec<Vec<u32>> = vec![Vec::new()];
             let mut x = 0.0;
-            for c in (0..=lc).filter(|c| !s.hidden_cols.contains(c)) {
+            for c in cols_all {
                 let w = (s.col_w(c) as f64 * PT).min(cw);
                 if x + w > cw && !col_groups.last().is_some_and(|g| g.is_empty()) {
                     col_groups.push(Vec::new());
@@ -117,7 +143,7 @@ impl SheetPages {
                         y += h;
                     }
                     let title = if multi { format!("{} · page {n}", s.name) } else { s.name.clone() };
-                    pages.push(Page::Cells { title, cells });
+                    pages.push(Page::Cells { title, cells, scale });
                 }
             }
             for c in &s.charts {
@@ -146,7 +172,7 @@ impl SheetPages {
             }
         }
         if pages.is_empty() {
-            pages.push(Page::Cells { title: wb.sheet().name.clone(), cells: Vec::new() });
+            pages.push(Page::Cells { title: wb.sheet().name.clone(), cells: Vec::new(), scale: 1.0 });
         }
         SheetPages { size: (pw, ph), pages, ctx: crate::print::text_context() }
     }
@@ -197,7 +223,11 @@ impl Pages for SheetPages {
                     (ox, oy, pw - 2.0 * MARGIN, ph - 2.0 * MARGIN - TITLE_H),
                 );
             }
-            Page::Cells { cells, .. } => {
+            Page::Cells { cells, scale, .. } => {
+                cr.save().ok();
+                cr.translate(ox, oy);
+                cr.scale(*scale, *scale);
+                let (ox, oy) = (0.0, 0.0);
                 let mut font = pango::FontDescription::from_string("Noto Sans");
                 font.set_size((8.5 * pango::SCALE as f64) as i32);
                 layout.set_ellipsize(pango::EllipsizeMode::End);
@@ -276,7 +306,56 @@ impl Pages for SheetPages {
                     pangocairo::functions::show_layout(cr, &layout);
                     cr.restore().ok();
                 }
+                cr.restore().ok();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pages(wb: &Workbook) -> SheetPages {
+        SheetPages::new(wb, &Calc::new(wb, 0.0))
+    }
+
+    fn cells(p: &SheetPages, i: usize) -> Vec<String> {
+        match &p.pages[i] {
+            Page::Cells { cells, .. } => cells.iter().map(|c| c.text.clone()).filter(|t| !t.is_empty()).collect(),
+            Page::Chart { .. } => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn print_area_and_fit() {
+        let mut wb = Workbook::default();
+        for r in 0..120 {
+            for c in 0..30 {
+                wb.set(r, c, &format!("{r}.{c}"));
+            }
+        }
+        let actual = pages(&wb).count();
+        assert!(actual > 4, "{actual}");
+        wb.sheet_mut().print_fit = Fit::Width;
+        let width = pages(&wb);
+        assert!(width.count() > 1 && width.count() < actual);
+        // Every column on each page.
+        assert!(cells(&width, 0).contains(&"1.29".to_string()));
+        wb.sheet_mut().print_fit = Fit::Page;
+        assert_eq!(pages(&wb).count(), 1);
+        wb.sheet_mut().print_fit = Fit::Actual;
+        wb.sheet_mut().print_area = Area::parse("B2:C3");
+        let p = pages(&wb);
+        assert_eq!(p.count(), 1);
+        assert_eq!(cells(&p, 0), ["1.1", "1.2", "2.1", "2.2"]);
+    }
+
+    #[test]
+    fn spilled_cells_print() {
+        let mut wb = Workbook::default();
+        wb.set(0, 0, "=SEQUENCE(3)");
+        let p = pages(&wb);
+        assert_eq!(cells(&p, 0), ["1", "2", "3"]);
     }
 }

@@ -686,6 +686,30 @@ impl Sheets {
         cr.save().ok();
         cr.rectangle(HEAD_W, HEAD_H, w - HEAD_W, h - HEAD_H);
         cr.clip();
+        // On-screen rows are the sheet's while nothing is filtered out.
+        if self.merges_shown() {
+            // The block a formula spilled into, while the cursor is in it.
+            let (r, c) = self.cursor.get();
+            if let Some(a) = calc.spill_covering(wb.active, r, c)
+                && let Some((x, y, sw, sh)) = rect(&a)
+            {
+                cr.set_source_rgba(accent.0, accent.1, accent.2, 0.7);
+                cr.set_line_width(1.0);
+                cr.rectangle(x + 0.5, y + 0.5, sw - 1.0, sh - 1.0);
+                cr.stroke().ok();
+            }
+            // The print area: a dashed line.
+            if let Some(a) = s.print_area
+                && let Some((x, y, sw, sh)) = rect(&a)
+            {
+                cr.set_source_rgba(dim.0, dim.1, dim.2, 0.9);
+                cr.set_line_width(1.0);
+                cr.set_dash(&[5.0, 3.0], 0.0);
+                cr.rectangle(x + 0.5, y + 0.5, sw - 1.0, sh - 1.0);
+                cr.stroke().ok();
+                cr.set_dash(&[], 0.0);
+            }
+        }
         if let Some((x, y, sw, sh)) = rect(&sel) {
             if !sel.is_cell() {
                 cr.set_source_rgba(accent.0, accent.1, accent.2, 0.10);

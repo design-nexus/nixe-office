@@ -212,6 +212,23 @@ pub struct Sheet {
     pub tables: Vec<TableRegion>,
     /// Cells whose value is picked from a list.
     pub lists: Vec<super::lists::ListRule>,
+    /// Only these cells print.
+    pub print_area: Option<Area>,
+    /// Printing shrinks the sheet to fit.
+    pub print_fit: Fit,
+}
+
+/// How a sheet fits on paper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Fit {
+    /// Its own size, over as many pages as it takes.
+    #[default]
+    Actual,
+    /// Every column on one page across.
+    Width,
+    /// The whole sheet on one page.
+    Page,
 }
 
 /// A chart on the sheet: its data, and where it sits (pixels from the top
@@ -284,6 +301,8 @@ impl Sheet {
             charts: Vec::new(),
             tables: Vec::new(),
             lists: Vec::new(),
+            print_area: None,
+            print_fit: Fit::Actual,
         }
     }
 
@@ -495,6 +514,14 @@ pub struct Calc {
     today: f64,
     /// Per (sheet, rule): the number a "top N" or "above average" rule compares with.
     rule_marks: RefCell<HashMap<(usize, usize), Option<f64>>>,
+    /// Per sheet, the cells whose formula may give a block of values.
+    anchors: Vec<Vec<(u32, u32)>>,
+    /// Values a block put in empty cells beside its formula.
+    spilled: RefCell<HashMap<(usize, u32, u32), Value>>,
+    /// Each spilling formula's block of cells.
+    spills: RefCell<HashMap<(usize, u32, u32), Area>>,
+    /// Every formula has been worked out, so every spill is known.
+    ready: std::cell::Cell<bool>,
 }
 
 struct Ctx<'a> {
@@ -527,11 +554,26 @@ const MAX_DEPTH: usize = 400;
 
 impl Calc {
     pub fn new(wb: &Workbook, today: f64) -> Calc {
+        let anchors = wb
+            .sheets
+            .iter()
+            .map(|s| {
+                s.cells
+                    .iter()
+                    .filter(|(_, c)| c.raw.starts_with('=') && super::arrays::may_spill(&formula::parse(&c.raw[1..])))
+                    .map(|(k, _)| *k)
+                    .collect()
+            })
+            .collect();
         let calc = Calc {
             values: RefCell::new(HashMap::new()),
             visiting: RefCell::new(HashSet::new()),
             today,
             rule_marks: RefCell::new(HashMap::new()),
+            anchors,
+            spilled: RefCell::new(HashMap::new()),
+            spills: RefCell::new(HashMap::new()),
+            ready: std::cell::Cell::new(false),
         };
         // Work through formulas top to bottom, so a chain that refers upwards
         // (each row adding to the last) never recurses deeply.
@@ -542,7 +584,77 @@ impl Calc {
                 }
             }
         }
+        calc.ready.set(true);
         calc
+    }
+
+    /// The value a block spilled into an empty cell, working out the formulas
+    /// above and to the left that might reach it first.
+    fn spilled_at(&self, wb: &Workbook, si: usize, r: u32, c: u32) -> Option<Value> {
+        let key = (si, r, c);
+        if !self.ready.get() {
+            for &(ar, ac) in self.anchors.get(si).into_iter().flatten() {
+                if ar <= r && ac <= c && (ar, ac) != (r, c) && !self.visiting.borrow().contains(&(si, ar, ac)) {
+                    self.value(wb, si, ar, ac);
+                }
+            }
+        }
+        self.spilled.borrow().get(&key).cloned()
+    }
+
+    /// Puts a block's values in the cells below and right of (r, c), if they're
+    /// all empty; returns the formula cell's own value.
+    fn spill(&self, wb: &Workbook, si: usize, r: u32, c: u32, b: super::arrays::Block) -> Value {
+        let s = &wb.sheets[si];
+        let (bottom, right) = (r as u64 + b.rows as u64 - 1, c as u64 + b.cols as u64 - 1);
+        if bottom >= ROWS as u64 || right >= COLS as u64 {
+            return Value::Err("#SPILL!");
+        }
+        let area = Area::new(r, c, bottom as u32, right as u32);
+        let blocked = (area.top..=area.bottom).flat_map(|rr| (area.left..=area.right).map(move |cc| (rr, cc))).any(|(rr, cc)| {
+            (rr, cc) != (r, c)
+                && (!s.raw(rr, cc).is_empty() || self.spilled.borrow().contains_key(&(si, rr, cc)) || s.merge_at(rr, cc).is_some())
+        });
+        if blocked {
+            return Value::Err("#SPILL!");
+        }
+        let mut first = Value::Empty;
+        let mut spilled = self.spilled.borrow_mut();
+        for (i, v) in b.values.into_iter().enumerate() {
+            let (rr, cc) = (r + (i / b.cols) as u32, c + (i % b.cols) as u32);
+            if (rr, cc) == (r, c) {
+                first = v;
+            } else {
+                spilled.insert((si, rr, cc), v);
+            }
+        }
+        self.spills.borrow_mut().insert((si, r, c), area);
+        first
+    }
+
+    /// The block of cells the formula at (r, c) spilled into.
+    pub fn spill_area(&self, si: usize, r: u32, c: u32) -> Option<Area> {
+        self.spills.borrow().get(&(si, r, c)).copied()
+    }
+
+    /// The formula whose block covers (r, c), and that block.
+    pub fn spill_covering(&self, si: usize, r: u32, c: u32) -> Option<Area> {
+        self.spills.borrow().iter().find(|((s, _, _), a)| *s == si && a.contains(r, c)).map(|(_, a)| *a)
+    }
+
+    /// Every spilled block on a sheet.
+    pub fn spill_areas(&self, si: usize) -> Vec<Area> {
+        self.spills.borrow().iter().filter(|((s, _, _), _)| *s == si).map(|(_, a)| *a).collect()
+    }
+
+    /// The last row and column any block reaches on a sheet.
+    pub fn spill_extent(&self, si: usize) -> Option<(u32, u32)> {
+        self.spills
+            .borrow()
+            .iter()
+            .filter(|((s, _, _), _)| *s == si)
+            .map(|(_, a)| (a.bottom, a.right))
+            .reduce(|x, y| (x.0.max(y.0), x.1.max(y.1)))
     }
 
     pub fn value(&self, wb: &Workbook, si: usize, r: u32, c: u32) -> Value {
@@ -552,7 +664,14 @@ impl Calc {
         }
         let Some(sheet) = wb.sheets.get(si) else { return Value::Err("#REF!") };
         let raw = sheet.raw(r, c);
-        let Some(src) = raw.strip_prefix('=') else { return literal(raw) };
+        let Some(src) = raw.strip_prefix('=') else {
+            if raw.is_empty()
+                && let Some(v) = self.spilled_at(wb, si, r, c)
+            {
+                return v;
+            }
+            return literal(raw);
+        };
         if self.visiting.borrow().contains(&key) {
             return Value::Err("#CYCLE!");
         }
@@ -560,7 +679,13 @@ impl Calc {
             return Value::Err("#DEPTH!");
         }
         self.visiting.borrow_mut().insert(key);
-        let v = formula::eval(&formula::parse(src), &Ctx { wb, calc: self, sheet: si });
+        let expr = formula::parse(src);
+        let ctx = Ctx { wb, calc: self, sheet: si };
+        let v = match super::arrays::block(&expr, &ctx) {
+            Some(b) if b.values.len() > 1 => self.spill(wb, si, r, c, b),
+            Some(b) => b.values.into_iter().next().unwrap_or(Value::Empty),
+            None => formula::eval(&expr, &ctx),
+        };
         self.visiting.borrow_mut().remove(&key);
         // A value worked out inside a cycle isn't final; don't keep it.
         if self.visiting.borrow().is_empty() || !matches!(v, Value::Err("#CYCLE!")) {
@@ -623,7 +748,7 @@ pub fn display(v: &Value, raw: &str, f: &Format) -> (String, bool) {
             }
             let text = match f.number {
                 // A typed number or date shows as typed.
-                NumFmt::General if !raw.starts_with('=') => raw.to_string(),
+                NumFmt::General if !raw.starts_with('=') && !raw.is_empty() => raw.to_string(),
                 NumFmt::General => formula::general(*n),
                 NumFmt::Decimal => formula::fixed(*n, 2, true),
                 NumFmt::Currency => {
@@ -1221,6 +1346,14 @@ struct SheetFile {
     tables: Vec<TableRegion>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     lists: Vec<super::lists::ListRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    print_area: Option<String>,
+    #[serde(default, skip_serializing_if = "is_actual")]
+    print_fit: Fit,
+}
+
+fn is_actual(f: &Fit) -> bool {
+    *f == Fit::Actual
 }
 
 fn yes() -> bool {
@@ -1275,6 +1408,8 @@ impl Workbook {
                     charts: s.charts.clone(),
                     tables: s.tables.clone(),
                     lists: s.lists.clone(),
+                    print_area: s.print_area.map(|a| a.name()),
+                    print_fit: s.print_fit,
                 })
                 .collect(),
         };
@@ -1305,6 +1440,8 @@ impl Workbook {
             s.charts = sf.charts;
             s.tables = sf.tables;
             s.lists = sf.lists.into_iter().filter(|l| Area::parse(&l.range).is_some()).collect();
+            s.print_area = sf.print_area.as_deref().and_then(Area::parse);
+            s.print_fit = sf.print_fit;
             wb.sheets.push(s);
         }
         if wb.sheets.is_empty() {
@@ -1501,6 +1638,28 @@ mod tests {
 
     fn calc(wb: &Workbook) -> Calc {
         Calc::new(wb, formula::date_serial(2026, 10, 5))
+    }
+
+    #[test]
+    fn blocks_spill_into_empty_cells() {
+        let mut wb = Workbook::default();
+        for (r, v) in ["pear", "apple", "pear", "fig"].iter().enumerate() {
+            wb.set(r as u32 + 1, 0, v);
+        }
+        // Read before its formula comes up (it's below), then the formula itself.
+        wb.set(0, 3, "=COUNTA(C2:C9)&\" \"&C3");
+        wb.set(1, 2, "=SORT(UNIQUE(A2:A5))");
+        let c = calc(&wb);
+        let v = |r, col| c.value(&wb, 0, r, col).text();
+        assert_eq!((v(1, 2), v(2, 2), v(3, 2), v(4, 2)), ("apple".into(), "fig".into(), "pear".into(), String::new()));
+        assert_eq!(v(0, 3), "3 fig");
+        assert_eq!(c.spill_area(0, 1, 2), Some(Area::new(1, 2, 3, 2)));
+        assert_eq!(c.spill_covering(0, 3, 2), Some(Area::new(1, 2, 3, 2)));
+        // Something typed in the way stops it.
+        wb.set(3, 2, "x");
+        let c = calc(&wb);
+        assert_eq!(c.value(&wb, 0, 1, 2), Value::Err("#SPILL!"));
+        assert_eq!(c.value(&wb, 0, 2, 2), Value::Empty);
     }
 
     fn shown(wb: &Workbook, r: u32, c: u32) -> String {

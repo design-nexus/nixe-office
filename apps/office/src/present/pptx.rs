@@ -1,5 +1,5 @@
 //! PowerPoint files: slide text, colours, fonts, pictures, rectangles and
-//! ellipses both ways; speaker notes come in from PowerPoint but aren't written.
+//! ellipses both ways; speaker notes go on notes pages, under a notes master.
 
 use super::model::*;
 use super::render;
@@ -280,6 +280,14 @@ pub fn write(deck: &Deck, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u8>,
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:presentation xmlns:a="{A}" xmlns:r="{R}" xmlns:p="{P}"><p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst><p:sldIdLst>"#
     );
     let mut pres_rels = vec![("rId1".to_string(), "slideMaster", "slideMasters/slideMaster1.xml".to_string())];
+    // Speaker notes need a notes master, listed between the slide master and the slides.
+    let notes = deck.slides.iter().any(|s| !s.notes.trim().is_empty());
+    if notes {
+        let rid = format!("rId{}", n + 2);
+        pres = pres.replace("<p:sldIdLst>", &format!(r#"<p:notesMasterIdLst><p:notesMasterId r:id="{rid}"/></p:notesMasterIdLst><p:sldIdLst>"#));
+        pres_rels.push((rid, "notesMaster", "notesMasters/notesMaster1.xml".into()));
+        types.push_str(r#"<Override PartName="/ppt/notesMasters/notesMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesMaster+xml"/><Override PartName="/ppt/theme/theme2.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>"#);
+    }
     for i in 0..n {
         let _ = write!(pres, r#"<p:sldId id="{}" r:id="rId{}"/>"#, 256 + i, i + 2);
         pres_rels.push((format!("rId{}", i + 2), "slide", format!("slides/slide{}.xml", i + 1)));
@@ -320,10 +328,28 @@ pub fn write(deck: &Deck, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u8>,
     ] {
         let _ = write!(clr, r#"<a:{k}><a:srgbClr val="{v}"/></a:{k}>"#);
     }
-    parts.push((
-        "ppt/theme/theme1.xml".into(),
-        format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><a:theme xmlns:a="{A}" name="Nexus Office"><a:themeElements><a:clrScheme name="Nexus Office">{clr}</a:clrScheme><a:fontScheme name="Nexus Office"><a:majorFont><a:latin typeface="{DEFAULT_FONT}"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="{DEFAULT_FONT}"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme><a:fmtScheme name="Nexus Office"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w="6350"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="12700"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="19050"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>"#).into_bytes(),
-    ));
+    let theme = format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><a:theme xmlns:a="{A}" name="Nexus Office"><a:themeElements><a:clrScheme name="Nexus Office">{clr}</a:clrScheme><a:fontScheme name="Nexus Office"><a:majorFont><a:latin typeface="{DEFAULT_FONT}"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="{DEFAULT_FONT}"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme><a:fmtScheme name="Nexus Office"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w="6350"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="12700"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="19050"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>"#);
+    parts.push(("ppt/theme/theme1.xml".into(), theme.clone().into_bytes()));
+    if notes {
+        // The notes pages' master: a picture of the slide above the notes.
+        let ph = |id: u32, name: &str, kind: &str, (x, y, w, h): (i64, i64, i64, i64)| {
+            format!(r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="{name}"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph {kind}/></p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{w}" cy="{h}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:sp>"#)
+        };
+        let tree = format!(
+            r#"<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>{}{}</p:spTree>"#,
+            ph(2, "Slide Image Placeholder 1", r#"type="sldImg" idx="2""#, (381000, 685800, 6096000, 3429000)),
+            ph(3, "Notes Placeholder 2", r#"type="body" sz="quarter" idx="3""#, (685800, 4400550, 5486400, 3600450)),
+        );
+        parts.push((
+            "ppt/notesMasters/notesMaster1.xml".into(),
+            format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:notesMaster xmlns:a="{A}" xmlns:r="{R}" xmlns:p="{P}"><p:cSld><p:bg><p:bgRef idx="1001"><a:schemeClr val="bg1"/></p:bgRef></p:bg>{tree}</p:cSld><p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/></p:notesMaster>"#).into_bytes(),
+        ));
+        parts.push((
+            "ppt/notesMasters/_rels/notesMaster1.xml.rels".into(),
+            rels(&[("rId1".into(), "theme", "../theme/theme2.xml".into())]).into_bytes(),
+        ));
+        parts.push(("ppt/theme/theme2.xml".into(), theme.into_bytes()));
+    }
 
     let mut out = Out { parts, slide_rels: Vec::new(), media_n: 0, charts: 0, videos: 0, exts: BTreeSet::new() };
     // The master slide: its objects, drawn on every slide that shows them.
@@ -444,6 +470,38 @@ pub fn write(deck: &Deck, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u8>,
             more::timing(s, &shape_id),
         );
         out.parts.push((format!("ppt/slides/slide{}.xml", i + 1), slide.into_bytes()));
+        if !s.notes.trim().is_empty() {
+            let k = i + 1;
+            let rid = format!("rId{}", out.slide_rels.len() + 1);
+            out.slide_rels.push((rid, "notesSlide", format!("../notesSlides/notesSlide{k}.xml")));
+            let paras: String = s
+                .notes
+                .split('\n')
+                .map(|l| {
+                    if l.is_empty() {
+                        r#"<a:p><a:endParaRPr lang="en-US"/></a:p>"#.to_string()
+                    } else {
+                        format!(r#"<a:p><a:r><a:rPr lang="en-US" dirty="0"/><a:t>{}</a:t></a:r></a:p>"#, esc(l))
+                    }
+                })
+                .collect();
+            let page = format!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:notes xmlns:a="{A}" xmlns:r="{R}" xmlns:p="{P}"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/><p:sp><p:nvSpPr><p:cNvPr id="2" name="Slide Image Placeholder 1"/><p:cNvSpPr><a:spLocks noGrp="1" noRot="1" noChangeAspect="1"/></p:cNvSpPr><p:nvPr><p:ph type="sldImg"/></p:nvPr></p:nvSpPr><p:spPr/></p:sp><p:sp><p:nvSpPr><p:cNvPr id="3" name="Notes Placeholder 2"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/>{paras}</p:txBody></p:sp></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:notes>"#
+            );
+            out.parts.push((format!("ppt/notesSlides/notesSlide{k}.xml"), page.into_bytes()));
+            out.parts.push((
+                format!("ppt/notesSlides/_rels/notesSlide{k}.xml.rels"),
+                rels(&[
+                    ("rId1".into(), "notesMaster", "../notesMasters/notesMaster1.xml".into()),
+                    ("rId2".into(), "slide", format!("../slides/slide{k}.xml")),
+                ])
+                .into_bytes(),
+            ));
+            let _ = write!(
+                types,
+                r#"<Override PartName="/ppt/notesSlides/notesSlide{k}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml"/>"#
+            );
+        }
         out.parts.push((format!("ppt/slides/_rels/slide{}.xml.rels", i + 1), rels(&out.slide_rels).into_bytes()));
     }
     for ext in &out.exts {
@@ -463,9 +521,7 @@ pub fn write(deck: &Deck, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u8>,
         zip.write_all(&bytes)?;
     }
     let bytes = zip.finish()?.into_inner();
-    let lost =
-        if deck.slides.iter().any(|s| !s.notes.trim().is_empty()) { vec!["speaker notes".to_string()] } else { Vec::new() };
-    Ok((bytes, lost))
+    Ok((bytes, Vec::new()))
 }
 
 // ---------- Reading ----------
@@ -1063,10 +1119,15 @@ mod tests {
         deck.slides[1].objects.push(Object::new(3, Kind::Image { image: "p.png".into() }, (10.0, 10.0, 64.0, 64.0)));
         deck.slides[2].font = "Noto Serif".into();
         deck.slides[2].italic = true;
+        deck.slides[2].notes = "First line\n\nAfter a gap & more".into();
         let (bytes, lost) = write(&deck, &media).unwrap();
-        assert_eq!(lost, vec!["speaker notes"]);
+        assert!(lost.is_empty(), "{lost:?}");
         let (back, back_media) = read(&bytes).unwrap();
         assert_eq!(back.slides.len(), 5);
+        // Speaker notes come back on each slide.
+        for (a, b) in deck.slides.iter().zip(&back.slides) {
+            assert_eq!(a.notes, b.notes);
+        }
         assert_eq!(back.slides[4].layout, Layout::Section);
         let (a, b) = (&deck.slides[0], &back.slides[0]);
         assert_eq!(b.layout, Layout::Title);

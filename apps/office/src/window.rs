@@ -144,6 +144,7 @@ fn install_icons() {
         "unfold-vertical",
         "omega",
         "gallery-thumbnails",
+        "paintbrush",
         "message-square-plus",
         "align-center",
         "align-left",

@@ -310,8 +310,21 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
     let mut out = Workbook { sheets: Vec::new(), active: 0 };
     let mut truncated = false;
     let mut dropped_rules = false;
-    for (name, path) in sheets.into_iter().take(MAX_SHEETS) {
+    // Print areas are names in the workbook, one per sheet by its position.
+    let print_areas: HashMap<usize, Area> = wb_doc
+        .descendants()
+        .filter(|n| n.has_tag_name("definedName") && n.attribute("name") == Some("_xlnm.Print_Area"))
+        .filter_map(|n| {
+            let i = n.attribute("localSheetId")?.parse().ok()?;
+            // 'Sheet 1'!$A$1:$C$9 (the first range, when there are several).
+            let text = n.text()?.split(',').next()?;
+            let range = text.rsplit('!').next()?.replace('$', "");
+            Some((i, Area::parse(&range)?))
+        })
+        .collect();
+    for (index, (name, path)) in sheets.into_iter().take(MAX_SHEETS).enumerate() {
         let mut sheet = Sheet::new(&name);
+        sheet.print_area = print_areas.get(&index).copied();
         sheet.header = false;
         let Some(xml) = part(&mut zip, &path) else {
             out.sheets.push(sheet);
@@ -346,6 +359,16 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
                 }
             }
         }
+        // Shrunk to fit: so many pages across and down (0 is as many as it takes).
+        if doc.descendants().any(|n| n.has_tag_name("pageSetUpPr") && matches!(n.attribute("fitToPage"), Some("1" | "true"))) {
+            let setup = doc.descendants().find(|n| n.has_tag_name("pageSetup"));
+            let pages = |k: &str| setup.and_then(|n| n.attribute(k)).and_then(|v| v.parse::<u32>().ok()).unwrap_or(1);
+            sheet.print_fit = match (pages("fitToWidth"), pages("fitToHeight")) {
+                (1, 1) => Fit::Page,
+                (1, 0) => Fit::Width,
+                _ => Fit::Actual,
+            };
+        }
         if let Some(pane) = doc
             .descendants()
             .find(|n| n.has_tag_name("pane") && n.attribute("state").is_some_and(|s| s.starts_with("frozen")))
@@ -359,6 +382,7 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
         }
         // Shared formulas: the first cell holds the text, the others say which one.
         let mut shared_f: HashMap<String, (String, u32, u32)> = HashMap::new();
+        let mut spill_areas: Vec<Area> = Vec::new();
         for row in doc.descendants().filter(|n| n.has_tag_name("row")) {
             let ri = row.attribute("r").and_then(|v| v.parse::<u32>().ok()).map(|r| r.saturating_sub(1));
             if let Some(r) = ri
@@ -387,8 +411,21 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
                     c.attribute("s").and_then(|s| s.parse::<usize>().ok()).and_then(|i| xfs.get(i)).cloned().unwrap_or_default();
                 let value = c.children().find(|n| n.has_tag_name("v")).and_then(|v| v.text()).unwrap_or("");
                 let mut raw = String::new();
-                if let Some(f) = c.children().find(|n| n.has_tag_name("f")) {
+                let f = c.children().find(|n| n.has_tag_name("f"));
+                // A spilled block's values are kept beside its formula; we work them out again.
+                if f.is_none() && spill_areas.iter().any(|a| a.contains(r, col) && (a.top, a.left) != (r, col)) {
+                    if format != Format::default() {
+                        sheet.cells.insert((r, col), Cell { raw, format, comment: None });
+                    }
+                    continue;
+                }
+                if let Some(f) = f {
                     let text = f.text().unwrap_or("").trim();
+                    if f.attribute("t") == Some("array")
+                        && let Some(a) = f.attribute("ref").and_then(Area::parse)
+                    {
+                        spill_areas.push(a);
+                    }
                     if f.attribute("t") == Some("shared")
                         && let Some(si) = f.attribute("si")
                     {
@@ -865,6 +902,18 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
         for (r, h) in &s.row_heights {
             ws.set_row_height_pixels(*r, *h)?;
         }
+        if let Some(a) = s.print_area {
+            ws.set_print_area(a.top, a.left as u16, a.bottom, a.right as u16)?;
+        }
+        match s.print_fit {
+            Fit::Actual => {}
+            Fit::Width => {
+                ws.set_print_fit_to_pages(1, 0);
+            }
+            Fit::Page => {
+                ws.set_print_fit_to_pages(1, 1);
+            }
+        }
         if s.freeze_rows > 0 || s.freeze_cols > 0 {
             ws.set_freeze_panes(s.freeze_rows, s.freeze_cols as u16)?;
         }
@@ -913,6 +962,15 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
             if let Some(src) = raw.strip_prefix('=') {
                 // Keep the value we worked out, so viewers that don't recalculate show it.
                 let shown = calc.value(wb, si, r, *c).text();
+                // A block that spills is a dynamic array formula in Excel.
+                if let Some(a) = calc.spill_area(si, r, *c) {
+                    ws.write_dynamic_array_formula_with_format(a.top, a.left as u16, a.bottom, a.right as u16, rust_xlsxwriter::Formula::new(src).set_result(shown), &fmt)?;
+                    continue;
+                }
+                if super::arrays::may_spill(&formula::parse(src)) {
+                    ws.write_dynamic_formula_with_format(r, c16, rust_xlsxwriter::Formula::new(src).set_result(shown), &fmt)?;
+                    continue;
+                }
                 ws.write_formula_with_format(r, c16, rust_xlsxwriter::Formula::new(src).set_result(shown), &fmt)?;
                 continue;
             }
@@ -1172,5 +1230,40 @@ mod tests {
         assert_eq!(num_fmt(167, Some("[Red]0.00")), code("[Red]0.00"));
         // A code that can't be shown: the nearest of ours.
         assert_eq!(num_fmt(168, Some("0.00E+00")), ours(NumFmt::Decimal));
+    }
+
+    #[test]
+    fn spilled_blocks_round_trip() {
+        let mut wb = Workbook::default();
+        for (r, v) in ["b", "a", "b"].iter().enumerate() {
+            wb.set(r as u32, 0, v);
+        }
+        wb.set(0, 2, "=SORT(UNIQUE(A1:A3))");
+        let calc = Calc::new(&wb, 0.0);
+        let (bytes, _) = write(&wb, &calc).unwrap();
+        // Excel's form: a dynamic array over the block, its values kept beside it.
+        let mut zip = zip::ZipArchive::new(Cursor::new(&bytes[..])).unwrap();
+        let sheet = part(&mut zip, "xl/worksheets/sheet1.xml").unwrap();
+        assert!(sheet.contains(r#"t="array" ref="C1:C2""#), "{sheet}");
+        let back = read(&bytes).unwrap().workbook;
+        assert_eq!(back.sheets[0].raw(0, 2), "=SORT(UNIQUE(A1:A3))");
+        assert_eq!(back.sheets[0].raw(1, 2), "", "the spilled value isn't a typed one");
+        let calc = Calc::new(&back, 0.0);
+        assert_eq!(calc.value(&back, 0, 1, 2), formula::Value::Text("b".into()));
+    }
+
+    #[test]
+    fn print_settings_round_trip() {
+        let mut wb = Workbook::default();
+        wb.set(0, 0, "x");
+        wb.sheets.push(Sheet::new("Two"));
+        wb.sheets[1].cells.insert((0, 0), Cell { raw: "y".into(), format: Format::default(), comment: None });
+        wb.sheets[0].print_area = Area::parse("A1:C9");
+        wb.sheets[0].print_fit = Fit::Width;
+        wb.sheets[1].print_fit = Fit::Page;
+        let (bytes, _) = write(&wb, &Calc::new(&wb, 0.0)).unwrap();
+        let back = read(&bytes).unwrap().workbook;
+        assert_eq!((back.sheets[0].print_area, back.sheets[0].print_fit), (Area::parse("A1:C9"), Fit::Width));
+        assert_eq!((back.sheets[1].print_area, back.sheets[1].print_fit), (None, Fit::Page));
     }
 }

@@ -347,6 +347,7 @@ impl Workbook {
             }
         }
         s.merges = s.merges.iter().filter_map(|a| edit.area(*a)).filter(|a| !a.is_cell()).collect();
+        s.print_area = s.print_area.and_then(|a| edit.area(a));
         s.rules.retain_mut(|rule| match edit.range_text(&rule.range) {
             Some(r) => {
                 rule.range = r;

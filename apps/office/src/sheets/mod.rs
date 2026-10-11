@@ -1,5 +1,6 @@
 //! Nexus Sheets: the spreadsheet.
 
+mod arrays;
 mod cells;
 pub mod chart;
 mod finance;
@@ -87,6 +88,7 @@ struct Controls {
     align: Vec<(Option<HAlign>, gtk::ToggleButton)>,
     header: gtk::ToggleButton,
     freeze: gtk::MenuButton,
+    print: gtk::MenuButton,
     chart: gtk::ToggleButton,
     color: Rc<color::ColorButton>,
     fill: Rc<color::ColorButton>,
@@ -425,6 +427,8 @@ impl Sheets {
         let freeze = self.freeze_button();
         g.append(&header);
         g.append(&freeze);
+        let print = self.print_button();
+        g.append(&print);
         flow.append(&g);
 
         let g = group();
@@ -433,7 +437,7 @@ impl Sheets {
         flow.append(&g);
 
         bar.append(&doc::file_menu(Vec::new()));
-        *self.controls.borrow_mut() = Some(Controls { bold, italic, numbers, formats, align, header, freeze, chart, color, fill, filter, wrap, checkbox });
+        *self.controls.borrow_mut() = Some(Controls { bold, italic, numbers, formats, align, header, freeze, print, chart, color, fill, filter, wrap, checkbox });
         bar
     }
 
@@ -575,6 +579,67 @@ impl Sheets {
             list.append(&b);
         }
         pop.set_child(Some(&list));
+        menu.set_popover(Some(&pop));
+        menu
+    }
+
+    /// What prints: the selected cells or the whole sheet, and whether it shrinks to fit.
+    fn print_button(self: &Rc<Self>) -> gtk::MenuButton {
+        let menu = gtk::MenuButton::new();
+        menu.set_icon_name("nxo-printer-symbolic");
+        menu.add_css_class("bar-button");
+        menu.set_tooltip_text(Some("Print setup: what prints, and fitting it on the page"));
+        menu.set_valign(gtk::Align::Center);
+        let pop = gtk::Popover::new();
+        pop.add_css_class("menu-popover");
+        let list = widgets::vbox(0);
+        pop.set_child(Some(&list));
+        let me = self.weak();
+        // Built as it opens, so the ticks show this sheet's settings.
+        pop.connect_show(move |pop| {
+            let Some(s) = me.upgrade() else { return };
+            while let Some(c) = list.first_child() {
+                list.remove(&c);
+            }
+            let (area, fit) = {
+                let wb = s.wb.borrow();
+                (wb.sheet().print_area, wb.sheet().print_fit)
+            };
+            let tick = |on: bool, label: &str| format!("{}{label}", if on { "✓  " } else { "     " });
+            let add = |label: String, f: Box<dyn Fn(&Sheets)>| {
+                let b = gtk::Button::with_label(&label);
+                b.add_css_class("menu-item");
+                if let Some(l) = b.child().and_downcast::<gtk::Label>() {
+                    l.set_xalign(0.0);
+                }
+                let (me, p) = (s.weak(), pop.clone());
+                b.connect_clicked(move |_| {
+                    p.popdown();
+                    if let Some(s) = me.upgrade() {
+                        f(&s);
+                        s.area.queue_draw();
+                    }
+                });
+                list.append(&b);
+            };
+            let selected = s.selection_src();
+            add(
+                match area {
+                    Some(a) => tick(true, &format!("Print only {}", a.name())),
+                    None => tick(false, &format!("Print only the selected cells ({})", selected.name())),
+                },
+                Box::new(move |s| s.change(|wb| wb.sheet_mut().print_area = Some(selected))),
+            );
+            add(tick(area.is_none(), "Print everything on the sheet"), Box::new(|s| s.change(|wb| wb.sheet_mut().print_area = None)));
+            list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+            for (f, label) in [
+                (Fit::Actual, "Actual size"),
+                (Fit::Width, "Fit all columns on one page"),
+                (Fit::Page, "Fit the sheet on one page"),
+            ] {
+                add(tick(fit == f, label), Box::new(move |s| s.change(|wb| wb.sheet_mut().print_fit = f)));
+            }
+        });
         menu.set_popover(Some(&pop));
         menu
     }
@@ -1380,6 +1445,11 @@ impl Sheets {
             } else {
                 ctl.freeze.remove_css_class("active-filter");
             }
+            if sheet.print_area.is_some() || sheet.print_fit != Fit::Actual {
+                ctl.print.add_css_class("active-filter");
+            } else {
+                ctl.print.remove_css_class("active-filter");
+            }
             ctl.chart.set_active(self.chart.pane.is_visible());
             if sheet.filter.is_some() {
                 ctl.filter.add_css_class("active-filter");
@@ -1766,6 +1836,11 @@ pub fn write_sample(path: &Path) {
     wb.set(1, 1, "1200");
     wb.set(1, 2, "1150");
     wb.set(2, 1, "200");
+    // A block that spills: the categories, sorted.
+    wb.set(0, 6, "Sorted");
+    wb.set(1, 6, "=SORT(UNIQUE(A2:A9))");
+    wb.set(1, 7, "=SEQUENCE(3,1,10,10)");
+    wb.sheet_mut().print_fit = Fit::Width;
     let calc = Calc::new(&wb, 0.0);
     let ods = path.extension().is_some_and(|e| e == "ods");
     let (bytes, _) = if ods { ods::write(&wb, &calc) } else { xlsx::write(&wb, &calc) }.expect("a workbook");

@@ -15,6 +15,7 @@ mod marks;
 pub mod model;
 mod picture;
 mod spacing;
+mod painter;
 mod symbols;
 mod table;
 mod templates;
@@ -100,6 +101,9 @@ pub struct Writer {
     syncing: Cell<bool>,
     /// The formatting the next typed text gets.
     typing: RefCell<TextRun>,
+    /// The format painter's copied look, while it's on.
+    painter: RefCell<Option<painter::Painter>>,
+    painter_button: RefCell<Option<gtk::ToggleButton>>,
     /// Where the text being inserted starts (set just before each insert).
     insert_at: Cell<Option<(i32, i32, bool)>>,
     pasting: Cell<bool>,
@@ -209,6 +213,8 @@ impl Writer {
             loading: Cell::new(false),
             syncing: Cell::new(false),
             typing: RefCell::new(TextRun::default()),
+            painter: RefCell::new(None),
+            painter_button: RefCell::new(None),
             insert_at: Cell::new(None),
             pasting: Cell::new(false),
             undo: RefCell::new(Vec::new()),
@@ -380,6 +386,7 @@ impl Writer {
         });
         g.append(&link);
         g.append(&self.symbols_button());
+        g.append(&self.painter_button());
         let me = Rc::downgrade(self);
         let color = color::button("nxo-baseline-symbolic", "Text color", color::TEXT, "Automatic", move |c| {
             if let Some(w) = me.upgrade() {
@@ -1855,6 +1862,10 @@ impl doc::Editor for Writer {
         let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
         let shift = mods.contains(gdk::ModifierType::SHIFT_MASK);
         let k = key.to_lower();
+        if key == gdk::Key::Escape && self.painting() {
+            self.stop_painting();
+            return true;
+        }
         if ctrl && shift && k == gdk::Key::t {
             self.set_tracking(!self.tracking.get());
             return true;
@@ -2372,6 +2383,43 @@ pub mod tests {
         e.forward_chars(4);
         w.tb().delete(&mut s, &mut e);
         assert!(w.document().comments.is_empty());
+        // The format painter: characters onto a selection, a paragraph's look onto a clicked paragraph.
+        let doc = Document {
+            blocks: vec![
+                Block::Paragraph(Paragraph {
+                    runs: vec![Run::styled("Loud", |r| {
+                        r.bold = true;
+                        r.color = Some("#cc0000".into());
+                    })],
+                    ..Default::default()
+                }),
+                Block::Paragraph(Paragraph::text(Style::Normal, "quiet words here")),
+                Block::Paragraph(Paragraph { style: Style::H2, align: Align::Center, ..Paragraph::text(Style::H2, "Heading") }),
+                Block::Paragraph(Paragraph::text(Style::Normal, "plain")),
+            ],
+            ..Default::default()
+        };
+        w.load_fresh(&doc, &BTreeMap::new());
+        let b = w.tb().clone();
+        b.place_cursor(&b.iter_at_offset(1));
+        painter::start_now(&w, false);
+        assert!(w.painting());
+        let line1 = b.iter_at_line(1).unwrap().offset();
+        b.select_range(&b.iter_at_offset(line1 + 6), &b.iter_at_offset(line1 + 11));
+        painter::paint_now(&w);
+        assert!(!w.painting(), "one click paints once");
+        let Block::Paragraph(p) = &w.document().blocks[1] else { panic!() };
+        assert!(matches!(&p.runs[1], Run::Text(t) if t.text == "words" && t.bold && t.color.as_deref() == Some("#cc0000")));
+        // A paragraph's look, by clicking in another paragraph; double-click keeps it on.
+        b.place_cursor(&b.iter_at_line(2).unwrap());
+        painter::start_now(&w, true);
+        b.place_cursor(&b.iter_at_line(3).unwrap());
+        painter::paint_now(&w);
+        assert!(w.painting());
+        let Block::Paragraph(p) = &w.document().blocks[3] else { panic!() };
+        assert_eq!((p.style, p.align), (Style::H2, Align::Center));
+        w.stop_painting();
+
         let _ = std::fs::remove_dir_all(dir);
     }
 }
