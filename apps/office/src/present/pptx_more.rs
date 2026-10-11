@@ -272,6 +272,10 @@ pub fn transition(t: &Transition) -> String {
         TransitionKind::Push => r#"<p:push dir="l"/>"#,
         TransitionKind::Wipe => r#"<p:wipe dir="r"/>"#,
         TransitionKind::Dissolve => "<p:dissolve/>",
+        TransitionKind::Cover => r#"<p:cover dir="l"/>"#,
+        TransitionKind::Uncover => r#"<p:pull dir="l"/>"#,
+        TransitionKind::Split => r#"<p:split orient="vert" dir="out"/>"#,
+        TransitionKind::Zoom => "<p:zoom/>",
     };
     format!(r#"<p:transition spd="{spd}">{effect}</p:transition>"#)
 }
@@ -290,8 +294,12 @@ pub fn read_transition(doc: &roxmltree::Document) -> Option<Transition> {
     let kind = t.children().filter(|c| c.is_element()).find_map(|c| match c.tag_name().name() {
         "morph" => Some(TransitionKind::MagicMove),
         "fade" => Some(TransitionKind::Fade),
-        "push" | "cover" | "pull" => Some(TransitionKind::Push),
-        "wipe" | "split" | "strips" => Some(TransitionKind::Wipe),
+        "push" => Some(TransitionKind::Push),
+        "cover" => Some(TransitionKind::Cover),
+        "pull" => Some(TransitionKind::Uncover),
+        "split" => Some(TransitionKind::Split),
+        "zoom" | "newsflash" => Some(TransitionKind::Zoom),
+        "wipe" | "strips" => Some(TransitionKind::Wipe),
         "dissolve" | "randomBar" => Some(TransitionKind::Dissolve),
         _ => None,
     });

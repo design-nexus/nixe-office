@@ -6,6 +6,7 @@ mod export;
 mod looks;
 mod media;
 mod odp;
+mod odp_more;
 pub(crate) mod data;
 mod pptx;
 pub(crate) mod pptx_more;

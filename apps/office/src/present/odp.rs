@@ -71,7 +71,12 @@ impl Auto {
 }
 
 /// The xfrm attributes for a box turned about its centre.
-fn place(o: &Object) -> String {
+/// The element id builds point at, then the frame (turned about its centre).
+fn place(o: &Object, id: &str) -> String {
+    format!(r#"xml:id="{id}" draw:id="{id}" {}"#, frame(o))
+}
+
+fn frame(o: &Object) -> String {
     if o.rotation == 0.0 {
         return format!(r#"svg:x="{}" svg:y="{}" svg:width="{}" svg:height="{}""#, pt(o.x), pt(o.y), pt(o.w), pt(o.h));
     }
@@ -91,6 +96,10 @@ fn place(o: &Object) -> String {
 }
 
 struct Writer<'a> {
+    /// Element ids start with this: the slide's number, or the master's.
+    prefix: String,
+    /// Embedded chart documents, in order: "Object 1" is the first.
+    charts: Vec<String>,
     auto: Auto,
     media: &'a BTreeMap<String, Vec<u8>>,
     pictures: Vec<String>,
@@ -174,6 +183,8 @@ impl Writer<'_> {
     }
 
     fn object(&mut self, s: &Slide, o: &Object, out: &mut String) {
+        let id = format!("{}o{}", self.prefix, o.id);
+        let place = |o: &Object| place(o, &id);
         match &o.kind {
             Kind::Text { text } => {
                 let style = self.graphic("graphic", Some(o), None, false);
@@ -220,7 +231,7 @@ impl Writer<'_> {
                 let (hx, hy) = (o.w / 2.0 * t.cos(), o.w / 2.0 * t.sin());
                 let _ = write!(
                     out,
-                    r#"<draw:line draw:style-name="{style}" svg:x1="{}" svg:y1="{}" svg:x2="{}" svg:y2="{}"/>"#,
+                    r#"<draw:line xml:id="{id}" draw:id="{id}" draw:style-name="{style}" svg:x1="{}" svg:y1="{}" svg:x2="{}" svg:y2="{}"/>"#,
                     pt(cx - hx),
                     pt(cy - hy),
                     pt(cx + hx),
@@ -258,37 +269,49 @@ impl Writer<'_> {
                 }
                 out.push_str("</table:table></draw:frame>");
             }
-            Kind::Chart { .. } => self.lose("charts"),
+            Kind::Chart { chart, names, labels, series } => {
+                self.charts.push(super::odp_more::chart_document(*chart, names, labels, series, (o.w, o.h)));
+                let n = self.charts.len();
+                let style = self.graphic("graphic", Some(o), None, false);
+                let _ = write!(
+                    out,
+                    r#"<draw:frame draw:style-name="{style}" {}><draw:object xlink:href="./Object {n}" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"/></draw:frame>"#,
+                    place(o)
+                );
+            }
             Kind::Media { .. } => self.lose("video and audio"),
         }
     }
 }
 
 pub fn write(deck: &Deck, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u8>, Vec<String>)> {
-    let mut w = Writer { auto: Auto::default(), media, pictures: Vec::new(), lost: Vec::new() };
+    let mut w = Writer { prefix: String::new(), charts: Vec::new(), auto: Auto::default(), media, pictures: Vec::new(), lost: Vec::new() };
     let mut pages = String::new();
     let mut fonts: Vec<String> = vec![DEFAULT_FONT.into()];
     for (i, s) in deck.slides.iter().enumerate() {
         if !fonts.contains(&s.font) {
             fonts.push(s.font.clone());
         }
-        if s.transition.is_some() {
-            w.lose("slide transitions");
+        if s.transition.is_some_and(|t| t.kind == TransitionKind::MagicMove) {
+            w.lose("Magic Move (it plays as a fade)");
         }
-        if s.objects.iter().any(|o| o.build.is_some() || o.build_out.is_some()) {
-            w.lose("builds");
-        }
+        w.prefix = format!("s{}", i + 1);
+        let page_id = format!("p{}", i + 1);
         if s.hide_master && !deck.master.is_empty() {
             w.lose("hiding the master slide's objects on a slide");
         }
         let dp = w.auto.style(
             "drawing-page",
             "dp",
-            format!(r#"<style:drawing-page-properties presentation:background-visible="true" draw:background-size="full" draw:fill="solid" draw:fill-color="{}"/>"#, esc(&s.background)),
+            format!(
+                r#"<style:drawing-page-properties presentation:background-visible="true" draw:background-size="full" draw:fill="solid" draw:fill-color="{}"{}/>"#,
+                esc(&s.background),
+                s.transition.as_ref().map(super::odp_more::transition_props).unwrap_or_default()
+            ),
         );
         let _ = write!(
             pages,
-            r#"<draw:page draw:name="page{}" draw:style-name="{dp}" draw:master-page-name="Default" presentation:presentation-page-layout-name="{}">"#,
+            r#"<draw:page draw:name="page{}" xml:id="{page_id}" draw:id="{page_id}" draw:style-name="{dp}" draw:master-page-name="Default" presentation:presentation-page-layout-name="{}">"#,
             i + 1,
             layout_id(s.layout)
         );
@@ -305,6 +328,8 @@ pub fn write(deck: &Deck, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u8>,
         for o in &s.objects {
             w.object(s, o, &mut pages);
         }
+        let prefix = w.prefix.clone();
+        pages.push_str(&super::odp_more::timing(s, &page_id, |id| format!("{prefix}o{id}")));
         if !s.notes.is_empty() {
             let body = w.paragraphs(s, &s.notes, 12.0, false, false);
             let _ = write!(
@@ -317,6 +342,7 @@ pub fn write(deck: &Deck, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u8>,
     }
     // The master slide's objects, drawn with the first slide's look.
     let look = deck.slides.first().cloned().unwrap_or_default();
+    w.prefix = "m".into();
     let mut master = String::new();
     for o in &deck.master {
         w.object(&look, o, &mut master);
@@ -356,11 +382,17 @@ pub fn write(deck: &Deck, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u8>,
         h = pt(H),
         auto = w.auto.xml,
     );
-    let extras: Vec<odf::Extra> = w
+    let mut extras: Vec<odf::Extra> = w
         .pictures
         .iter()
         .filter_map(|name| media.get(name).map(|bytes| odf::Extra { path: format!("Pictures/{name}"), bytes, media_type: "image/png" }))
         .collect();
+    for (k, chart) in w.charts.iter().enumerate() {
+        let dir = format!("Object {}/", k + 1);
+        extras.push(odf::Extra { path: format!("{dir}content.xml"), bytes: chart.as_bytes(), media_type: "text/xml" });
+        extras.push(odf::Extra { path: format!("{dir}styles.xml"), bytes: super::odp_more::CHART_STYLES.as_bytes(), media_type: "text/xml" });
+        extras.push(odf::Extra { path: dir, bytes: &[], media_type: "application/vnd.oasis.opendocument.chart" });
+    }
     let bytes = odf::package(odf::ODP, &content, &styles, &extras)?;
     Ok((bytes, w.lost))
 }
@@ -515,6 +547,11 @@ impl Reader<'_, '_> {
                         .collect();
                     let shaded = fills.len() == 2 && fills[0].is_some() && fills[0] != fills[1];
                     Kind::Table { rows, header: attr(&t, TABLE, "use-first-row-styles") == Some("true") || shaded }
+                } else if let Some(obj) = n.children().find(|c| c.has_tag_name((DRAW, "object"))) {
+                    // An embedded chart: its document sits in a folder of the package.
+                    let href = attr(&obj, XLINK, "href")?.trim_start_matches("./").trim_end_matches('/').to_string();
+                    let xml = self.pkg.text(&format!("{href}/content.xml"))?;
+                    super::odp_more::read_chart(&xml)?
                 } else if let Some(img) = n.children().find(|c| c.has_tag_name((DRAW, "image"))) {
                     let href = attr(&img, XLINK, "href")?;
                     let png = odf::picture(self.pkg, href, &mut self.cache)?;
@@ -620,6 +657,11 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
     let mut slides = Vec::new();
     for page in body.children().filter(|n| n.has_tag_name((DRAW, "page"))).take(MAX_SLIDES) {
         let mut s = Slide { font: DEFAULT_FONT.into(), ..Default::default() };
+        // Element ids (which builds point at) to our objects.
+        let mut ids: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let element_id = |n: &roxmltree::Node| {
+            n.attribute(("http://www.w3.org/XML/1998/namespace", "id")).or_else(|| attr(n, DRAW, "id")).map(String::from)
+        };
         if let Some(dp) = attr(&page, DRAW, "style-name")
             && r.styles.get("drawing-page", dp, "page/fill") != Some("none")
             && let Some(c) = r.styles.get("drawing-page", dp, "page/fill-color").and_then(odf::color)
@@ -672,6 +714,9 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
                         if s.objects.len() < MAX_OBJECTS
                             && let Some(o) = r.object(&c, s.next_id())
                         {
+                            if let Some(e) = element_id(&c).or_else(|| element_id(&n)) {
+                                ids.insert(e, o.id);
+                            }
                             s.objects.push(o);
                         }
                     }
@@ -680,8 +725,26 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
                     if s.objects.len() < MAX_OBJECTS
                         && let Some(o) = r.object(&n, s.next_id())
                     {
+                        if let Some(e) = element_id(&n) {
+                            ids.insert(e, o.id);
+                        }
                         s.objects.push(o);
                     }
+                }
+            }
+        }
+        // The transition, and the builds by click.
+        let dp = attr(&page, DRAW, "style-name").unwrap_or("").to_string();
+        s.transition = super::odp_more::read_transition(&page, |k| r.styles.get("drawing-page", &dp, k).map(String::from));
+        for (target, click, effect, out) in super::odp_more::read_builds(&page) {
+            if let Some(id) = ids.get(&target)
+                && let Some(o) = s.objects.iter_mut().find(|o| o.id == *id)
+            {
+                let b = Some(Build { order: click, effect });
+                if out {
+                    o.build_out = b;
+                } else {
+                    o.build = b;
                 }
             }
         }
@@ -814,5 +877,65 @@ mod tests {
         let arrow = s.objects.iter().find(|o| matches!(o.kind, Kind::Shape { shape: Shape::Arrow, .. })).unwrap();
         assert!((arrow.rotation - 15.0).abs() < 0.01 && (arrow.x - 150.0).abs() < 0.1 && (arrow.y - 40.0).abs() < 0.1, "{arrow:?}");
         assert!(matches!(&deck.master[0].kind, Kind::Text { text } if text == "{n}"));
+    }
+
+    #[test]
+    fn charts_transitions_and_builds() {
+        let mut deck = Deck::default();
+        for kind in TransitionKind::ALL.into_iter().filter(|k| *k != TransitionKind::MagicMove) {
+            deck.slides.push(Slide { title: kind.name().into(), transition: Some(Transition { kind, secs: 1.25 }), ..Default::default() });
+        }
+        let s = &mut deck.slides[0];
+        let mut a = Object::new(1, Kind::Shape { shape: Shape::Rectangle, fill: "#336699".into() }, (100.0, 200.0, 100.0, 100.0));
+        a.build = Some(Build { order: 1, effect: Effect::Fade });
+        let mut b = Object::new(2, Kind::Shape { shape: Shape::Ellipse, fill: "#993366".into() }, (300.0, 200.0, 100.0, 100.0));
+        b.build = Some(Build { order: 2, effect: Effect::Fly });
+        let mut c = Object::new(3, Kind::Shape { shape: Shape::Star, fill: "#669933".into() }, (500.0, 200.0, 100.0, 100.0));
+        c.build = Some(Build { order: 3, effect: Effect::Appear });
+        c.build_out = Some(Build { order: 4, effect: Effect::Fade });
+        let chart = Object::new(4, Kind::sample_chart(), (600.0, 300.0, 300.0, 200.0));
+        let mut stacked = Object::new(5, Kind::sample_chart(), (100.0, 320.0, 300.0, 200.0));
+        if let Kind::Chart { chart, .. } = &mut stacked.kind {
+            *chart = ChartKind::StackedArea;
+        }
+        s.objects = vec![a, b, c, chart, stacked];
+        let (bytes, lost) = write(&deck, &BTreeMap::new()).unwrap();
+        assert!(lost.is_empty(), "{lost:?}");
+        let (back, _) = read(&bytes).unwrap();
+        for (x, y) in deck.slides.iter().zip(&back.slides) {
+            assert_eq!(x.transition, y.transition, "{}", x.title);
+        }
+        let (x, y) = (&deck.slides[0], &back.slides[0]);
+        assert_eq!(x.steps(), y.steps());
+        for (o, p) in x.objects.iter().zip(&y.objects) {
+            assert_eq!((&o.kind, o.build, o.build_out), (&p.kind, p.build, p.build_out));
+        }
+    }
+
+    #[test]
+    fn reads_animation_and_charts_collabora_saved() {
+        // A deck with every transition, builds and a chart, saved again by Collabora Office.
+        let (deck, _) = read(include_bytes!("../../testdata/collabora/animated.odp")).unwrap();
+        let kinds: Vec<Option<TransitionKind>> = deck.slides.iter().map(|s| s.transition.map(|t| t.kind)).collect();
+        assert_eq!(kinds[1..9].iter().flatten().count(), 8, "{kinds:?}");
+        assert_eq!(
+            kinds[1..9].to_vec(),
+            [
+                TransitionKind::Fade,
+                TransitionKind::Push,
+                TransitionKind::Cover,
+                TransitionKind::Uncover,
+                TransitionKind::Wipe,
+                TransitionKind::Split,
+                TransitionKind::Zoom,
+                TransitionKind::Dissolve,
+            ]
+            .map(Some)
+        );
+        // The builds and chart are on the first slide.
+        let s = &deck.slides[0];
+        let effects: Vec<(Effect, bool)> = s.steps().iter().map(|st| (st.effect, st.out)).collect();
+        assert_eq!(effects, [(Effect::Fade, false), (Effect::Fly, false), (Effect::Appear, false), (Effect::Fade, true)]);
+        assert!(s.objects.iter().any(|o| matches!(&o.kind, Kind::Chart { chart: ChartKind::Bar, series, .. } if series[1][3] == 27.0)));
     }
 }

@@ -1,12 +1,16 @@
 //! Formulas that give a block of values: a range (`=A1:A9`), operators applied
 //! across ranges (`A1:A9*2`, `B2:B9>100`), and the functions UNIQUE, FILTER, SORT
-//! and SEQUENCE. A block in a cell's formula spills into the cells below and to
+//! and SEQUENCE, and those that reshape blocks (TAKE, DROP, CHOOSECOLS, TRANSPOSE,
+//! VSTACK…). A block in a cell's formula spills into the cells below and to
 //! the right (`Calc` does that); inside another function it's a range.
 
 use super::formula::{self, Arg, Cells, Expr, Value};
 
 /// Functions whose answer is a block.
-pub const FUNCTIONS: [&str; 4] = ["UNIQUE", "FILTER", "SORT", "SEQUENCE"];
+pub const FUNCTIONS: [&str; 15] = [
+    "UNIQUE", "FILTER", "SORT", "SEQUENCE", "SORTBY", "TEXTSPLIT", "CHOOSECOLS", "CHOOSEROWS", "TAKE", "DROP", "TRANSPOSE",
+    "VSTACK", "HSTACK", "TOCOL", "TOROW",
+];
 
 /// The most cells a block may hold.
 const MAX_CELLS: usize = 1_000_000;
@@ -248,6 +252,144 @@ fn call_inner(name: &str, args: &[Expr], cells: &dyn Cells) -> Result<Block, &'s
             let values = (0..rows * cols).map(|i| Value::Num(start + step * i as f64)).collect();
             Ok(Block { rows, cols, values })
         }
+        "SORTBY" if n >= 2 => {
+            // SORTBY(array, by1, [order1], by2, [order2]…): each key one value per row.
+            let b = whole(&args[0], cells);
+            let mut keys: Vec<(Block, f64)> = Vec::new();
+            let mut i = 1;
+            while i < n {
+                let key = whole(&args[i], cells);
+                let order = if i + 1 < n { number(args, i + 1, 1.0, cells)? } else { 1.0 };
+                if key.values.len() != b.rows || (order != 1.0 && order != -1.0) {
+                    return Err("#VALUE!");
+                }
+                keys.push((key, order));
+                i += 2;
+            }
+            let rows = b.rows();
+            let mut idx: Vec<usize> = (0..rows.len()).collect();
+            idx.sort_by(|x, y| {
+                for (k, order) in &keys {
+                    let o = sort_order(&k.values[*x], &k.values[*y]);
+                    let o = if *order < 0.0 { o.reverse() } else { o };
+                    if o.is_ne() {
+                        return o;
+                    }
+                }
+                std::cmp::Ordering::Equal
+            });
+            Ok(Block::from_rows(idx.into_iter().map(|i| rows[i].clone()).collect()))
+        }
+        "TEXTSPLIT" if (2..=6).contains(&n) => {
+            let text = formula::eval(&args[0], cells);
+            if let Value::Err(e) = text {
+                return Err(e);
+            }
+            let text = text.text();
+            let col_delim = formula::eval(&args[1], cells).text();
+            let row_delim = args.get(2).map(|a| formula::eval(a, cells).text()).filter(|d| !d.is_empty());
+            let skip_empty = flag(args, 3, cells)?;
+            let pad = args.get(5).map(|a| formula::eval(a, cells)).unwrap_or(Value::Err("#N/A"));
+            let split = |s: &str, d: &str| -> Vec<String> {
+                if d.is_empty() { vec![s.to_string()] } else { s.split(d).map(String::from).collect() }
+            };
+            let lines = match &row_delim {
+                Some(d) => split(&text, d),
+                None => vec![text],
+            };
+            let mut rows: Vec<Vec<Value>> = lines
+                .iter()
+                .filter(|l| !(skip_empty && l.is_empty()))
+                .map(|l| split(l, &col_delim).into_iter().filter(|p| !(skip_empty && p.is_empty())).map(Value::Text).collect())
+                .collect();
+            let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
+            for r in &mut rows {
+                r.resize(cols, pad.clone());
+            }
+            Ok(Block::from_rows(rows))
+        }
+        "CHOOSECOLS" | "CHOOSEROWS" if n >= 2 => {
+            let mut b = whole(&args[0], cells);
+            if name == "CHOOSECOLS" {
+                b = b.transposed();
+            }
+            let rows = b.rows();
+            let mut out = Vec::new();
+            for a in &args[1..] {
+                for k in whole(a, cells).values {
+                    let k = k.num()?.trunc() as i64;
+                    let at = if k > 0 { k - 1 } else { rows.len() as i64 + k };
+                    if k == 0 || at < 0 || at as usize >= rows.len() {
+                        return Err("#VALUE!");
+                    }
+                    out.push(rows[at as usize].clone());
+                }
+            }
+            let out = Block::from_rows(out);
+            Ok(if name == "CHOOSECOLS" { out.transposed() } else { out })
+        }
+        "TAKE" | "DROP" if (2..=3).contains(&n) => {
+            let b = whole(&args[0], cells);
+            let rows_n = match args.get(1) {
+                Some(e) if !matches!(formula::eval(e, cells), Value::Empty) => Some(number(args, 1, 0.0, cells)?.trunc() as i64),
+                _ => None,
+            };
+            let cols_n = if n == 3 { Some(number(args, 2, 0.0, cells)?.trunc() as i64) } else { None };
+            // Which of `len` items stay: the first k (or last, for a negative k), or all but them.
+            let keep = |len: usize, k: Option<i64>| -> std::ops::Range<usize> {
+                let Some(k) = k else { return 0..len };
+                let m = (k.unsigned_abs() as usize).min(len);
+                match (name == "TAKE", k >= 0) {
+                    (true, true) => 0..m,
+                    (true, false) => len - m..len,
+                    (false, true) => m..len,
+                    (false, false) => 0..len - m,
+                }
+            };
+            let (rr, cr) = (keep(b.rows, rows_n), keep(b.cols, cols_n));
+            let rows: Vec<Vec<Value>> = b.rows()[rr].iter().map(|r| r[cr.clone()].to_vec()).collect();
+            Ok(Block::from_rows(rows))
+        }
+        "TRANSPOSE" if n == 1 => Ok(whole(&args[0], cells).transposed()),
+        "VSTACK" | "HSTACK" if n >= 1 => {
+            let across = name == "HSTACK";
+            let parts: Vec<Block> = args.iter().map(|a| {
+                let b = whole(a, cells);
+                if across { b.transposed() } else { b }
+            }).collect();
+            // Stacked down; shorter rows padded with #N/A, as in Excel.
+            let width = parts.iter().map(|b| b.cols).max().unwrap_or(1);
+            let mut rows = Vec::new();
+            for b in parts {
+                for mut r in b.rows() {
+                    r.resize(width, Value::Err("#N/A"));
+                    rows.push(r);
+                }
+            }
+            let out = Block::from_rows(rows);
+            Ok(if across { out.transposed() } else { out })
+        }
+        "TOCOL" | "TOROW" if (1..=3).contains(&n) => {
+            let b = whole(&args[0], cells);
+            let ignore = number(args, 1, 0.0, cells)? as i64;
+            let by_col = flag(args, 2, cells)?;
+            let b = if by_col { b.transposed() } else { b };
+            let values: Vec<Value> = b
+                .values
+                .into_iter()
+                .filter(|v| match ignore {
+                    1 => !matches!(v, Value::Empty),
+                    2 => !v.is_err(),
+                    3 => !matches!(v, Value::Empty) && !v.is_err(),
+                    _ => true,
+                })
+                .collect();
+            if values.is_empty() {
+                return Err("#CALC!");
+            }
+            let k = values.len();
+            Ok(if name == "TOCOL" { Block { rows: k, cols: 1, values } } else { Block { rows: 1, cols: k, values } })
+        }
         _ => Err("#ERROR!"),
     }
 }
@@ -314,6 +456,33 @@ mod tests {
         assert_eq!((s.rows, s.cols), (2, 3));
         assert_eq!(texts(&s), ["10", "15", "20", "25", "30", "35"]);
         assert_eq!(texts(&run("B1:B3*2")), ["6", "20", "14"]);
+    }
+
+    #[test]
+    fn reshaping() {
+        assert_eq!(texts(&run("TAKE(A1:B5,2,1)")), ["pear", "Apple"]);
+        assert_eq!(texts(&run("TAKE(B1:B5,-2)")), ["1", "2"]);
+        assert_eq!(texts(&run("DROP(B1:B5,3)")), ["1", "2"]);
+        assert_eq!(texts(&run("CHOOSECOLS(A1:B2,2,1)")), ["3", "pear", "10", "Apple"]);
+        assert_eq!(texts(&run("CHOOSEROWS(A1:A5,-1)")), ["apple"]);
+        let t = run("TRANSPOSE(A1:B2)");
+        assert_eq!((t.rows, t.cols), (2, 2));
+        assert_eq!(texts(&t), ["pear", "Apple", "3", "10"]);
+        assert_eq!(texts(&run("VSTACK(B1:B2,B4)")), ["3", "10", "1"]);
+        assert_eq!(texts(&run("HSTACK(B1:B2,A1:A2)")), ["3", "pear", "10", "Apple"]);
+        assert_eq!(texts(&run("TOROW(A1:B2)")), ["pear", "3", "Apple", "10"]);
+        assert_eq!(texts(&run("SORTBY(A1:A5,B1:B5,-1)")), ["Apple", "pear", "pear", "apple", "fig"]);
+        let s = run("TEXTSPLIT(\"a,b;c\",\",\",\";\")");
+        assert_eq!((s.rows, s.cols), (2, 2));
+        assert_eq!(texts(&s), ["a", "b", "c", "#N/A"]);
+        let g = grid();
+        let one = |src: &str| formula::eval(&formula::parse(src), &g).text();
+        assert_eq!(one("TEXTBEFORE(\"one-two-three\",\"-\")"), "one");
+        assert_eq!(one("TEXTAFTER(\"one-two-three\",\"-\",-1)"), "three");
+        assert_eq!(one("TEXTAFTER(\"abc\",\"x\",1,0,0,\"none\")"), "none");
+        assert_eq!(one("AVERAGEA(B1:B2,TRUE,\"x\")"), "3.5");
+        assert_eq!(one("XMATCH(\"fig\",A1:A5)"), "4");
+        assert_eq!(one("XMATCH(4,B1:B5,1)"), "3");
     }
 
     #[test]

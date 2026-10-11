@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-pub const ROWS: u32 = 10_000;
+pub const ROWS: u32 = 1_048_576;
 pub const COLS: u32 = 104;
 pub const MAX_SHEETS: usize = 50;
 pub const ROW_H: u32 = 30;
@@ -1842,5 +1842,53 @@ mod tests {
         let wb = Workbook::from_legacy_json(v2).unwrap();
         assert_eq!(wb.sheets.len(), 2);
         assert_eq!(wb.active, 1);
+    }
+}
+
+#[cfg(test)]
+mod size_check {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    #[ignore]
+    fn large_sheet_timings() {
+        let mut wb = Workbook::default();
+        let n = 200_000u32;
+        let t = Instant::now();
+        let s = wb.sheet_mut();
+        for r in 0..n {
+            s.cells.insert((r, 0), Cell { raw: format!("Item {r}"), ..Default::default() });
+            s.cells.insert((r, 1), Cell { raw: format!("{}", r % 97), ..Default::default() });
+            s.cells.insert((r, 2), Cell { raw: format!("=B{}*2", r + 1), ..Default::default() });
+        }
+        println!("build {:?}", t.elapsed());
+        let t = Instant::now();
+        let calc = Calc::new(&wb, 0.0);
+        println!("calc {:?}", t.elapsed());
+        let t = Instant::now();
+        let view = wb.view_rows(0, &calc);
+        let s = wb.sheet();
+        let mut y = 0.0;
+        for r in &view {
+            y += s.row_h(*r) as f64;
+        }
+        println!("relayout {:?} ({y})", t.elapsed());
+        let t = Instant::now();
+        let json = wb.to_json();
+        println!("to_json {:?} {} MB", t.elapsed(), json.len() / 1_000_000);
+        let t = Instant::now();
+        let back = Workbook::from_json(&json).unwrap();
+        println!("from_json {:?}", t.elapsed());
+        let t = Instant::now();
+        let (bytes, _) = super::super::xlsx::write(&back, &calc).unwrap();
+        println!("xlsx write {:?} {} MB", t.elapsed(), bytes.len() / 1_000_000);
+        let t = Instant::now();
+        let _ = super::super::xlsx::read(&bytes).unwrap();
+        println!("xlsx read {:?}", t.elapsed());
+        let t = Instant::now();
+        let mut wb2 = back.clone();
+        wb2.sort_rows(0, 1, true, &calc);
+        println!("sort {:?}", t.elapsed());
     }
 }

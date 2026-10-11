@@ -138,6 +138,90 @@ pub struct Opened {
     pub truncated: bool,
     /// Some conditional formats Sheets can't show were left out.
     pub dropped_rules: bool,
+    /// Pivot tables rebuilt as live summaries.
+    pub pivots: usize,
+}
+
+/// A pivot table as read: where it sits, and what it summarizes.
+pub(super) struct Pivot {
+    /// The sheet it's on, and its cells there.
+    pub sheet: usize,
+    pub at: Area,
+    /// The data's sheet (by name) and cells, header row first.
+    pub source: (String, Area),
+    /// Columns of the data, counted from its first: grouped down, grouped across, totalled.
+    pub rows: usize,
+    pub across: Option<usize>,
+    pub value: usize,
+    pub how: super::summary::Summary,
+}
+
+/// Each pivot table rebuilt where it was, as a live summary of its data. Returns how many.
+pub(super) fn rebuild_pivots(wb: &mut Workbook, pivots: &[Pivot]) -> usize {
+    let mut done = 0;
+    for p in pivots {
+        let Some(src) = wb.sheets.iter().position(|s| s.name.eq_ignore_ascii_case(&p.source.0)) else { continue };
+        let data = p.source.1;
+        let width = (data.right - data.left) as usize;
+        if p.rows > width || p.value > width || p.across.is_some_and(|a| a > width) || p.sheet >= wb.sheets.len() {
+            continue;
+        }
+        // The pivot's frozen values go; the summary takes their place.
+        let s = &mut wb.sheets[p.sheet];
+        s.cells.retain(|(r, c), _| !p.at.contains(*r, *c));
+        s.merges.retain(|m| !m.overlaps(&p.at));
+        let req = super::summary::Request {
+            sheet: src,
+            data,
+            group: data.left + p.rows as u32,
+            across: p.across.map(|a| data.left + a as u32),
+            value: data.left + p.value as u32,
+            how: p.how,
+        };
+        if super::summary::summarize_at(wb, &req, p.sheet, (p.at.top, p.at.left)) {
+            done += 1;
+        }
+    }
+    done
+}
+
+/// A pivot table's definition, with its cache's source.
+fn read_pivot(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, path: &str, sheet: usize) -> Option<Pivot> {
+    use super::summary::Summary;
+    let xml = part(zip, path)?;
+    let doc = roxmltree::Document::parse(&xml).ok()?;
+    let at = doc.descendants().find(|n| n.has_tag_name("location")).and_then(|n| n.attribute("ref")).and_then(Area::parse)?;
+    let fields = |list: &str| -> Vec<usize> {
+        doc.descendants()
+            .find(|n| n.has_tag_name(list))
+            .map(|l| {
+                l.children()
+                    .filter(|f| f.has_tag_name("field"))
+                    // -2 stands for the values themselves.
+                    .filter_map(|f| f.attribute("x").and_then(|x| x.parse::<i64>().ok()).filter(|x| *x >= 0).map(|x| x as usize))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let rows = *fields("rowFields").first()?;
+    let across = fields("colFields").first().copied();
+    let data = doc.descendants().find(|n| n.has_tag_name("dataField"))?;
+    let value = data.attribute("fld")?.parse().ok()?;
+    let how = match data.attribute("subtotal") {
+        Some("count" | "countNums") => Summary::Count,
+        Some("average") => Summary::Average,
+        Some("max") => Summary::Max,
+        Some("min") => Summary::Min,
+        _ => Summary::Sum,
+    };
+    // The cache says where the data is.
+    let rels = relationships(&part(zip, &rels_of(path)).unwrap_or_default(), folder(path));
+    let cache = rels.values().find(|t| t.contains("pivotCacheDefinition"))?;
+    let cxml = part(zip, cache)?;
+    let cdoc = roxmltree::Document::parse(&cxml).ok()?;
+    let ws = cdoc.descendants().find(|n| n.has_tag_name("worksheetSource"))?;
+    let source = (ws.attribute("sheet")?.to_string(), Area::parse(&ws.attribute("ref")?.replace('$', ""))?);
+    Some(Pivot { sheet, at, source, rows, across, value, how })
 }
 
 pub fn read(bytes: &[u8]) -> Result<Opened> {
@@ -308,6 +392,7 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
     }
 
     let mut out = Workbook { sheets: Vec::new(), active: 0 };
+    let mut pivots: Vec<Pivot> = Vec::new();
     let mut truncated = false;
     let mut dropped_rules = false;
     // Print areas are names in the workbook, one per sheet by its position.
@@ -505,6 +590,12 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
         sheet.rules = rules.into_iter().map(|(_, r)| r).collect();
         // Comments live in their own part, linked from the sheet.
         let sheet_rels = relationships(&part(&mut zip, &rels_of(&path)).unwrap_or_default(), folder(&path));
+        // Pivot tables: rebuilt once every sheet is in.
+        for target in sheet_rels.values().filter(|t| t.contains("/pivotTables/")) {
+            if let Some(p) = read_pivot(&mut zip, target, out.sheets.len()) {
+                pivots.push(p);
+            }
+        }
         // Tables: their range, name and look.
         for target in sheet_rels.values().filter(|t| t.contains("/tables/")) {
             let Some(x) = part(&mut zip, target) else { continue };
@@ -590,7 +681,8 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
         out.sheets.push(sheet);
     }
     out.active = active.min(out.sheets.len().saturating_sub(1));
-    Ok(Opened { workbook: out, truncated, dropped_rules })
+    let pivots = rebuild_pivots(&mut out, &pivots);
+    Ok(Opened { workbook: out, truncated, dropped_rules, pivots })
 }
 
 /// An Excel chart's kind and the block of cells it charts (on its own sheet).
@@ -1265,5 +1357,103 @@ mod tests {
         let back = read(&bytes).unwrap().workbook;
         assert_eq!((back.sheets[0].print_area, back.sheets[0].print_fit), (Area::parse("A1:C9"), Fit::Width));
         assert_eq!((back.sheets[1].print_area, back.sheets[1].print_fit), (None, Fit::Page));
+    }
+
+    /// A workbook with a data sheet and a pivot table of it, as Excel writes them.
+    pub(crate) fn pivot_workbook() -> Vec<u8> {
+        use std::io::Write as _;
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut z = zip::ZipWriter::new(&mut buf);
+            let o = zip::write::SimpleFileOptions::default();
+            let ns = r#"xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships""#;
+            let rel = |items: &[(&str, &str)]| {
+                let mut x = String::from(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#);
+                for (i, (kind, target)) in items.iter().enumerate() {
+                    x.push_str(&format!(r#"<Relationship Id="rId{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/{kind}" Target="{target}"/>"#, i + 1));
+                }
+                x + "</Relationships>"
+            };
+            let row = |r: u32, cells: &[(&str, &str)]| {
+                let mut x = format!(r#"<row r="{r}">"#);
+                for (i, (v, t)) in cells.iter().enumerate() {
+                    let at = format!("{}{r}", formula::col_name(i as u32));
+                    if *t == "s" {
+                        x.push_str(&format!(r#"<c r="{at}" t="inlineStr"><is><t>{v}</t></is></c>"#));
+                    } else {
+                        x.push_str(&format!(r#"<c r="{at}"><v>{v}</v></c>"#));
+                    }
+                }
+                x + "</row>"
+            };
+            let data = [("Region", "Item", "Amount"), ("North", "Pens", "5"), ("South", "Pens", "7"), ("North", "Ink", "3"), ("North", "Pens", "2")];
+            let mut rows = String::new();
+            for (i, (a, b, c)) in data.iter().enumerate() {
+                let t = if i == 0 { "s" } else { "n" };
+                rows.push_str(&row(i as u32 + 1, &[(a, "s"), (b, "s"), (c, t)]));
+            }
+            // The pivot's frozen values, as Excel leaves them.
+            let pivot_rows = row(3, &[("Sum of Amount", "s")]) + &row(4, &[("North", "s"), ("10", "n")]) + &row(5, &[("South", "s"), ("7", "n")]);
+            let types = concat!(
+                r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>"#,
+                r#"<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>"#,
+                r#"<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>"#,
+                r#"<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>"#,
+                r#"<Override PartName="/xl/pivotTables/pivotTable1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml"/>"#,
+                r#"<Override PartName="/xl/pivotCache/pivotCacheDefinition1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml"/></Types>"#
+            );
+            let files = [
+                ("[Content_Types].xml".to_string(), types.to_string()),
+                ("_rels/.rels".to_string(), rel(&[("officeDocument", "xl/workbook.xml")])),
+                ("xl/workbook.xml".into(), format!(r#"<workbook {ns}><sheets><sheet name="Data" sheetId="1" r:id="rId1"/><sheet name="Pivot" sheetId="2" r:id="rId2"/></sheets><pivotCaches><pivotCache cacheId="1" r:id="rId3"/></pivotCaches></workbook>"#)),
+                (
+                    "xl/_rels/workbook.xml.rels".into(),
+                    rel(&[("worksheet", "worksheets/sheet1.xml"), ("worksheet", "worksheets/sheet2.xml"), ("pivotCacheDefinition", "pivotCache/pivotCacheDefinition1.xml")]),
+                ),
+                ("xl/worksheets/sheet1.xml".into(), format!(r#"<worksheet {ns}><sheetData>{rows}</sheetData></worksheet>"#)),
+                ("xl/worksheets/sheet2.xml".into(), format!(r#"<worksheet {ns}><sheetData>{pivot_rows}</sheetData></worksheet>"#)),
+                ("xl/worksheets/_rels/sheet2.xml.rels".into(), rel(&[("pivotTable", "../pivotTables/pivotTable1.xml")])),
+                (
+                    "xl/pivotTables/pivotTable1.xml".into(),
+                    format!(r#"<pivotTableDefinition {ns} name="PivotTable1" cacheId="1" dataCaption="Values"><location ref="A3:B6" firstHeaderRow="1" firstDataRow="1" firstDataCol="1"/><pivotFields count="3"><pivotField axis="axisRow"/><pivotField/><pivotField dataField="1"/></pivotFields><rowFields count="1"><field x="0"/></rowFields><dataFields count="1"><dataField name="Sum of Amount" fld="2" baseField="0" baseItem="0"/></dataFields></pivotTableDefinition>"#),
+                ),
+                ("xl/pivotTables/_rels/pivotTable1.xml.rels".into(), rel(&[("pivotCacheDefinition", "../pivotCache/pivotCacheDefinition1.xml")])),
+                (
+                    "xl/pivotCache/pivotCacheDefinition1.xml".into(),
+                    format!(r#"<pivotCacheDefinition {ns}><cacheSource type="worksheet"><worksheetSource ref="A1:C5" sheet="Data"/></cacheSource><cacheFields count="3"><cacheField name="Region"/><cacheField name="Item"/><cacheField name="Amount"/></cacheFields></pivotCacheDefinition>"#),
+                ),
+            ];
+            for (n, t) in files {
+                z.start_file(n, o).unwrap();
+                z.write_all(t.as_bytes()).unwrap();
+            }
+            z.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    #[test]
+    fn pivot_tables_become_live_summaries() {
+        let opened = read(&pivot_workbook()).unwrap();
+        assert_eq!(opened.pivots, 1);
+        let mut wb = opened.workbook;
+        let p = &wb.sheets[1];
+        assert_eq!((p.raw(2, 0), p.raw(3, 0), p.raw(4, 0)), ("Region", "North", "South"));
+        assert_eq!(p.raw(3, 1), "=SUMIFS(Data!$C$2:$C$5, Data!$A$2:$A$5, $A4)");
+        let calc = Calc::new(&wb, 0.0);
+        assert_eq!(calc.value(&wb, 1, 3, 1), formula::Value::Num(10.0));
+        // It follows its data.
+        wb.sheets[0].cells.insert((1, 2), Cell { raw: "50".into(), ..Default::default() });
+        let calc = Calc::new(&wb, 0.0);
+        assert_eq!(calc.value(&wb, 1, 3, 1), formula::Value::Num(55.0));
+    }
+}
+
+#[cfg(test)]
+#[test]
+#[ignore]
+fn write_pivot_probe() {
+    if let Some(p) = std::env::var_os("NXO_PROBE") {
+        std::fs::write(p, tests::pivot_workbook()).unwrap();
     }
 }

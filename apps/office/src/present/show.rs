@@ -439,6 +439,41 @@ impl Show {
                         draw_now(cr);
                         cr.restore().ok();
                     }
+                    TransitionKind::Cover => {
+                        draw_from(cr);
+                        cr.save().ok();
+                        cr.translate((1.0 - ease) * sw, 0.0);
+                        draw_now(cr);
+                        cr.restore().ok();
+                    }
+                    TransitionKind::Uncover => {
+                        draw_now(cr);
+                        cr.save().ok();
+                        cr.translate(-ease * sw, 0.0);
+                        draw_from(cr);
+                        cr.restore().ok();
+                    }
+                    TransitionKind::Split => {
+                        draw_from(cr);
+                        cr.save().ok();
+                        let half = ease * sw / 2.0;
+                        cr.rectangle(sw / 2.0 - half, 0.0, half * 2.0, sh);
+                        cr.clip();
+                        draw_now(cr);
+                        cr.restore().ok();
+                    }
+                    TransitionKind::Zoom => {
+                        draw_from(cr);
+                        cr.save().ok();
+                        let k = 0.3 + 0.7 * ease;
+                        cr.translate(sw / 2.0 * (1.0 - k), sh / 2.0 * (1.0 - k));
+                        cr.scale(k, k);
+                        cr.push_group();
+                        draw_now(cr);
+                        cr.pop_group_to_source().ok();
+                        cr.paint_with_alpha(ease).ok();
+                        cr.restore().ok();
+                    }
                     TransitionKind::Wipe => {
                         draw_from(cr);
                         cr.save().ok();

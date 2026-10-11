@@ -637,6 +637,74 @@ pub fn call(name: &str, args: &[Expr], cells: &dyn Cells) -> Option<Value> {
             v => v,
         },
 
+        "TEXTBEFORE" | "TEXTAFTER" if arity(2..=6) => {
+            let t = match text(&args[0], cells) {
+                Ok(t) => t,
+                Err(e) => return Some(Value::Err(e)),
+            };
+            let delim = match text(&args[1], cells) {
+                Ok(d) => d,
+                Err(e) => return Some(Value::Err(e)),
+            };
+            let instance = if n >= 3 { num(&args[2], cells).unwrap_or(1.0) as i64 } else { 1 };
+            let ignore_case = n >= 4 && num(&args[3], cells).unwrap_or(0.0) == 1.0;
+            let (hay, needle) = if ignore_case { (t.to_lowercase(), delim.to_lowercase()) } else { (t.clone(), delim.clone()) };
+            let found: Vec<usize> = if needle.is_empty() { Vec::new() } else { hay.match_indices(&needle).map(|(i, _)| i).collect() };
+            let at = match instance {
+                0 => return Some(Value::Err("#VALUE!")),
+                k if k > 0 => found.get(k as usize - 1).copied(),
+                k => found.len().checked_sub(k.unsigned_abs() as usize).and_then(|i| found.get(i)).copied(),
+            };
+            match at {
+                Some(i) if name == "TEXTBEFORE" => Value::Text(t[..i].to_string()),
+                Some(i) => Value::Text(t[i + delim.len()..].to_string()),
+                None if n >= 6 => eval(&args[5], cells),
+                None => Value::Err("#N/A"),
+            }
+        }
+        "AVERAGEA" if n >= 1 => {
+            // Words count as 0 and TRUE as 1; empty cells are left out.
+            let mut total = 0.0;
+            let mut count = 0usize;
+            for a in args {
+                for v in arg(a, cells).values() {
+                    match v {
+                        Value::Empty => {}
+                        Value::Num(x) => {
+                            total += x;
+                            count += 1;
+                        }
+                        Value::Bool(b) => {
+                            total += if b { 1.0 } else { 0.0 };
+                            count += 1;
+                        }
+                        Value::Text(_) => count += 1,
+                        Value::Err(e) => return Some(Value::Err(e)),
+                    }
+                }
+            }
+            if count == 0 { Value::Err("#DIV/0!") } else { Value::Num(total / count as f64) }
+        }
+        "XMATCH" if arity(2..=4) => {
+            let want = one(&args[0], cells);
+            let list = arg(&args[1], cells).values();
+            let mode = if n >= 3 { num(&args[2], cells).unwrap_or(0.0) as i64 } else { 0 };
+            let backwards = n >= 4 && num(&args[3], cells).unwrap_or(1.0) < 0.0;
+            let order: Vec<usize> = if backwards { (0..list.len()).rev().collect() } else { (0..list.len()).collect() };
+            let exact = order.iter().copied().find(|i| match_eq(&list[*i], &want));
+            let found = match (exact, mode) {
+                (Some(i), _) => Some(i),
+                // Next smaller, or next larger.
+                (None, -1) => order.iter().copied().filter(|i| compare(&list[*i], &want).is_lt()).max_by(|a, b| compare(&list[*a], &list[*b])),
+                (None, 1) => order.iter().copied().filter(|i| compare(&list[*i], &want).is_gt()).min_by(|a, b| compare(&list[*a], &list[*b])),
+                _ => None,
+            };
+            match found {
+                Some(i) => Value::Num(i as f64 + 1.0),
+                None => Value::Err("#N/A"),
+            }
+        }
+
         // Known names with the wrong number of arguments.
         _ if NAMES.contains(&name) => BAD,
         _ => return None,
@@ -683,6 +751,7 @@ pub const NAMES: &[&str] = &[
     "CEILING", "FLOOR", "TRUNC", "EXP", "LN", "LOG", "LOG10", "PI", "RAND", "RANDBETWEEN", "SUMPRODUCT", "STDEV", "VAR",
     "MODE", "LARGE", "SMALL", "RANK", "COUNTBLANK", "COUNTIFS", "SUMIFS", "AVERAGEIFS", "MAXIFS", "MINIFS", "INDEX",
     "MATCH", "CHOOSE", "HLOOKUP", "IFS", "SWITCH", "XOR", "ISBLANK", "ISNUMBER", "ISTEXT", "ISERROR", "ISNA", "IFNA",
+    "TEXTBEFORE", "TEXTAFTER", "AVERAGEA", "XMATCH",
 ];
 
 #[cfg(test)]

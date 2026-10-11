@@ -111,6 +111,9 @@ struct Writer<'a> {
     /// Where each comment's last run is: (block, run).
     comment_ends: HashMap<u32, (usize, usize)>,
     open_comments: Vec<u32>,
+    /// Tracked changes: one region per changed run, as `text:changed-region`s.
+    changes: String,
+    change_n: usize,
     fonts: Vec<String>,
     lost: Vec<String>,
 }
@@ -167,8 +170,14 @@ impl Writer<'_> {
         for (ri, run) in p.runs.iter().enumerate() {
             match run {
                 Run::Text(t) => {
-                    if t.deleted.is_some() {
+                    if let Some(rev) = t.deleted {
+                        let id = self.change("deletion", rev, &format!("<text:p>{}</text:p>", odf::text_xml(&t.text)));
+                        let _ = write!(out, r#"<text:change text:change-id="{id}"/>"#);
                         continue;
+                    }
+                    let inserted = t.inserted.map(|rev| self.change("insertion", rev, ""));
+                    if let Some(id) = &inserted {
+                        let _ = write!(out, r#"<text:change-start text:change-id="{id}"/>"#);
                     }
                     if let Some(c) = t.comment
                         && !self.open_comments.contains(&c)
@@ -197,6 +206,9 @@ impl Writer<'_> {
                             let _ = write!(out, r#"<text:a xlink:type="simple" xlink:href="{}">{span}</text:a>"#, esc(href));
                         }
                         None => out.push_str(&span),
+                    }
+                    if let Some(id) = &inserted {
+                        let _ = write!(out, r#"<text:change-end text:change-id="{id}"/>"#);
                     }
                     if let Some(c) = t.comment
                         && self.comment_ends.get(&c) == Some(&(bi, ri))
@@ -251,6 +263,21 @@ impl Writer<'_> {
             }
         }
         out.push_str(close);
+    }
+
+    /// A changed region for revision `rev`: its id, for the marks in the text.
+    fn change(&mut self, kind: &str, rev: u32, inner: &str) -> String {
+        self.change_n += 1;
+        let id = format!("ct{}", self.change_n);
+        let r = self.doc.revisions.iter().find(|r| r.id == rev);
+        let author = r.map(|r| esc(&r.author)).unwrap_or_default();
+        let date = r.map(|r| r.date.trim_end_matches('Z')).filter(|d| !d.is_empty()).unwrap_or("1970-01-01T00:00:00");
+        let _ = write!(
+            self.changes,
+            r#"<text:changed-region xml:id="{id}" text:id="{id}"><text:{kind}><office:change-info><dc:creator>{author}</dc:creator><dc:date>{}</dc:date></office:change-info>{inner}</text:{kind}></text:changed-region>"#,
+            esc(date)
+        );
+        id
     }
 
     fn table(&mut self, t: &Table, n: usize, break_before: bool, out: &mut String) {
@@ -327,6 +354,8 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
         notes: (0, 0),
         comment_ends: HashMap::new(),
         open_comments: Vec::new(),
+        changes: String::new(),
+        change_n: 0,
         fonts: Vec::new(),
         lost: Vec::new(),
     };
@@ -341,9 +370,6 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
                 }
             }
         }
-    }
-    if !doc.revisions.is_empty() {
-        w.lost.push("tracked changes (they're saved as accepted)".into());
     }
     if doc.comments.iter().any(|c| c.resolved) {
         w.lost.push("which comments are resolved".into());
@@ -447,11 +473,16 @@ pub fn write(doc: &Document, media: &BTreeMap<String, Vec<u8>>) -> Result<(Vec<u
         let _ = write!(faces, r#"<style:font-face style:name="{0}" svg:font-family="'{0}'"/>"#, esc(&f));
     }
     let content = format!(
-        r##"<?xml version="1.0" encoding="UTF-8"?><office:document-content {ns}><office:font-face-decls>{faces}</office:font-face-decls><office:automatic-styles>{frames}<style:style style:name="Tbl" style:family="table"><style:table-properties style:width="{width}" table:align="margins" table:border-model="collapsing"/></style:style><style:style style:name="TblBreak" style:family="table"><style:table-properties style:width="{width}" table:align="margins" table:border-model="collapsing" fo:break-before="page"/></style:style><style:style style:name="TblCol" style:family="table-column"/><style:style style:name="TblCell" style:family="table-cell"><style:table-cell-properties fo:padding="4pt" fo:border="0.5pt solid #9aa0aa"/></style:style><style:style style:name="TblHead" style:family="table-cell"><style:table-cell-properties fo:padding="4pt" fo:border="0.5pt solid #9aa0aa" fo:background-color="#eef0f3"/></style:style><style:style style:name="Sect0" style:family="section"/><style:style style:name="Break" style:family="paragraph" style:parent-style-name="Standard"><style:paragraph-properties fo:break-before="page"/></style:style>{auto}</office:automatic-styles><office:body><office:text><text:sequence-decls><text:sequence-decl text:display-outline-level="0" text:name="Illustration"/><text:sequence-decl text:display-outline-level="0" text:name="Table"/></text:sequence-decls>{body}</office:text></office:body></office:document-content>"##,
+        r##"<?xml version="1.0" encoding="UTF-8"?><office:document-content {ns}><office:font-face-decls>{faces}</office:font-face-decls><office:automatic-styles>{frames}<style:style style:name="Tbl" style:family="table"><style:table-properties style:width="{width}" table:align="margins" table:border-model="collapsing"/></style:style><style:style style:name="TblBreak" style:family="table"><style:table-properties style:width="{width}" table:align="margins" table:border-model="collapsing" fo:break-before="page"/></style:style><style:style style:name="TblCol" style:family="table-column"/><style:style style:name="TblCell" style:family="table-cell"><style:table-cell-properties fo:padding="4pt" fo:border="0.5pt solid #9aa0aa"/></style:style><style:style style:name="TblHead" style:family="table-cell"><style:table-cell-properties fo:padding="4pt" fo:border="0.5pt solid #9aa0aa" fo:background-color="#eef0f3"/></style:style><style:style style:name="Sect0" style:family="section"/><style:style style:name="Break" style:family="paragraph" style:parent-style-name="Standard"><style:paragraph-properties fo:break-before="page"/></style:style>{auto}</office:automatic-styles><office:body><office:text><text:sequence-decls><text:sequence-decl text:display-outline-level="0" text:name="Illustration"/><text:sequence-decl text:display-outline-level="0" text:name="Table"/></text:sequence-decls>{changes}{body}</office:text></office:body></office:document-content>"##,
         ns = odf::NAMESPACES,
         frames = r#"<style:style style:name="fr0" style:family="graphic"><style:graphic-properties style:vertical-pos="top" style:vertical-rel="baseline"/></style:style><style:style style:name="frL" style:family="graphic"><style:graphic-properties style:wrap="right" style:horizontal-pos="left" style:horizontal-rel="paragraph" style:vertical-pos="top" style:vertical-rel="paragraph" fo:margin-right="9pt"/></style:style><style:style style:name="frR" style:family="graphic"><style:graphic-properties style:wrap="left" style:horizontal-pos="right" style:horizontal-rel="paragraph" style:vertical-pos="top" style:vertical-rel="paragraph" fo:margin-left="9pt"/></style:style>"#,
         width = pt(page.content_width()),
         auto = w.auto.other,
+        changes = if w.changes.is_empty() && !doc.tracking {
+            String::new()
+        } else {
+            format!(r#"<text:tracked-changes text:track-changes="{}">{}</text:tracked-changes>"#, doc.tracking, w.changes)
+        },
     );
 
     let paper = page.paper();
@@ -618,6 +649,10 @@ struct Reader<'p, 'b> {
     /// A comment with no end: it covers the next stretch of text.
     pending: Option<u32>,
     page_columns: u8,
+    /// Tracked changes by region id: insertion or deletion, its revision, and a deletion's words.
+    changes: std::collections::HashMap<String, (bool, u32, String)>,
+    /// The insertion the text is in.
+    inserting: Option<u32>,
 }
 
 /// A style name we treat as one of ours (its look is ours, not overrides).
@@ -765,7 +800,22 @@ impl Reader<'_, '_> {
                 }
                 (Some(DRAW), "a") => self.runs(&c, fmt, out),
                 (Some(TEXT), "bookmark" | "bookmark-start" | "bookmark-end" | "soft-page-break" | "reference-mark")
-                | (Some(TEXT), "change" | "change-start" | "change-end" | "sequence-decls") => {}
+                | (Some(TEXT), "sequence-decls") => {}
+                (Some(TEXT), "change-start") => {
+                    let id = attr(&c, TEXT, "change-id").unwrap_or("");
+                    self.inserting = self.changes.get(id).filter(|ch| ch.0).map(|ch| ch.1);
+                }
+                (Some(TEXT), "change-end") => self.inserting = None,
+                (Some(TEXT), "change") => {
+                    // Deleted words, still shown until the change is accepted.
+                    let id = attr(&c, TEXT, "change-id").unwrap_or("");
+                    if let Some((false, rev, words)) = self.changes.get(id).cloned() {
+                        let mut r = fmt.clone();
+                        r.text = words;
+                        r.deleted = Some(rev);
+                        out.push(Run::Text(r));
+                    }
+                }
                 // Fields (page numbers, dates, cross-references…) keep their shown text.
                 (Some(TEXT), _) => {
                     let t = odf::plain_text(&c);
@@ -778,8 +828,9 @@ impl Reader<'_, '_> {
         }
     }
 
-    /// Applies the open comments to a run.
+    /// Applies the open comments and the insertion it's in to a run.
     fn mark(&mut self, r: &mut TextRun) {
+        r.inserted = self.inserting;
         if let Some((_, id)) = self.open.last() {
             r.comment = Some(*id);
         } else if let Some(id) = self.pending.take() {
@@ -1015,6 +1066,7 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
         .context("it isn't a text document")?;
     let first_master = body
         .descendants()
+        .filter(|n| !n.ancestors().any(|a| a.has_tag_name((TEXT, "tracked-changes")) || a.has_tag_name((OFFICE, "annotation"))))
         .find(|n| n.has_tag_name((TEXT, "p")) || n.has_tag_name((TEXT, "h")))
         .and_then(|p| attr(&p, TEXT, "style-name"))
         .and_then(|s| styles.own("paragraph", s, "master-page-name"))
@@ -1086,7 +1138,45 @@ pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
         open: Vec::new(),
         pending: None,
         page_columns,
+        changes: std::collections::HashMap::new(),
+        inserting: None,
     };
+    // Tracked changes: who and when for each region, and what a deletion took out.
+    if let Some(tc) = body.children().find(|c| c.has_tag_name((TEXT, "tracked-changes"))) {
+        r.doc.tracking = attr(&tc, TEXT, "track-changes") != Some("false");
+        for region in tc.children().filter(|c| c.has_tag_name((TEXT, "changed-region"))) {
+            let Some(id) = attr(&region, TEXT, "id").or_else(|| region.attribute(("http://www.w3.org/XML/1998/namespace", "id"))) else {
+                continue;
+            };
+            let Some(kind) = region.children().find(|c| c.has_tag_name((TEXT, "insertion")) || c.has_tag_name((TEXT, "deletion"))) else {
+                continue;
+            };
+            let info = kind.children().find(|c| c.has_tag_name((OFFICE, "change-info")));
+            let field = |tag: &str| {
+                info.and_then(|i| i.children().find(|c| c.has_tag_name((DC, tag)))).and_then(|c| c.text()).unwrap_or("").to_string()
+            };
+            let author = field("creator");
+            let mut date = field("date");
+            date.truncate(19);
+            if !date.is_empty() && !date.starts_with("1970") {
+                date.push('Z');
+            } else {
+                date.clear();
+            }
+            // One revision per author and moment.
+            let rev = match r.doc.revisions.iter().find(|x| x.author == author && x.date == date) {
+                Some(x) => x.id,
+                None => {
+                    let id = r.doc.revisions.len() as u32 + 1;
+                    r.doc.revisions.push(Revision { id, author, date });
+                    id
+                }
+            };
+            let insertion = kind.has_tag_name((TEXT, "insertion"));
+            let words = if insertion { String::new() } else { odf::paragraphs_text(&kind).replace('\n', " ") };
+            r.changes.insert(id.to_string(), (insertion, rev, words));
+        }
+    }
     for c in body.children().filter(|c| c.is_element()) {
         r.block(&c);
     }
@@ -1167,9 +1257,21 @@ mod tests {
                 Block::Table(Table { rows: vec![vec!["A".into(), "B".into()], vec!["1".into(), "two\nlines".into()]], header: true }),
                 Block::Contents,
                 Block::Paragraph(Paragraph::text(Style::Quote, "Quoted")),
+                Block::Paragraph(Paragraph {
+                    runs: vec![
+                        Run::text("kept "),
+                        Run::styled("added", |r| r.inserted = Some(1)),
+                        Run::styled(" removed", |r| r.deleted = Some(2)),
+                    ],
+                    ..Default::default()
+                }),
             ],
+            revisions: vec![
+                Revision { id: 1, author: "Ken".into(), date: "2026-03-04T05:06:07Z".into() },
+                Revision { id: 2, author: "Sam".into(), date: "2026-03-05T05:06:07Z".into() },
+            ],
+            tracking: true,
             comments: vec![Comment { id: 1, author: "Ken".into(), date: "2026-01-02T03:04:05Z".into(), text: "Check this".into(), resolved: false }],
-            ..Default::default()
         };
         let (bytes, lost) = write(&doc, &media).unwrap();
         assert!(lost.is_empty(), "{lost:?}");
@@ -1177,6 +1279,7 @@ mod tests {
         let (back, back_media) = read(&bytes).unwrap();
         assert_eq!(back.page, doc.page);
         assert_eq!(back.comments, doc.comments);
+        assert_eq!((&back.revisions, back.tracking), (&doc.revisions, true));
         assert_eq!(back_media.values().next(), Some(&png()));
         let mut want = doc.clone();
         // The picture comes back under the reader's name.

@@ -48,9 +48,9 @@ Then:
   - The headings appear in the sidebar as an outline; click one to go there.
   - Starter templates: a personal letter, a recipe and a journal.
 - **Sheets**
-  - Up to 10,000 rows and 104 columns per sheet, and up to 50 sheets, as tabs along
-    the bottom: click to switch, double-click to rename, drag to reorder, right-click to
-    copy, move or delete.
+  - Up to 1,048,576 rows (as in Excel) and 104 columns per sheet, and up to 50 sheets,
+    as tabs along the bottom: click to switch, double-click to rename, drag to reorder,
+    right-click to copy, move or delete.
   - Insert and delete rows and columns (right-click a cell or a heading, or
     <kbd>Ctrl</kbd>+<kbd>+</kbd> / <kbd>Ctrl</kbd>+<kbd>-</kbd>); formulas on every sheet,
     merged cells, charts, tables and highlight rules follow the cells they point at.
@@ -60,20 +60,22 @@ Then:
     formulas, but don't print. Excel files keep them hidden.
   - Formulas with cell and range references, `$` absolute references and references to
     other sheets (`'Sheet 2'!B4`). Click cells while typing a formula to put their
-    references in. Over 100 functions:
-    - Totals and counts: SUM, AVERAGE, MIN, MAX, COUNT, COUNTA, COUNTBLANK, PRODUCT,
-      SUMPRODUCT, COUNTIF(S), SUMIF(S), AVERAGEIF(S), MAXIFS, MINIFS.
+    references in. Over 120 functions:
+    - Totals and counts: SUM, AVERAGE, AVERAGEA, MIN, MAX, COUNT, COUNTA, COUNTBLANK,
+      PRODUCT, SUMPRODUCT, COUNTIF(S), SUMIF(S), AVERAGEIF(S), MAXIFS, MINIFS.
     - Statistics: MEDIAN, MODE, STDEV, VAR, LARGE, SMALL, RANK.
     - Maths: ABS, SIGN, ROUND, ROUNDUP, ROUNDDOWN, TRUNC, INT, CEILING, FLOOR, MOD,
       POWER, SQRT, EXP, LN, LOG, LOG10, PI, RAND, RANDBETWEEN.
     - Logic: IF, IFS, SWITCH, IFERROR, IFNA, AND, OR, XOR, NOT, ISBLANK, ISNUMBER,
       ISTEXT, ISERROR, ISNA.
-    - Lookup: VLOOKUP, HLOOKUP, XLOOKUP, INDEX, MATCH, CHOOSE.
-    - Lists: UNIQUE, FILTER, SORT, SEQUENCE. Their results spill into the cells below
-      and to the right (`#SPILL!` when something is in the way), as do ranges and sums
-      over ranges (`=B2:B9*2`, `=FILTER(A2:C9, C2:C9>100)`).
-    - Text: CONCAT, TEXTJOIN, TEXT, LEN, LEFT, RIGHT, MID, FIND, SEARCH, SUBSTITUTE,
-      REPLACE, REPT, UPPER, LOWER, PROPER, TRIM, VALUE, EXACT.
+    - Lookup: VLOOKUP, HLOOKUP, XLOOKUP, XMATCH, INDEX, MATCH, CHOOSE.
+    - Lists: UNIQUE, FILTER, SORT, SORTBY, SEQUENCE, TAKE, DROP, CHOOSECOLS,
+      CHOOSEROWS, TRANSPOSE, VSTACK, HSTACK, TOCOL, TOROW. Their results spill into the
+      cells below and to the right (`#SPILL!` when something is in the way), as do
+      ranges and sums over ranges (`=B2:B9*2`, `=FILTER(A2:C9, C2:C9>100)`).
+    - Text: CONCAT, TEXTJOIN, TEXTSPLIT, TEXTBEFORE, TEXTAFTER, TEXT, LEN, LEFT, RIGHT,
+      MID, FIND, SEARCH, SUBSTITUTE, REPLACE, REPT, UPPER, LOWER, PROPER, TRIM, VALUE,
+      EXACT.
     - Money: PMT, IPMT, PPMT, PV, FV, NPER, RATE, NPV, IRR, EFFECT, NOMINAL, SLN.
     - Dates: TODAY, NOW, DATE, YEAR, MONTH, DAY, HOUR, MINUTE, SECOND, DAYS, EDATE,
       EOMONTH, WEEKDAY, WEEKNUM, NETWORKDAYS.
@@ -87,6 +89,8 @@ Then:
     and comments on cells (a corner mark; rest the pointer on it to read).
   - Summarize: totals, counts, averages, largest or smallest by group (and optionally
     split across a second column) on a new sheet, with formulas that stay up to date.
+    Pivot tables in Excel and OpenDocument files open as these summaries, in their
+    place.
   - Print setup: print only the selected cells, and shrink a sheet to fit all its
     columns, or all of it, on one page. Excel and OpenDocument files keep both.
   - Highlight rules: color cells that are above or below a number, between two, equal
@@ -127,9 +131,9 @@ Then:
     to move them as one; line them up, space them evenly or change which is in front.
     Guides snap what you drag to the slide's middle and edges and to other objects
     (hold <kbd>Alt</kbd> to move freely).
-  - Transitions between slides (fade, push, wipe, dissolve, and Magic Move, where
-    what both slides share glides to its new place), and builds that bring objects in,
-    or take them away, one click at a time (appear, fade, fly).
+  - Transitions between slides (fade, push, cover, uncover, wipe, split, zoom, dissolve,
+    and Magic Move, where what both slides share glides to its new place), and builds
+    that bring objects in, or take them away, one click at a time (appear, fade, fly).
   - Thumbnails of every slide in the sidebar; right-click one to copy, move or delete it.
   - **Present** with <kbd>F5</kbd> (or <kbd>Shift</kbd>+<kbd>F5</kbd> from the current
     slide); the slideshow plays the transitions and builds. Type a slide number and press

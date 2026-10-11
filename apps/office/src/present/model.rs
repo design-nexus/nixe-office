@@ -134,11 +134,28 @@ pub enum TransitionKind {
     Dissolve,
     /// Objects on both slides move to their new place; the rest fade.
     MagicMove,
+    /// The new slide slides in over the old one.
+    Cover,
+    /// The old slide slides away, showing the new one under it.
+    Uncover,
+    /// The new slide opens out from the middle.
+    Split,
+    /// The new slide grows from the middle as it fades in.
+    Zoom,
 }
 
 impl TransitionKind {
-    pub const ALL: [TransitionKind; 5] =
-        [TransitionKind::Fade, TransitionKind::Push, TransitionKind::Wipe, TransitionKind::Dissolve, TransitionKind::MagicMove];
+    pub const ALL: [TransitionKind; 9] = [
+        TransitionKind::Fade,
+        TransitionKind::Push,
+        TransitionKind::Cover,
+        TransitionKind::Uncover,
+        TransitionKind::Wipe,
+        TransitionKind::Split,
+        TransitionKind::Zoom,
+        TransitionKind::Dissolve,
+        TransitionKind::MagicMove,
+    ];
     pub fn name(self) -> &'static str {
         match self {
             TransitionKind::Fade => "Fade",
@@ -146,6 +163,10 @@ impl TransitionKind {
             TransitionKind::Wipe => "Wipe",
             TransitionKind::Dissolve => "Dissolve",
             TransitionKind::MagicMove => "Magic Move",
+            TransitionKind::Cover => "Cover",
+            TransitionKind::Uncover => "Uncover",
+            TransitionKind::Split => "Split",
+            TransitionKind::Zoom => "Zoom",
         }
     }
 }

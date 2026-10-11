@@ -86,28 +86,8 @@ fn distinct(wb: &Workbook, calc: &Calc, si: usize, data: Area, col: u32) -> Vec<
 
 /// Add a summary sheet after the source and fill it in. Returns its index.
 pub fn summarize(wb: &mut Workbook, req: &Request) -> Option<usize> {
-    let calc = Calc::new(wb, 0.0);
-    let src = &wb.sheets[req.sheet];
-    let header = |c: u32| {
-        let h = src.raw(req.data.top, c);
-        if h.is_empty() { format!("Column {}", formula::col_name(c)) } else { h.to_string() }
-    };
-    let (group_name, value_name) = (header(req.group), header(req.value));
-    let rows = distinct(wb, &calc, req.sheet, req.data, req.group);
-    let cols: Vec<String> = match req.across {
-        Some(a) => distinct(wb, &calc, req.sheet, req.data, a),
-        None => vec![format!("{} of {}", req.how.name(), value_name)],
-    };
-    if rows.is_empty() || cols.is_empty() {
-        return None;
-    }
-    let sref = sheet_ref(&src.name);
-    let range = |c: u32| {
-        format!("{sref}!${}${}:${}${}", formula::col_name(c), req.data.top + 2, formula::col_name(c), req.data.bottom + 1)
-    };
-    let (vr, gr) = (range(req.value), range(req.group));
-    let ar = req.across.map(range);
-    let base = format!("Summary of {}", src.name);
+    let src_name = wb.sheets[req.sheet].name.clone();
+    let base = format!("Summary of {src_name}");
     let mut name = base.clone();
     let mut n = 2;
     while wb.sheets.iter().any(|s| s.name.eq_ignore_ascii_case(&name)) {
@@ -121,62 +101,107 @@ pub fn summarize(wb: &mut Workbook, req: &Request) -> Option<usize> {
     let at = req.sheet + 1;
     let last = wb.sheets.len() - 1;
     wb.move_sheet_to(last, at);
-    wb.active = at;
     let _ = wb.rename_sheet(at, &name);
-
-    // Header row: the group's name, then a column per across value (or the measure).
-    wb.set(0, 0, &group_name);
-    for (j, c) in cols.iter().enumerate() {
-        wb.set(0, j as u32 + 1, c);
+    if !summarize_at(wb, req, at, (0, 0)) {
+        wb.remove_sheet(at);
+        return None;
     }
-    let total_col = (req.across.is_some() && req.how == Summary::Sum).then_some(cols.len() as u32 + 1);
-    if let Some(tc) = total_col {
-        wb.set(0, tc, "Total");
-    }
-    for (i, label) in rows.iter().enumerate() {
-        let r = i as u32 + 1;
-        // A label that looks like a formula or a criterion is kept as text.
-        let shown = if label.starts_with(['=', '<', '>']) { format!("'{label}") } else { label.clone() };
-        wb.set(r, 0, &shown);
-        for j in 0..cols.len() as u32 {
-            let c = j + 1;
-            let target = if req.how == Summary::Count { gr.clone() } else { format!("{vr}, {gr}") };
-            let mut f = format!("={}({target}, $A{}", req.how.function(), r + 1);
-            if let Some(ar) = &ar {
-                let _ = std::fmt::Write::write_fmt(&mut f, format_args!(", {ar}, {}$1", formula::col_name(c)));
-            }
-            f.push(')');
-            wb.set(r, c, &f);
-        }
-        if let Some(tc) = total_col {
-            wb.set(r, tc, &format!("=SUM(B{0}:{1}{0})", r + 1, formula::col_name(tc - 1)));
-        }
-    }
-    let width = total_col.unwrap_or(cols.len() as u32);
-    if req.how == Summary::Sum || req.how == Summary::Count {
-        let tr = rows.len() as u32 + 1;
-        wb.set(tr, 0, "Total");
-        for c in 1..=width {
-            let col = formula::col_name(c);
-            wb.set(tr, c, &format!("=SUM({col}2:{col}{tr})"));
-        }
-        wb.format(Area::new(tr, 0, tr, width), |f| {
-            f.bold = true;
-            f.borders |= TOP;
-        });
-    }
-    wb.format(Area::new(0, 0, 0, width), |f| {
-        f.bold = true;
-        f.borders |= BOTTOM;
-    });
-    if req.how == Summary::Average {
-        wb.format(Area::new(1, 1, rows.len() as u32, width), |f| f.number = NumFmt::Decimal);
-    }
+    wb.active = at;
     wb.set_col_w(0, 160);
     let s = wb.sheet_mut();
     s.header = true;
     s.freeze_rows = 1;
     Some(at)
+}
+
+/// Fill in a summary on sheet `si` with its top-left corner at `(top, left)`.
+/// False when the data has nothing to summarize.
+pub fn summarize_at(wb: &mut Workbook, req: &Request, si: usize, (top, left): (u32, u32)) -> bool {
+    let calc = Calc::new(wb, 0.0);
+    let src = &wb.sheets[req.sheet];
+    let header = |c: u32| {
+        let h = src.raw(req.data.top, c);
+        if h.is_empty() { format!("Column {}", formula::col_name(c)) } else { h.to_string() }
+    };
+    let (group_name, value_name) = (header(req.group), header(req.value));
+    let rows = distinct(wb, &calc, req.sheet, req.data, req.group);
+    let cols: Vec<String> = match req.across {
+        Some(a) => distinct(wb, &calc, req.sheet, req.data, a),
+        None => vec![format!("{} of {}", req.how.name(), value_name)],
+    };
+    if rows.is_empty() || cols.is_empty() {
+        return false;
+    }
+    // References from the summary's sheet to the data (by name when it's another sheet).
+    let sref = if si == req.sheet { String::new() } else { format!("{}!", sheet_ref(&src.name)) };
+    let range = |c: u32| {
+        format!("{sref}${}${}:${}${}", formula::col_name(c), req.data.top + 2, formula::col_name(c), req.data.bottom + 1)
+    };
+    let (vr, gr) = (range(req.value), range(req.group));
+    let ar = req.across.map(range);
+    let col = |c: u32| formula::col_name(left + c);
+    let row = |r: u32| top + r + 1;
+    let mut cells: Vec<(u32, u32, String)> = Vec::new();
+
+    // Header row: the group's name, then a column per across value (or the measure).
+    cells.push((0, 0, group_name));
+    for (j, c) in cols.iter().enumerate() {
+        cells.push((0, j as u32 + 1, c.clone()));
+    }
+    let total_col = (req.across.is_some() && req.how == Summary::Sum).then_some(cols.len() as u32 + 1);
+    if let Some(tc) = total_col {
+        cells.push((0, tc, "Total".into()));
+    }
+    for (i, label) in rows.iter().enumerate() {
+        let r = i as u32 + 1;
+        // A label that looks like a formula or a criterion is kept as text.
+        let shown = if label.starts_with(['=', '<', '>']) { format!("'{label}") } else { label.clone() };
+        cells.push((r, 0, shown));
+        for j in 0..cols.len() as u32 {
+            let c = j + 1;
+            let target = if req.how == Summary::Count { gr.clone() } else { format!("{vr}, {gr}") };
+            let mut f = format!("={}({target}, ${}{}", req.how.function(), col(0), row(r));
+            if let Some(ar) = &ar {
+                let _ = std::fmt::Write::write_fmt(&mut f, format_args!(", {ar}, {}${}", col(c), row(0)));
+            }
+            f.push(')');
+            cells.push((r, c, f));
+        }
+        if let Some(tc) = total_col {
+            cells.push((r, tc, format!("=SUM({}{2}:{}{2})", col(1), col(tc - 1), row(r))));
+        }
+    }
+    let width = total_col.unwrap_or(cols.len() as u32);
+    let total_row = (req.how == Summary::Sum || req.how == Summary::Count).then_some(rows.len() as u32 + 1);
+    if let Some(tr) = total_row {
+        cells.push((tr, 0, "Total".into()));
+        for c in 1..=width {
+            cells.push((tr, c, format!("=SUM({0}{1}:{0}{2})", col(c), row(1), row(tr - 1))));
+        }
+    }
+    if top + rows.len() as u32 + 2 > ROWS || left + width >= COLS {
+        return false;
+    }
+    let was = wb.active;
+    wb.active = si;
+    for (r, c, raw) in cells {
+        wb.set(top + r, left + c, &raw);
+    }
+    if let Some(tr) = total_row {
+        wb.format(Area::new(top + tr, left, top + tr, left + width), |f| {
+            f.bold = true;
+            f.borders |= TOP;
+        });
+    }
+    wb.format(Area::new(top, left, top, left + width), |f| {
+        f.bold = true;
+        f.borders |= BOTTOM;
+    });
+    if req.how == Summary::Average {
+        wb.format(Area::new(top + 1, left + 1, top + rows.len() as u32, left + width), |f| f.number = NumFmt::Decimal);
+    }
+    wb.active = was;
+    true
 }
 
 impl Sheets {

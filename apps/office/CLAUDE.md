@@ -117,6 +117,8 @@
   they're dynamic array formulas; in OpenDocument, matrix formulas with their values
   in the cells (readers skip those values). Print area and fit are
   `Sheet.print_area` / `print_fit` (print scales the cells with cairo).
+  Sheets have Excel's 1,048,576 rows: `relayout` walks every row on each change (a few
+  milliseconds), and `Calc` works out every formula, so keep per-row work cheap.
 - **Present** (`present/`): slides are 960 × 540 (points; PowerPoint's 16:9 page).
   `render.rs` draws a slide for the canvas, thumbnails, slideshow, presenter view and
   PDF alike. Text is edited in an overlay `TextView` styled to the slide's font at the
@@ -156,6 +158,12 @@
   page is a "First Page" master named by the first paragraph. `sheets/ods.rs`
   translates formulas (`to_odf`/`from_odf`: `[.A1]`, `;`, `COM.MICROSOFT.` names) and
   turns number styles into Excel format codes so `xlsx::num_fmt` maps them.
+  `present/odp_more.rs` has transitions (a page style's `smil:type` plus a
+  `transitionFilter` with the length), builds (LibreOffice's preset animations in the
+  page's timing tree, pointing at `xml:id`s like `s2o5`) and charts (an embedded
+  "Object N" chart document with its own table); these follow what Collabora writes.
+  Pivot tables (Excel's pivotTable parts, OpenDocument's data pilots) are read into
+  `xlsx::Pivot` and rebuilt in place by `summary::summarize_at`.
   `present/odp.rs` names its page layouts `Nexus-<layout>` so they come back exactly;
   other files' layouts are guessed from their placeholders. `{n}` on the master is
   `text:page-number`.

@@ -17,6 +17,9 @@ pub const SVG: &str = "urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"
 pub const PRESENTATION: &str = "urn:oasis:names:tc:opendocument:xmlns:presentation:1.0";
 pub const NUMBER: &str = "urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0";
 pub const DC: &str = "http://purl.org/dc/elements/1.1/";
+pub const ANIM: &str = "urn:oasis:names:tc:opendocument:xmlns:animation:1.0";
+pub const SMIL: &str = "urn:oasis:names:tc:opendocument:xmlns:smil-compatible:1.0";
+pub const CHART: &str = "urn:oasis:names:tc:opendocument:xmlns:chart:1.0";
 
 /// The namespace declarations every part we write starts with.
 pub const NAMESPACES: &str = concat!(
@@ -32,6 +35,9 @@ pub const NAMESPACES: &str = concat!(
     r#"xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0" "#,
     r#"xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" "#,
     r#"xmlns:of="urn:oasis:names:tc:opendocument:xmlns:of:1.2" "#,
+    r#"xmlns:anim="urn:oasis:names:tc:opendocument:xmlns:animation:1.0" "#,
+    r#"xmlns:smil="urn:oasis:names:tc:opendocument:xmlns:smil-compatible:1.0" "#,
+    r#"xmlns:chart="urn:oasis:names:tc:opendocument:xmlns:chart:1.0" "#,
     r#"office:version="1.3""#
 );
 
@@ -88,7 +94,8 @@ pub fn color(v: &str) -> Option<String> {
     (hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit())).then(|| format!("#{}", hex.to_lowercase()))
 }
 
-/// A file to put in the package beside the XML parts.
+/// A file to put in the package beside the XML parts. A path ending in `/` is an
+/// embedded document's folder: listed in the manifest, with no file of its own.
 pub struct Extra<'a> {
     pub path: String,
     pub bytes: &'a [u8],
@@ -124,8 +131,9 @@ pub fn package(mime: &str, content: &str, styles: &str, extras: &[Extra]) -> Res
         zip.start_file(name, deflated)?;
         zip.write_all(body.as_bytes())?;
     }
-    for e in extras {
-        zip.start_file(e.path.as_str(), stored)?;
+    for e in extras.iter().filter(|e| !e.path.ends_with('/')) {
+        let how = if e.media_type == "text/xml" { deflated } else { stored };
+        zip.start_file(e.path.as_str(), how)?;
         zip.write_all(e.bytes)?;
     }
     Ok(zip.finish()?.into_inner())
@@ -273,7 +281,8 @@ pub struct Styles {
     pub masters: HashMap<String, String>,
 }
 
-const PROPERTY_KINDS: [(&str, &str); 9] = [
+const PROPERTY_KINDS: [(&str, &str); 10] = [
+    ("chart-properties", "chart"),
     ("section-properties", "section"),
     ("text-properties", "text"),
     ("paragraph-properties", "paragraph"),

@@ -14,9 +14,10 @@ use std::fmt::Write as _;
 const PX: f64 = 0.75;
 
 /// Functions OpenFormula knows by Excel's newer names only with this prefix.
-const MICROSOFT: [&str; 14] = [
+const MICROSOFT: [&str; 27] = [
     "TEXTJOIN", "CONCAT", "IFS", "SWITCH", "MAXIFS", "MINIFS", "XLOOKUP", "XMATCH", "UNIQUE", "FILTER", "SORT", "SEQUENCE",
-    "LET", "SORTBY",
+    "LET", "SORTBY", "TEXTBEFORE", "TEXTAFTER", "TEXTSPLIT", "CHOOSECOLS", "CHOOSEROWS", "TAKE", "DROP", "VSTACK", "HSTACK",
+    "TOCOL", "TOROW", "EXPAND", "WRAPROWS",
 ];
 
 // ---------- Formulas ----------
@@ -1071,7 +1072,61 @@ pub fn read(bytes: &[u8]) -> Result<Opened> {
     if sheets.is_empty() {
         sheets.push(Sheet::new("Sheet 1"));
     }
-    Ok(Opened { workbook: Workbook { sheets, active: 0 }, truncated, dropped_rules: false })
+    let mut workbook = Workbook { sheets, active: 0 };
+    // Pivot tables ("data pilots"): rebuilt as live summaries.
+    let pivots: Vec<super::xlsx::Pivot> = body
+        .descendants()
+        .filter(|n| n.has_tag_name((TABLE, "data-pilot-table")))
+        .filter_map(|t| data_pilot(&t, &workbook))
+        .collect();
+    let pivots = super::xlsx::rebuild_pivots(&mut workbook, &pivots);
+    Ok(Opened { workbook, truncated, dropped_rules: false, pivots })
+}
+
+/// A sheet and its cells from an ODF range address ("'Sheet 1'.A3:'Sheet 1'.B6").
+fn range_address(addr: &str) -> Option<(String, Area)> {
+    let ours = from_odf(&format!("of:=[{}]", addr.split(' ').next()?));
+    let (sheet, cells) = ours.trim_start_matches('=').rsplit_once('!')?;
+    let sheet = sheet.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')).map(|x| x.replace("''", "'")).unwrap_or(sheet.to_string());
+    Some((sheet, Area::parse(&cells.replace('$', ""))?))
+}
+
+/// A data pilot table: where it is, its data, and its fields by heading.
+fn data_pilot(t: &roxmltree::Node, wb: &Workbook) -> Option<super::xlsx::Pivot> {
+    use super::summary::Summary;
+    let (target_sheet, at) = range_address(attr(t, TABLE, "target-range-address")?)?;
+    let sheet = wb.sheets.iter().position(|s| s.name.eq_ignore_ascii_case(&target_sheet))?;
+    let src = t.children().find(|c| c.has_tag_name((TABLE, "source-cell-range")))?;
+    let (src_sheet, data) = range_address(attr(&src, TABLE, "cell-range-address")?)?;
+    let s = wb.sheets.iter().find(|s| s.name.eq_ignore_ascii_case(&src_sheet))?;
+    // A field is a column of the data, found by its heading.
+    let column = |name: &str| (data.left..=data.right).position(|c| s.raw(data.top, c).trim().eq_ignore_ascii_case(name.trim()));
+    let mut rows = None;
+    let mut across = None;
+    let mut value = None;
+    for f in t.children().filter(|c| c.has_tag_name((TABLE, "data-pilot-field"))) {
+        if attr(&f, TABLE, "is-data-layout-field") == Some("true") {
+            continue;
+        }
+        let Some(col) = attr(&f, TABLE, "source-field-name").and_then(column) else { continue };
+        match attr(&f, TABLE, "orientation") {
+            Some("row") if rows.is_none() => rows = Some(col),
+            Some("column") if across.is_none() => across = Some(col),
+            Some("data") if value.is_none() => {
+                let how = match attr(&f, TABLE, "function") {
+                    Some("count" | "countnums") => Summary::Count,
+                    Some("average") => Summary::Average,
+                    Some("max") => Summary::Max,
+                    Some("min") => Summary::Min,
+                    _ => Summary::Sum,
+                };
+                value = Some((col, how));
+            }
+            _ => {}
+        }
+    }
+    let (value, how) = value?;
+    Some(super::xlsx::Pivot { sheet, at, source: (src_sheet, data), rows: rows?, across, value, how })
 }
 
 #[cfg(test)]
@@ -1203,5 +1258,17 @@ mod tests {
         let calc = Calc::new(&wb, 0.0);
         assert_eq!(calc.value(&wb, 0, 2, 6), Value::Text("Groceries".into()));
         assert_eq!(calc.value(&wb, 0, 3, 7), Value::Num(30.0));
+    }
+
+    #[test]
+    fn data_pilots_become_live_summaries() {
+        // An Excel pivot table, converted to OpenDocument by Collabora Office.
+        let opened = read(include_bytes!("../../testdata/collabora/pivot.ods")).unwrap();
+        assert_eq!(opened.pivots, 1);
+        let wb = opened.workbook;
+        let p = &wb.sheets[1];
+        assert_eq!((p.raw(2, 0), p.raw(3, 0), p.raw(4, 0)), ("Region", "North", "South"));
+        let calc = Calc::new(&wb, 0.0);
+        assert_eq!((calc.value(&wb, 1, 3, 1), calc.value(&wb, 1, 4, 1)), (Value::Num(10.0), Value::Num(7.0)));
     }
 }

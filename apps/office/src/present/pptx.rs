@@ -1185,10 +1185,13 @@ mod tests {
         assert!((l.x + l.w / 2.0 - 650.0).abs() < 0.5 && (l.y + l.h / 2.0 - 410.0).abs() < 0.5);
         assert_eq!(l.outline.as_ref().map(|o| (o.color.as_str(), o.width.round())), Some(("#3f9e8f", 5.0)));
         assert_eq!(s.transition.map(|t| t.kind), Some(TransitionKind::Push));
-        let morph = super::super::pptx_more::transition(&Transition { kind: TransitionKind::MagicMove, secs: 1.5 });
-        let xml = format!(r#"<p:sld xmlns:p="{P}">{morph}</p:sld>"#);
-        let doc = roxmltree::Document::parse(&xml).unwrap();
-        assert_eq!(super::super::pptx_more::read_transition(&doc).map(|t| t.kind), Some(TransitionKind::MagicMove));
+        // Every transition comes back as itself.
+        for kind in TransitionKind::ALL {
+            let t = super::super::pptx_more::transition(&Transition { kind, secs: 1.5 });
+            let xml = format!(r#"<p:sld xmlns:p="{P}">{t}</p:sld>"#);
+            let doc = roxmltree::Document::parse(&xml).unwrap();
+            assert_eq!(super::super::pptx_more::read_transition(&doc).map(|t| t.kind), Some(kind));
+        }
         let find = |f: fn(&Kind) -> bool| s.objects.iter().find(|o| f(&o.kind)).expect("the object came back");
         let t = find(|k| matches!(k, Kind::Table { .. }));
         assert_eq!(t.kind, deck.slides[0].objects[0].kind);
@@ -1264,5 +1267,35 @@ mod tests {
         assert_eq!((a.title.as_str(), a.body.as_str(), a.body2.as_str()), ("Pros and cons", "Cheap\nClose", "Small"));
         assert_eq!(b.layout, Layout::Picture);
         assert_eq!((b.title.as_str(), b.body.as_str()), ("The lake", "At dawn"));
+    }
+}
+
+#[cfg(test)]
+mod probe {
+    use super::*;
+
+    /// A deck using every transition, builds in and out, and a chart, for converting elsewhere.
+    #[test]
+    #[ignore]
+    fn write_probe() {
+        let Some(path) = std::env::var_os("NXO_PROBE") else { return };
+        let mut deck = Deck::default();
+        for (i, kind) in TransitionKind::ALL.into_iter().enumerate() {
+            let mut s = Slide { title: format!("{i} {}", kind.name()), ..Default::default() };
+            s.transition = Some(Transition { kind, secs: 1.25 });
+            deck.slides.push(s);
+        }
+        let s = &mut deck.slides[0];
+        let mut a = Object::new(1, Kind::Shape { shape: Shape::Rectangle, fill: "#336699".into() }, (100.0, 200.0, 100.0, 100.0));
+        a.build = Some(Build { order: 1, effect: Effect::Fade });
+        let mut b = Object::new(2, Kind::Shape { shape: Shape::Ellipse, fill: "#993366".into() }, (300.0, 200.0, 100.0, 100.0));
+        b.build = Some(Build { order: 2, effect: Effect::Fly });
+        let mut c = Object::new(3, Kind::Shape { shape: Shape::Star, fill: "#669933".into() }, (500.0, 200.0, 100.0, 100.0));
+        c.build = Some(Build { order: 3, effect: Effect::Appear });
+        c.build_out = Some(Build { order: 4, effect: Effect::Fade });
+        s.objects = vec![a, b, c, Object::new(4, Kind::sample_chart(), (600.0, 300.0, 300.0, 200.0))];
+        let odp = std::path::Path::new(&path).extension().is_some_and(|e| e == "odp");
+        let (bytes, _) = if odp { super::super::odp::write(&deck, &BTreeMap::new()) } else { write(&deck, &BTreeMap::new()) }.unwrap();
+        std::fs::write(path, bytes).unwrap();
     }
 }

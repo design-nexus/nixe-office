@@ -1659,6 +1659,11 @@ impl doc::Editor for Sheets {
                     ));
                 } else if opened.dropped_rules {
                     window::toast("Some conditional formats use rules Sheets doesn't have; they were left out.");
+                } else if opened.pivots > 0 {
+                    window::toast(&format!(
+                        "{} now a summary that updates with its data.",
+                        if opened.pivots == 1 { "The pivot table is".to_string() } else { format!("The {} pivot tables are", opened.pivots) }
+                    ));
                 }
                 opened.workbook
             }
