@@ -381,8 +381,8 @@ pub fn new_document(template: Option<&'static str>) {
             .and_then(|id| ed.templates().iter().find(|t| t.id == id))
             .map(|t| t.title.to_string())
             .unwrap_or_else(|| format!("Untitled {}", app::kind().noun()));
-        // A template starts as unsaved work, so closing asks first.
-        opened(None, &name, template.is_some());
+        // A template starts unchanged: until it's edited there's nothing to lose.
+        opened(None, &name, false);
     });
 }
 

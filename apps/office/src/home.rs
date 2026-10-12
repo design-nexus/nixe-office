@@ -2,7 +2,7 @@
 //! or bring back work left unsaved by a crash.
 
 use crate::widgets::{self, Page};
-use crate::{app, doc, paths, recent};
+use crate::{app, doc, paths, recent, window};
 use gtk::prelude::*;
 use std::cell::RefCell;
 
@@ -33,13 +33,22 @@ pub fn build(page: &Page) {
     flow.set_valign(gtk::Align::Start);
     let kind = app::kind();
     let blank = card(kind.icon(), &format!("Blank {}", kind.noun()), "Start from an empty page.");
-    blank.connect_clicked(|_| doc::new_document(None));
+    // Only from Home itself: a second click as the page fades out isn't another new file.
+    blank.connect_clicked(|_| {
+        if window::current() == "home" {
+            doc::new_document(None);
+        }
+    });
     flow.append(&blank);
     if let Some(ed) = doc::editor() {
         for t in ed.templates() {
             let c = card(t.icon, t.title, t.summary);
             let id = t.id;
-            c.connect_clicked(move |_| doc::new_document(Some(id)));
+            c.connect_clicked(move |_| {
+                if window::current() == "home" {
+                    doc::new_document(Some(id));
+                }
+            });
             flow.append(&c);
         }
     }
