@@ -17,8 +17,9 @@
   (widget, sidebar group, templates, open/save/snapshot, undo/redo, status, `Find`,
   `Pages`, keys). Editors call `doc::edited()` on every change and
   `doc::status_changed()` when the readout may change. The find bar is inserted after
-  the editor widget's first child (its toolbar). Toolbars use `widgets::wrap_row` (a
-  `LayoutManager` that wraps groups onto more lines at half-screen width).
+  the editor widget's first child (its ribbon). The ribbon folds groups into buttons at
+  narrow widths instead of wrapping. Focus mode (Ctrl+Shift+F, `window::toggle_focus`)
+  collapses it and hides the sidebar and status bar.
   Zoom (`doc::zoom`/`set_zoom`, kept in `~/.local/state/nixe-office/zoom-<app>`, not
   the shared settings) reaches editors through `Editor::set_zoom`. Write and Sheets
   wrap their view in `widgets::zoom_box` (a layout manager that allocates the child

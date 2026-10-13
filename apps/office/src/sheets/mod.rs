@@ -28,7 +28,7 @@ use crate::print::Pages;
 use crate::{color, container, widgets, window};
 use anyhow::{Result, bail};
 use gtk::prelude::*;
-use nixe_ui::ribbon::Ribbon;
+use nixe_ui::ribbon::{self, Ribbon};
 use gtk::{gdk, glib};
 use model::*;
 use std::cell::{Cell, RefCell};
@@ -455,6 +455,9 @@ impl Sheets {
 
         let view = ribbon.tab("View");
         view.group("Show", "nxo-chart-column-symbolic", 80).row(&[freeze.upcast_ref(), chart.upcast_ref()]);
+        let focus = ribbon::large_button("view-fullscreen-symbolic", "Focus", "Focus mode: just the document (Ctrl+Shift+F)");
+        focus.connect_clicked(|_| crate::window::toggle_focus());
+        view.group("Focus", "view-fullscreen-symbolic", 60).row(&[focus.upcast_ref()]);
         crate::window::attach_ribbon(&ribbon);
         *self.controls.borrow_mut() = Some(Controls { bold, italic, numbers, formats, align, header, freeze, print, chart, color, fill, filter, wrap, checkbox });
         ribbon.root.clone()

@@ -538,6 +538,9 @@ impl Present {
 
         let view = ribbon.tab("View");
         view.group("Views", "nxo-layout-grid-symbolic", 90).row(&[sorter.upcast_ref()]);
+        let focus = ribbon::large_button("view-fullscreen-symbolic", "Focus", "Focus mode: just the document (Ctrl+Shift+F)");
+        focus.connect_clicked(|_| crate::window::toggle_focus());
+        view.group("Focus", "view-fullscreen-symbolic", 60).row(&[focus.upcast_ref()]);
 
         let object_tab = ribbon.contextual_tab("Object");
         object_tab.group("Object", "nxo-shapes-symbolic", 90).row(&[object_tools.upcast_ref()]);

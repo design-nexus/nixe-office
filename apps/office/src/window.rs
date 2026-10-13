@@ -536,6 +536,43 @@ fn toggle_ribbon() {
     }
 }
 
+thread_local! {
+    /// In focus mode, and whether the ribbon was collapsed before it.
+    static FOCUS: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// Focus mode (Ctrl+Shift+F): just the document. The ribbon collapses to its
+/// tabs, and the sidebar and status bar hide until it's turned off again.
+pub fn toggle_focus() {
+    let ribbon = RIBBON.with(|r| r.borrow().clone());
+    let Some(ui) = ui() else { return };
+    match FOCUS.with(|f| f.take()) {
+        Some(was_collapsed) => {
+            if let Some(r) = &ribbon {
+                r.set_collapsed(was_collapsed);
+            }
+            let u = ui.borrow();
+            for w in &u.chrome {
+                w.set_visible(true);
+            }
+            u.refresh_nav();
+        }
+        None => {
+            if let Some(r) = &ribbon {
+                FOCUS.with(|f| f.set(Some(r.is_collapsed())));
+                r.set_collapsed(true);
+            } else {
+                FOCUS.with(|f| f.set(Some(false)));
+            }
+            let u = ui.borrow();
+            u.nav.set_visible(false);
+            for w in &u.chrome {
+                w.set_visible(false);
+            }
+        }
+    }
+}
+
 /// Find, for the end of the ribbon's tab strip.
 pub fn find_button() -> gtk::Button {
     let b = widgets::bar_button("nxo-search-symbolic", "Find and replace (Ctrl+F, Ctrl+H)");
@@ -786,6 +823,7 @@ pub const WINDOW_SHORTCUTS: &[doc::Shortcut] = &[
     (&["Ctrl", "Shift", "B"], "Collapse or expand the sidebar"),
     (&["Ctrl", ","], "Settings"),
     (&["F11"], "Fullscreen"),
+    (&["Ctrl", "Shift", "F"], "Focus mode: just the document"),
     (&["Esc"], "Close the find bar or search"),
     (&["F1"], "Show these shortcuts (or ?)"),
     (&["Ctrl", "Q"], "Quit (also Ctrl+W)"),
@@ -933,6 +971,10 @@ fn install_keys(window: &gtk::ApplicationWindow) {
         }
         if ctrl {
             let handled = match k {
+                gdk::Key::f if shift && in_doc => {
+                    toggle_focus();
+                    true
+                }
                 gdk::Key::f => {
                     find_or_search(false);
                     true

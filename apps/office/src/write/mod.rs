@@ -572,6 +572,9 @@ impl Writer {
         let full = ribbon::large_button("view-fullscreen-symbolic", "Full screen", "Full screen (F11)");
         full.connect_clicked(|_| crate::window::toggle_fullscreen());
         g.row(&[outline.upcast_ref(), full.upcast_ref()]);
+        let focus = ribbon::large_button("view-fullscreen-symbolic", "Focus", "Focus mode: just the document (Ctrl+Shift+F)");
+        focus.connect_clicked(|_| crate::window::toggle_focus());
+        view.group("Focus", "view-fullscreen-symbolic", 60).row(&[focus.upcast_ref()]);
 
         // Shown while the cursor is beside a picture, or a drawing is selected.
         let picture_tab = ribbon.contextual_tab("Picture");
