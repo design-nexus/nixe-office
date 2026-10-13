@@ -29,6 +29,7 @@ use crate::{color, container, prefs, widgets, window};
 use anyhow::{Result, bail};
 use buffer::{ParaProps, Tables};
 use gtk::prelude::*;
+use nixe_ui::ribbon::{self, Ribbon};
 use gtk::{gdk, gio, glib};
 use model::*;
 use picture::{PX, Picture};
@@ -266,14 +267,7 @@ impl Writer {
     // ---------- Toolbar ----------
 
     fn build_toolbar(self: &Rc<Self>) -> gtk::Box {
-        let bar = widgets::hbox(0);
-        bar.add_css_class("toolbar");
-        bar.add_css_class("doc-toolbar");
-        let flow = widgets::wrap_row(4, 4);
-        flow.add_css_class("tool-row");
-        flow.set_hexpand(true);
-        flow.set_valign(gtk::Align::Center);
-        bar.append(&flow);
+        // Controls are made first, then laid out on the ribbon's tabs below.
         let group = || {
             let g = widgets::hbox(2);
             g.add_css_class("tool-group");
@@ -299,7 +293,6 @@ impl Writer {
         redo.connect_clicked(move |_| f());
         g.append(&undo);
         g.append(&redo);
-        flow.append(&g);
 
         // Paragraph style, font and size.
         let g = group();
@@ -317,7 +310,8 @@ impl Writer {
             }
         });
         g.append(&style);
-        g.append(&self.style_menu());
+        let style_menu = self.style_menu();
+        g.append(&style_menu);
         let fonts = font_families(&self.view);
         let font_refs: Vec<&str> = fonts.iter().map(String::as_str).collect();
         let font = gtk::DropDown::from_strings(&font_refs);
@@ -354,7 +348,6 @@ impl Writer {
             }
         });
         g.append(&size);
-        flow.append(&g);
 
         // Character formatting.
         let g = group();
@@ -390,8 +383,8 @@ impl Writer {
             }
         });
         g.append(&link);
-        g.append(&self.symbols_button());
-        g.append(&self.painter_button());
+        let symbols = self.symbols_button();
+        let painter = self.painter_button();
         let me = Rc::downgrade(self);
         let color = color::button("nxo-baseline-symbolic", "Text color", color::TEXT, "Automatic", move |c| {
             if let Some(w) = me.upgrade() {
@@ -406,7 +399,6 @@ impl Writer {
         });
         g.append(&color.button);
         g.append(&highlight.button);
-        flow.append(&g);
 
         // Alignment.
         let g = group();
@@ -432,7 +424,6 @@ impl Writer {
             g.append(&b);
             align.push((a, b));
         }
-        flow.append(&g);
 
         // Lists and indents.
         let g = group();
@@ -448,8 +439,7 @@ impl Writer {
         more.connect_clicked(move |_| f());
         g.append(&less);
         g.append(&more);
-        g.append(&self.spacing_button());
-        flow.append(&g);
+        let spacing = self.spacing_button();
 
         // Insert.
         let g = group();
@@ -457,8 +447,8 @@ impl Writer {
         let f = act(|w| w.pick_picture());
         image.connect_clicked(move |_| f());
         g.append(&image);
-        g.append(&self.table_button());
-        g.append(&self.shapes_menu());
+        let table = self.table_button();
+        let shapes = self.shapes_menu();
         let chart = widgets::bar_button("nxo-chart-column-symbolic", "Insert a chart (its numbers in Chart data…)");
         let f = act(|w| w.insert_chart());
         chart.connect_clicked(move |_| f());
@@ -476,9 +466,6 @@ impl Writer {
         comment.connect_clicked(move |_| f());
         g.append(&comment);
         let (track, review) = self.changes_buttons();
-        let review_group = group();
-        review_group.append(&track);
-        review_group.append(&review);
         let toc = widgets::bar_button("nxo-list-tree-symbolic", "Insert a table of contents");
         let f = act(|w| w.insert_mark_block(marks::MarkKind::Contents));
         toc.connect_clicked(move |_| f());
@@ -491,12 +478,9 @@ impl Writer {
         let f = act(|w| w.insert_mark_block(marks::MarkKind::Section(Section { columns: 2, new_page: false })));
         section.connect_clicked(move |_| f());
         g.append(&section);
-        flow.append(&g);
-        flow.append(&review_group);
 
         // Shown while the cursor is beside a picture.
         let picture = group();
-        picture.append(&widgets::label("Picture", "dim"));
         let picture_width = gtk::Scale::with_range(gtk::Orientation::Horizontal, 10.0, 100.0, 1.0);
         picture_width.set_size_request(120, -1);
         picture_width.set_tooltip_text(Some("Picture width, as a share of the text width"));
@@ -525,9 +509,7 @@ impl Writer {
         });
         picture.append(&wrap);
         picture.set_visible(false);
-        flow.append(&picture);
         let (figure, figure_width, figure_fill, figure_data) = self.figure_tools();
-        flow.append(&figure);
 
         let me = Rc::downgrade(self);
         let setup: Rc<dyn Fn()> = Rc::new(move || {
@@ -535,8 +517,76 @@ impl Writer {
                 w.page_setup_dialog();
             }
         });
-        let file = doc::file_menu(vec![("Page setup…", setup)]);
-        bar.append(&file);
+        let file = doc::file_menu(vec![("Page setup…", setup.clone())]);
+
+        // ----- The ribbon -----
+        let ribbon = Ribbon::new();
+        ribbon.start(&file);
+        ribbon.end(&crate::window::find_button());
+
+        let home = ribbon.tab("Home");
+        let g = home.group("Undo", "nxo-undo-2-symbolic", 30);
+        g.row(&[undo.upcast_ref()]);
+        g.row(&[redo.upcast_ref()]);
+        let g = home.group("Font", "nxo-baseline-symbolic", 100);
+        g.row(&[style.upcast_ref(), style_menu.upcast_ref(), font.upcast_ref(), size.upcast_ref()]);
+        g.row(&[bold.upcast_ref(), italic.upcast_ref(), underline.upcast_ref(), strike.upcast_ref(), superscript.upcast_ref(), subscript.upcast_ref(), color.button.upcast_ref(), highlight.button.upcast_ref()]);
+        let g = home.group("Paragraph", "nxo-align-left-symbolic", 90);
+        let aligns: Vec<gtk::Widget> = align.iter().map(|(_, b)| b.clone().upcast()).collect();
+        g.row(&aligns.iter().collect::<Vec<_>>());
+        g.row(&[bullet.upcast_ref(), number.upcast_ref(), less.upcast_ref(), more.upcast_ref(), spacing.upcast_ref()]);
+        let g = home.group("Tools", "nxo-paintbrush-symbolic", 20);
+        g.row(&[painter.upcast_ref(), symbols.upcast_ref()]);
+        g.row(&[link.upcast_ref()]);
+
+        let insert = ribbon.tab("Insert");
+        let g = insert.group("Illustrations", "nxo-image-symbolic", 80);
+        g.row(&[image.upcast_ref(), table.upcast_ref(), shapes.upcast_ref(), chart.upcast_ref()]);
+        let g = insert.group("Notes", "nxo-notebook-pen-symbolic", 60);
+        g.row(&[note.upcast_ref(), endnote.upcast_ref()]);
+        let g = insert.group("Pages", "nxo-separator-horizontal-symbolic", 70);
+        g.row(&[toc.upcast_ref(), brk.upcast_ref(), section.upcast_ref()]);
+        let g = insert.group("Links", "nxo-link-symbolic", 50);
+        let link2 = widgets::bar_button("nxo-link-symbolic", "Add or edit a link (Ctrl+K)");
+        let f = act(|w| w.link_dialog());
+        link2.connect_clicked(move |_| f());
+        g.row(&[link2.upcast_ref()]);
+
+        let layout = ribbon.tab("Layout");
+        let g = layout.group("Page", "nxo-file-symbolic", 80);
+        let page_setup = ribbon::large_button("nxo-file-symbolic", "Page setup", "Paper, margins, header and footer");
+        let f = setup.clone();
+        page_setup.connect_clicked(move |_| f());
+        g.row(&[page_setup.upcast_ref()]);
+
+        let review_tab = ribbon.tab("Review");
+        let g = review_tab.group("Comments", "nxo-message-square-plus-symbolic", 80);
+        g.row(&[comment.upcast_ref()]);
+        let g = review_tab.group("Changes", "nxo-file-diff-symbolic", 90);
+        g.row(&[track.upcast_ref(), review.upcast_ref()]);
+
+        let view = ribbon.tab("View");
+        let g = view.group("Show", "sidebar-show-symbolic", 80);
+        let outline = ribbon::large_button("sidebar-show-symbolic", "Outline", "Show or hide the outline (Ctrl+Shift+B)");
+        outline.connect_clicked(|_| crate::window::toggle_sidebar());
+        let full = ribbon::large_button("view-fullscreen-symbolic", "Full screen", "Full screen (F11)");
+        full.connect_clicked(|_| crate::window::toggle_fullscreen());
+        g.row(&[outline.upcast_ref(), full.upcast_ref()]);
+
+        // Shown while the cursor is beside a picture, or a drawing is selected.
+        let picture_tab = ribbon.contextual_tab("Picture");
+        picture_tab.group("Picture", "nxo-image-symbolic", 80).row(&[picture.upcast_ref()]);
+        let drawing_tab = ribbon.contextual_tab("Drawing");
+        drawing_tab.group("Drawing", "nxo-shapes-symbolic", 80).row(&[figure.upcast_ref()]);
+        for (part, tab) in [(&picture, "Picture"), (&figure, "Drawing")] {
+            let r = Rc::downgrade(&ribbon);
+            part.connect_visible_notify(move |p| {
+                if let Some(r) = r.upgrade() {
+                    r.show_contextual(tab, p.is_visible());
+                }
+            });
+        }
+        crate::window::attach_ribbon(&ribbon);
 
         *self.controls.borrow_mut() = Some(Controls {
             style,
@@ -563,7 +613,7 @@ impl Writer {
             figure_fill,
             figure_data,
         });
-        bar
+        ribbon.root.clone()
     }
 
     fn table_button(self: &Rc<Self>) -> gtk::MenuButton {

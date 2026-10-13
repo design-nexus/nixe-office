@@ -13,6 +13,8 @@ pub struct Prefs {
     pub glow: bool,
     /// The sidebar shows only icons, whatever the window width.
     pub sidebar_collapsed: bool,
+    /// The ribbon shows only its tabs until one is clicked.
+    pub ribbon_collapsed: bool,
     /// Paper for new documents, PDF export and printing: letter or a4.
     pub paper: String,
     /// Write: underline misspelled words while typing.
@@ -37,6 +39,7 @@ impl Default for Prefs {
             reduce_motion: false,
             glow: true,
             sidebar_collapsed: false,
+            ribbon_collapsed: false,
             paper: default_paper().into(),
             spellcheck: true,
             spelling_language: String::new(),

@@ -5,6 +5,8 @@
 
 use crate::{app, doc, home, prefs, settings_dialog, theme, widgets};
 use gtk::prelude::*;
+use nixe_ui::chrome;
+use nixe_ui::ribbon::Ribbon;
 use gtk::{gdk, glib};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -20,7 +22,6 @@ struct Ui {
     overlay: gtk::Overlay,
     /// The top bar and the status bar, hidden in fullscreen.
     chrome: Vec<gtk::Widget>,
-    crumb: gtk::Label,
     search: gtk::SearchEntry,
     find: FindBar,
     /// The top bar's sidebar toggle.
@@ -318,6 +319,13 @@ fn build(app: &gtk::Application) {
         .vexpand(true)
         .child(&list)
         .build();
+    let head = chrome::sidebar_head(kind.name(), Some("Search recent files (Ctrl+F)"));
+    head.toggle.set_tooltip_text(Some("Collapse or expand the sidebar (Ctrl+Shift+B)"));
+    head.toggle.connect_clicked(|_| toggle_sidebar());
+    if let Some(find) = &head.search {
+        find.connect_clicked(|_| find_or_search(false));
+    }
+    nav.append(&head.root);
     nav.append(&nav_scroll);
 
     // ----- Pages -----
@@ -371,16 +379,30 @@ fn build(app: &gtk::Application) {
     doc_page.add_controller(wheel);
     editor.set_zoom(doc::zoom());
 
+    // Recent files are searched from a strip over the page.
+    let search = gtk::SearchEntry::new();
+    search.set_placeholder_text(Some("Search recent files"));
+    search.set_visible(false);
+    search.connect_search_changed(|e| home::set_query(e.text().trim()));
+    search.connect_stop_search(|e| {
+        e.set_text("");
+        e.set_visible(false);
+    });
+    let strip = chrome::search_strip(&search);
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    column.set_hexpand(true);
+    column.append(&strip);
+    column.append(&stack);
+
     let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     body.set_vexpand(true);
     body.append(&nav);
-    body.append(&stack);
+    body.append(&column);
 
-    let (top, crumb, search, side_toggle) = top_bar(&window);
+    let side_toggle = head.toggle.clone();
     let status = status_bar();
     let frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
     frame.add_css_class("window-frame");
-    frame.append(&top);
     frame.append(&body);
     frame.append(&status);
 
@@ -467,8 +489,7 @@ fn build(app: &gtk::Application) {
         doc_label,
         current: String::new(),
         overlay,
-        chrome: vec![top.upcast(), status.upcast()],
-        crumb,
+        chrome: vec![strip.upcast(), status.upcast()],
         search,
         find,
         side_toggle,
@@ -477,7 +498,7 @@ fn build(app: &gtk::Application) {
     };
     UI.with(|u| *u.borrow_mut() = Some(Rc::new(RefCell::new(state))));
 
-    // The window title, the top bar and the sidebar follow the open file.
+    // The window title and the sidebar follow the open file.
     let w = window.clone();
     doc::subscribe(&window, move |c| {
         if matches!(c, doc::Change::Opened | doc::Change::Dirty) {
@@ -493,68 +514,32 @@ fn build(app: &gtk::Application) {
                 u.doc_label.set_text(&doc::title());
                 u.doc_item.set_tooltip_text(Some(&doc::title()));
             }
-            refresh_crumb();
         }
     });
 }
 
-/// The bar across the top: the sidebar toggle and where you are on the left;
-/// search, settings and close on the right.
-fn top_bar(window: &gtk::ApplicationWindow) -> (gtk::Box, gtk::Label, gtk::SearchEntry, gtk::Button) {
-    let bar = widgets::hbox(4);
-    bar.add_css_class("top-bar");
-    let toggle = widgets::bar_button("sidebar-show-symbolic", "Collapse or expand the sidebar (Ctrl+Shift+B)");
-    toggle.connect_clicked(|_| toggle_sidebar());
-    bar.append(&toggle);
-    let crumbs = widgets::hbox(10);
-    crumbs.add_css_class("crumbs");
-    let root = gtk::Button::with_label(app::kind().name());
-    root.add_css_class("crumb-root");
-    root.set_tooltip_text(Some("Home"));
-    root.set_valign(gtk::Align::Center);
-    root.connect_clicked(|_| navigate("home"));
-    crumbs.append(&root);
-    crumbs.append(&widgets::label("/", "crumb-sep"));
-    let crumb = widgets::label("", "crumb");
-    crumb.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    crumbs.append(&crumb);
-    crumbs.set_hexpand(true);
-    bar.append(&crumbs);
-
-    let search = gtk::SearchEntry::new();
-    search.set_placeholder_text(Some("Search recent files"));
-    search.add_css_class("bar-search");
-    search.set_width_chars(24);
-    search.set_visible(false);
-    bar.append(&search);
-    let find = widgets::bar_button("nxo-search-symbolic", "Find in the file, or search recent files (Ctrl+F)");
-    find.connect_clicked(|_| find_or_search(false));
-    bar.append(&find);
-    search.connect_search_changed(|e| home::set_query(e.text().trim()));
-    search.connect_stop_search(|e| {
-        e.set_text("");
-        e.set_visible(false);
-    });
-
-    let gear = widgets::bar_button("emblem-system-symbolic", "Settings");
-    gear.connect_clicked(|_| settings_dialog::open());
-    bar.append(&gear);
-    let close = widgets::bar_button("window-close-symbolic", "Close (Ctrl+Q)");
-    let w = window.clone();
-    close.connect_clicked(move |_| w.close());
-    bar.append(&close);
-    (bar, crumb, search, toggle)
+thread_local! {
+    static RIBBON: RefCell<Option<Rc<Ribbon>>> = const { RefCell::new(None) };
 }
 
-fn refresh_crumb() {
-    let Some(ui) = ui() else { return };
-    let u = ui.borrow();
-    let text = if u.current == "document" {
-        format!("{}{}", doc::title(), if doc::dirty() { " •" } else { "" })
-    } else {
-        "Home".to_string()
-    };
-    u.crumb.set_text(&text);
+/// The editor's ribbon, so the window can collapse it (Ctrl+F1) and remember that.
+pub fn attach_ribbon(ribbon: &Rc<Ribbon>) {
+    ribbon.set_collapsed(prefs::get().ribbon_collapsed);
+    ribbon.connect_collapsed(|on| prefs::update(|p| p.ribbon_collapsed = on));
+    RIBBON.with(|r| *r.borrow_mut() = Some(ribbon.clone()));
+}
+
+fn toggle_ribbon() {
+    if let Some(r) = RIBBON.with(|r| r.borrow().clone()) {
+        r.toggle_collapsed();
+    }
+}
+
+/// Find, for the end of the ribbon's tab strip.
+pub fn find_button() -> gtk::Button {
+    let b = widgets::bar_button("nxo-search-symbolic", "Find and replace (Ctrl+F, Ctrl+H)");
+    b.connect_clicked(|_| find_or_search(false));
+    b
 }
 
 /// Ctrl+F: the find bar while a file is showing; otherwise search recent files.
@@ -749,6 +734,7 @@ fn status_bar() -> gtk::Box {
         zoom.set_visible(current() == "document" && doc::is_open());
         level.set_label(&format!("{:.0}%", doc::zoom() * 100.0));
     });
+    bar.append(&chrome::gear(settings_dialog::open));
     bar
 }
 
@@ -867,6 +853,9 @@ fn refresh_compact() {
         nav.remove_css_class("compact");
     }
     set_compact_hidden(&nav, compact);
+    if let Some(head) = nav.first_child().and_downcast::<gtk::Box>() {
+        chrome::set_head_compact(&head, compact);
+    }
 }
 
 pub fn toggle_sidebar() {
@@ -1016,6 +1005,10 @@ fn install_keys(window: &gtk::ApplicationWindow) {
             }
         }
         match key {
+            gdk::Key::F1 if ctrl => {
+                toggle_ribbon();
+                return stop;
+            }
             gdk::Key::F1 => {
                 show_shortcuts();
                 return stop;
@@ -1119,7 +1112,6 @@ pub fn navigate(id: &str) {
     if id == "home" {
         home::refresh();
     }
-    refresh_crumb();
     doc::status_changed();
     if id == "document"
         && let Some(e) = doc::editor()
