@@ -553,8 +553,8 @@ impl Writer {
         g.row(&[link2.upcast_ref()]);
 
         let layout = ribbon.tab("Layout");
-        let g = layout.group("Page", "nxo-file-symbolic", 80);
-        let page_setup = ribbon::large_button("nxo-file-symbolic", "Page setup", "Paper, margins, header and footer");
+        let g = layout.group("Page", "nxo-file-text-symbolic", 80);
+        let page_setup = ribbon::large_button("nxo-file-text-symbolic", "Page setup", "Paper, margins, header and footer");
         let f = setup.clone();
         page_setup.connect_clicked(move |_| f());
         g.row(&[page_setup.upcast_ref()]);
@@ -562,7 +562,7 @@ impl Writer {
         let review_tab = ribbon.tab("Review");
         let g = review_tab.group("Comments", "nxo-message-square-plus-symbolic", 80);
         g.row(&[comment.upcast_ref()]);
-        let g = review_tab.group("Changes", "nxo-file-diff-symbolic", 90);
+        let g = review_tab.group("Changes", "nxo-file-pen-line-symbolic", 90);
         g.row(&[track.upcast_ref(), review.upcast_ref()]);
 
         let view = ribbon.tab("View");

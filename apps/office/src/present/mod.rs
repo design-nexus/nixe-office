@@ -20,6 +20,7 @@ use crate::print::Pages;
 use crate::{color, container, widgets, window};
 use anyhow::{Result, bail};
 use gtk::prelude::*;
+use nixe_ui::ribbon::{self, Ribbon};
 use gtk::{gdk, gio, glib};
 use model::*;
 use render::{Hints, Pictures};
@@ -268,14 +269,7 @@ impl Present {
     // ---------- Toolbar ----------
 
     fn build_toolbar(self: &Rc<Self>) -> gtk::Box {
-        let bar = widgets::hbox(0);
-        bar.add_css_class("toolbar");
-        bar.add_css_class("doc-toolbar");
-        let flow = widgets::wrap_row(4, 4);
-        flow.add_css_class("tool-row");
-        flow.set_hexpand(true);
-        flow.set_valign(gtk::Align::Center);
-        bar.append(&flow);
+        // Controls are made in groups first, then laid out on the ribbon below.
         let group = || {
             let g = widgets::hbox(2);
             g.add_css_class("tool-group");
@@ -310,10 +304,15 @@ impl Present {
         let g = group();
         g.append(&button("nxo-undo-2-symbolic", "Undo (Ctrl+Z)", doc::Editor::undo));
         g.append(&button("nxo-redo-2-symbolic", "Redo (Ctrl+Shift+Z)", doc::Editor::redo));
-        flow.append(&g);
+        let undo_group = g;
 
-        let g = group();
-        g.append(&button("nxo-plus-symbolic", "New slide (Ctrl+M)", |p| p.add_slide()));
+        let new_slide = ribbon::large_button("nxo-plus-symbolic", "New slide", "New slide (Ctrl+M)");
+        let me = Rc::downgrade(self);
+        new_slide.connect_clicked(move |_| {
+            if let Some(p) = me.upgrade() {
+                p.add_slide();
+            }
+        });
         let names: Vec<&str> = Layout::ALL.iter().map(|l| l.name()).collect();
         let layout = dropdown(&names, "Layout", "layout-picker", |p, i| {
             let l = Layout::ALL[i as usize % Layout::ALL.len()];
@@ -328,8 +327,7 @@ impl Present {
                 }
             });
         });
-        g.append(&layout);
-        g.append(&self.transition_button());
+        let transition = self.transition_button();
         let master = gtk::ToggleButton::new();
         master.set_icon_name("nxo-crown-symbolic");
         master.add_css_class("tool-toggle");
@@ -342,7 +340,7 @@ impl Present {
                 p.set_master_mode(b.is_active());
             }
         });
-        g.append(&master);
+
         let sorter = &self.sorter_button;
         sorter.set_icon_name("nxo-gallery-thumbnails-symbolic");
         sorter.add_css_class("tool-toggle");
@@ -355,8 +353,7 @@ impl Present {
                 p.show_sorter(b.is_active());
             }
         });
-        g.append(sorter);
-        flow.append(&g);
+
 
         let g = group();
         g.append(&self.looks_button());
@@ -380,7 +377,7 @@ impl Present {
         });
         g.append(&background.button);
         g.append(&text_color.button);
-        flow.append(&g);
+        let looks_group = g;
 
         let g = group();
         let fonts = font_families(&self.canvas);
@@ -434,7 +431,7 @@ impl Present {
         let italic = toggle("nxo-italic-symbolic", "Italic (Ctrl+I)", |p, on| p.change_slide(move |s| s.italic = on));
         g.append(&bold);
         g.append(&italic);
-        flow.append(&g);
+        let font_group = g;
 
         let g = group();
         g.append(&button("nxo-text-cursor-symbolic", "Add a text box", |p| {
@@ -450,7 +447,7 @@ impl Present {
         g.append(&button("nxo-chart-column-symbolic", "Add a chart (double-click it to change its numbers)", |p| {
             p.add_object(Kind::sample_chart(), 480.0, 300.0)
         }));
-        flow.append(&g);
+        let insert_group = g;
 
         // Shown while an object is selected.
         let object_tools = group();
@@ -489,14 +486,22 @@ impl Present {
         object_tools.append(&self.build_button());
         object_tools.append(&button("nxo-trash-2-symbolic", "Delete the object (Delete)", |p| p.delete_chosen()));
         object_tools.set_visible(false);
-        flow.append(&object_tools);
 
-        let g = group();
-        let play =
-            button("nxo-play-symbolic", "Present from this slide (Shift+F5; F5 from the start)", |p| p.present(p.current.get()));
+        let play = ribbon::large_button("nxo-play-symbolic", "From here", "Present from this slide (Shift+F5)");
         play.add_css_class("play-button");
-        g.append(&play);
-        flow.append(&g);
+        let me = Rc::downgrade(self);
+        play.connect_clicked(move |_| {
+            if let Some(p) = me.upgrade() {
+                p.present(p.current.get());
+            }
+        });
+        let start = ribbon::large_button("nxo-presentation-symbolic", "From start", "Present from the start (F5)");
+        let me = Rc::downgrade(self);
+        start.connect_clicked(move |_| {
+            if let Some(p) = me.upgrade() {
+                p.present(0);
+            }
+        });
 
         let me = Rc::downgrade(self);
         let from_start: doc::Action = Rc::new(move || {
@@ -506,7 +511,43 @@ impl Present {
         });
         let mut extra: Vec<doc::MenuItem> = vec![("Present from the start", from_start)];
         extra.extend(self.export_items());
-        bar.append(&doc::file_menu(extra));
+
+        // ----- The ribbon -----
+        let ribbon = Ribbon::new();
+        ribbon.start(&doc::file_menu(extra));
+        ribbon.end(&crate::window::find_button());
+
+        let home = ribbon.tab("Home");
+        home.group("Undo", "nxo-undo-2-symbolic", 30).row(&[undo_group.upcast_ref()]);
+        let g = home.group("Slides", "nxo-plus-symbolic", 100);
+        g.row(&[new_slide.upcast_ref(), layout.upcast_ref()]);
+        home.group("Text", "nxo-type-symbolic", 90).row(&[font_group.upcast_ref()]);
+
+        let insert = ribbon.tab("Insert");
+        insert.group("Insert", "nxo-image-symbolic", 90).row(&[insert_group.upcast_ref()]);
+
+        let design = ribbon.tab("Design");
+        design.group("Looks", "nxo-palette-symbolic", 90).row(&[looks_group.upcast_ref()]);
+        design.group("Master", "nxo-crown-symbolic", 70).row(&[master.upcast_ref()]);
+
+        let transitions = ribbon.tab("Transitions");
+        transitions.group("Transition", "nxo-sparkles-symbolic", 90).row(&[transition.upcast_ref()]);
+
+        let show = ribbon.tab("Slide Show");
+        show.group("Present", "nxo-play-symbolic", 100).row(&[play.upcast_ref(), start.upcast_ref()]);
+
+        let view = ribbon.tab("View");
+        view.group("Views", "nxo-layout-grid-symbolic", 90).row(&[sorter.upcast_ref()]);
+
+        let object_tab = ribbon.contextual_tab("Object");
+        object_tab.group("Object", "nxo-shapes-symbolic", 90).row(&[object_tools.upcast_ref()]);
+        let r = Rc::downgrade(&ribbon);
+        object_tools.connect_visible_notify(move |t| {
+            if let Some(r) = r.upgrade() {
+                r.show_contextual("Object", t.is_visible());
+            }
+        });
+        crate::window::attach_ribbon(&ribbon);
         *self.controls.borrow_mut() = Some(Controls {
             layout,
             font,
@@ -523,7 +564,7 @@ impl Present {
             shadow,
             master,
         });
-        bar
+        ribbon.root.clone()
     }
 
     fn looks_button(self: &Rc<Self>) -> gtk::MenuButton {

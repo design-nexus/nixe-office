@@ -28,6 +28,7 @@ use crate::print::Pages;
 use crate::{color, container, widgets, window};
 use anyhow::{Result, bail};
 use gtk::prelude::*;
+use nixe_ui::ribbon::Ribbon;
 use gtk::{gdk, glib};
 use model::*;
 use std::cell::{Cell, RefCell};
@@ -265,14 +266,7 @@ impl Sheets {
     // ---------- Toolbar ----------
 
     fn build_toolbar(self: &Rc<Self>) -> gtk::Box {
-        let bar = widgets::hbox(0);
-        bar.add_css_class("toolbar");
-        bar.add_css_class("doc-toolbar");
-        let flow = widgets::wrap_row(4, 4);
-        flow.add_css_class("tool-row");
-        flow.set_hexpand(true);
-        flow.set_valign(gtk::Align::Center);
-        bar.append(&flow);
+        // Controls are made in groups first, then laid out on the ribbon below.
         let group = || {
             let g = widgets::hbox(2);
             g.add_css_class("tool-group");
@@ -307,7 +301,7 @@ impl Sheets {
         let g = group();
         g.append(&button("nxo-undo-2-symbolic", "Undo (Ctrl+Z)", doc::Editor::undo));
         g.append(&button("nxo-redo-2-symbolic", "Redo (Ctrl+Shift+Z)", doc::Editor::redo));
-        flow.append(&g);
+        let undo_group = g;
 
         let g = group();
         let mut numbers = Vec::new();
@@ -338,7 +332,7 @@ impl Sheets {
         }
         let formats = self.formats_button();
         g.append(&formats);
-        flow.append(&g);
+        let number_group = g;
 
         let g = group();
         let bold = toggle("nxo-bold-symbolic", "Bold (Ctrl+B)", |s, on| s.format_selection(move |f| f.bold = on));
@@ -378,7 +372,7 @@ impl Sheets {
             s.area.grab_focus();
         });
         g.append(&checkbox);
-        flow.append(&g);
+        let format_group = g;
 
         let g = group();
         let mut align = Vec::new();
@@ -404,42 +398,66 @@ impl Sheets {
             g.append(&b);
             align.push((a, b));
         }
-        flow.append(&g);
+        let align_group = g;
 
-        let g = group();
-        g.append(&button("nxo-table-cells-merge-symbolic", "Merge the selected cells, or unmerge them", |s| s.merge_cells()));
-        g.append(&button("nxo-message-square-text-symbolic", "Comment on this cell (Ctrl+Alt+M)", |s| s.edit_comment()));
-        g.append(&button("nxo-highlighter-symbolic", "Highlight cells that meet a rule", |s| s.highlight_dialog()));
-        g.append(&button("nxo-sigma-symbolic", "Summarize: totals by group, on a new sheet", |s| s.summarize_dialog()));
-        g.append(&button("nxo-table-2-symbolic", "Format as a table: heading row, banded rows, a colour", |s| s.rc().table_dialog()));
-        g.append(&button("nxo-chart-area-symbolic", "Put a chart of the selection on the sheet (drag it anywhere)", |s| s.place_chart()));
-        flow.append(&g);
+        let merge = button("nxo-table-cells-merge-symbolic", "Merge the selected cells, or unmerge them", |s| s.merge_cells());
+        let comment = button("nxo-message-square-text-symbolic", "Comment on this cell (Ctrl+Alt+M)", |s| s.edit_comment());
+        let rules = button("nxo-highlighter-symbolic", "Highlight cells that meet a rule", |s| s.highlight_dialog());
+        let summarize = button("nxo-sigma-symbolic", "Summarize: totals by group, on a new sheet", |s| s.summarize_dialog());
+        let as_table = button("nxo-table-2-symbolic", "Format as a table: heading row, banded rows, a colour", |s| s.rc().table_dialog());
+        let place_chart =
+            button("nxo-chart-area-symbolic", "Put a chart of the selection on the sheet (drag it anywhere)", |s| s.place_chart());
 
-        let g = group();
-        g.append(&button("nxo-arrow-up-narrow-wide-symbolic", "Sort A to Z by this column", |s| s.sort(true)));
-        g.append(&button("nxo-arrow-down-symbolic", "Sort Z to A by this column", |s| s.sort(false)));
-        g.append(&button("nxo-sliders-horizontal-symbolic", "Sort by several columns…", |s| s.rc().sort_dialog()));
+        let sort_up = button("nxo-arrow-up-narrow-wide-symbolic", "Sort A to Z by this column", |s| s.sort(true));
+        let sort_down = button("nxo-arrow-down-symbolic", "Sort Z to A by this column", |s| s.sort(false));
+        let sort_more = button("nxo-sliders-horizontal-symbolic", "Sort by several columns…", |s| s.rc().sort_dialog());
         let filter = self.filter_button();
-        g.append(&filter);
         let header =
             toggle("nxo-table-rows-split-symbolic", "First row is a header (sorting and filtering leave it on top)", |s, on| {
                 s.change(|wb| wb.sheet_mut().header = on);
             });
         let freeze = self.freeze_button();
-        g.append(&header);
-        g.append(&freeze);
         let print = self.print_button();
-        g.append(&print);
-        flow.append(&g);
+        let chart = toggle("nxo-chart-column-symbolic", "Chart pane", |s, on| s.show_chart(on));
 
-        let g = group();
-        let chart = toggle("nxo-chart-column-symbolic", "Chart", |s, on| s.show_chart(on));
-        g.append(&chart);
-        flow.append(&g);
+        // ----- The ribbon -----
+        let ribbon = Ribbon::new();
+        ribbon.start(&doc::file_menu(Vec::new()));
+        ribbon.end(&crate::window::find_button());
 
-        bar.append(&doc::file_menu(Vec::new()));
+        let home = ribbon.tab("Home");
+        home.group("Undo", "nxo-undo-2-symbolic", 30).row(&[undo_group.upcast_ref()]);
+        home.group("Font", "nxo-baseline-symbolic", 100).row(&[format_group.upcast_ref()]);
+        home.group("Alignment", "nxo-align-left-symbolic", 90).row(&[align_group.upcast_ref()]);
+        let g = home.group("Cells", "nxo-table-cells-merge-symbolic", 70);
+        g.row(&[merge.upcast_ref()]);
+        home.group("Number", "nxo-decimal-symbolic", 80).row(&[number_group.upcast_ref()]);
+
+        let insert = ribbon.tab("Insert");
+        insert.group("Objects", "nxo-chart-area-symbolic", 80).row(&[
+            place_chart.upcast_ref(),
+            as_table.upcast_ref(),
+        ]);
+        insert.group("Notes", "nxo-message-square-text-symbolic", 70).row(&[comment.upcast_ref()]);
+
+        let data = ribbon.tab("Data");
+        data.group("Sort and filter", "nxo-arrow-up-narrow-wide-symbolic", 90).row(&[
+            sort_up.upcast_ref(),
+            sort_down.upcast_ref(),
+            sort_more.upcast_ref(),
+            filter.upcast_ref(),
+            header.upcast_ref(),
+        ]);
+        data.group("Analyze", "nxo-sigma-symbolic", 80).row(&[rules.upcast_ref(), summarize.upcast_ref()]);
+
+        let page = ribbon.tab("Page Layout");
+        page.group("Print", "nxo-printer-symbolic", 80).row(&[print.upcast_ref()]);
+
+        let view = ribbon.tab("View");
+        view.group("Show", "nxo-chart-column-symbolic", 80).row(&[freeze.upcast_ref(), chart.upcast_ref()]);
+        crate::window::attach_ribbon(&ribbon);
         *self.controls.borrow_mut() = Some(Controls { bold, italic, numbers, formats, align, header, freeze, print, chart, color, fill, filter, wrap, checkbox });
-        bar
+        ribbon.root.clone()
     }
 
     /// Number formats beyond the toolbar's: thousands, currencies, date styles, times,
