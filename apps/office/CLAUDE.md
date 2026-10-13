@@ -1,24 +1,25 @@
-# Nexus Office Suite — notes for working on this repo
+# Office Suite — notes for working on this repo
 
-- One binary, `nexus-office`, runs as Write, Sheets or Present: `--app write`, or the
-  launcher scripts `nexus-write` / `nexus-sheets` / `nexus-present` (`packaging/`).
-  Each is its own GApplication (`io.github.design_nexus.Write` …) with its own window.
-  Config, data and state folders are shared: `nexus-office`. GTK4 (gtk4-rs 0.11), no
-  libadwaita. The look follows `~/Projects/STYLE.md`; the shell (`theme.rs`, `prefs.rs`,
-  `widgets.rs`, `settings_dialog.rs`, `style.css`, `paths.rs`, `cmd.rs`, `fmt.rs`)
-  started as copies of Nexus PDF's. Every window colour is a `@theme_*` token. Page
+- One binary, `nixe-office`, runs as Write, Sheets or Present: `--app write`, or the
+  launcher scripts `nixe-write` / `nixe-sheets` / `nixe-present` (`packaging/`).
+  Each is its own GApplication (`io.github.design_nexus.nixe.Write` …) with its own window.
+  Config, data and state folders are shared: `nixe-office`. GTK4 (gtk4-rs 0.11), no
+  libadwaita. The look follows `STYLE.md`; the theme, widgets, settings card, window
+  frame and ribbon come from the `nixe-*` crates. Each editor's `build_toolbar` makes its
+  controls and lays them out on a `nixe_ui::ribbon` (File menu first, Find last;
+  contextual tabs follow the visibility of their control groups). Every window colour is a `@theme_*` token. Page
   content (paper, ink, cells, slides, charts) keeps fixed document colours so the screen
   matches print; don't theme it.
 - **Shell** (`window.rs`, `home.rs`, `doc.rs`): the window has two pages, Home and the
   document. `doc.rs` owns the open file (path, dirty, unsaved-changes guard, Save/Save
   As by extension, PDF export, print, crash-recovery snapshots in
-  `~/.local/state/nexus-office/recovery/<app>/`). Each app implements `doc::Editor`
+  `~/.local/state/nixe-office/recovery/<app>/`). Each app implements `doc::Editor`
   (widget, sidebar group, templates, open/save/snapshot, undo/redo, status, `Find`,
   `Pages`, keys). Editors call `doc::edited()` on every change and
   `doc::status_changed()` when the readout may change. The find bar is inserted after
   the editor widget's first child (its toolbar). Toolbars use `widgets::wrap_row` (a
   `LayoutManager` that wraps groups onto more lines at half-screen width).
-  Zoom (`doc::zoom`/`set_zoom`, kept in `~/.local/state/nexus-office/zoom-<app>`, not
+  Zoom (`doc::zoom`/`set_zoom`, kept in `~/.local/state/nixe-office/zoom-<app>`, not
   the shared settings) reaches editors through `Editor::set_zoom`. Write and Sheets
   wrap their view in `widgets::zoom_box` (a layout manager that allocates the child
   at 1/zoom with a scale transform, so GTK maps input back); Present multiplies its
@@ -26,7 +27,7 @@
 - **Saving**: `save(path)` writes the format the extension names and returns what that
   format couldn't keep; `doc.rs` shows that note once per file and format.
   Native files are ZIPs (`container.rs`): `mimetype` first and stored (byte 38, used by
-  `packaging/nexus-office.xml`), `manifest.json` (version 3), `content.json`, `media/`.
+  `packaging/nixe-office.xml`), `manifest.json` (version 3), `content.json`, `media/`.
   Qt-era files: `.nwrite` ZIP with `document.html` (`write/legacy.rs`), `.nsheets` and
   `.npresent` plain JSON (`from_legacy_json`).
 - **Autosave** (`prefs.autosave`): `doc::edited` schedules `write_quietly` a few seconds
@@ -187,7 +188,7 @@
   "Object N" chart document with its own table); these follow what Collabora writes.
   Pivot tables (Excel's pivotTable parts, OpenDocument's data pilots) are read into
   `xlsx::Pivot` and rebuilt in place by `summary::summarize_at`.
-  `present/odp.rs` names its page layouts `Nexus-<layout>` so they come back exactly;
+  `present/odp.rs` names its page layouts `Nixe-<layout>` so they come back exactly;
   other files' layouts are guessed from their placeholders. `{n}` on the master is
   `text:page-number`.
 - Icons: Lucide, converted from strokes to fills (GTK's symbolic loader fills every
@@ -205,7 +206,7 @@
   `gtk_tests::editors_behave` (`main.rs`); add new GTK checks there, never as their own
   `#[test]` (parallel GTK tests crash). `NXO_SAMPLE_DIR=/tmp/x cargo test -- --ignored
   write_office_samples` writes a .docx, .xlsx and .pptx to check in other software.
-  Layout check: `NXO_SNAPSHOT=/tmp/x.png nexus-office --app sheets --new monthly-budget`
+  Layout check: `NXO_SNAPSHOT=/tmp/x.png nixe-office --app sheets --new monthly-budget`
   renders the window to a PNG and quits (`NXO_SNAPSHOT_W`/`_H`/`_DELAY`). The window can
   take keyboard focus while it's up (it ignores keys), so keep these runs few. Point
   `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_STATE_HOME`/`XDG_CACHE_HOME` at scratch dirs,

@@ -1,7 +1,7 @@
-# Nexus Office Suite
+# Office Suite
 
-Three home office apps for [Omarchy](https://omarchy.org): **Nexus Write** for
-documents, **Nexus Sheets** for spreadsheets and **Nexus Present** for slides. They
+Three home office apps for [Omarchy](https://omarchy.org): **Write** for
+documents, **Sheets** for spreadsheets and **Present** for slides. They
 open and save Word, Excel and PowerPoint files and their OpenDocument counterparts,
 export PDF and print. The window takes its colors from your Omarchy theme and fits a
 half-screen tile; the page itself keeps its own colors, so what you see is what prints.
@@ -177,17 +177,17 @@ All three:
 - **Save automatically** (in Settings, off at first): a file that has a name saves itself
   a few seconds after each change, and on closing, without asking.
 
-Files made by the first release of Nexus Office open as before.
+Files made by the first release of Office open as before.
 
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/design-nexus/nexus-office-suite/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/design-nexus/nixe/main/install.sh | bash -s -- office
 ```
 
 This installs GTK 4, GtkSourceView 5, libspelling and an English dictionary if they're
-missing, builds with Cargo, and installs `nexus-write`, `nexus-sheets` and
-`nexus-present` to `~/.local/bin` with launcher entries. Add `-s -- --default` after
+missing, builds with Cargo, and installs `nixe-write`, `nixe-sheets` and
+`nixe-present` to `~/.local/bin` with launcher entries. Add `-s -- --default` after
 `bash` to also make them the default apps for their file types.
 
 To remove them, run the same line with `uninstall.sh` in place of `install.sh`. Add
@@ -197,9 +197,9 @@ work. Your documents are never touched.
 ## Usage
 
 ```
-nexus-write [OPTIONS] [FILE]
-nexus-sheets [OPTIONS] [FILE]
-nexus-present [OPTIONS] [FILE]
+nixe-write [OPTIONS] [FILE]
+nixe-sheets [OPTIONS] [FILE]
+nixe-present [OPTIONS] [FILE]
 ```
 
 | Option | What |
@@ -228,11 +228,11 @@ Launching an app again while it's running brings its window forward.
 
 | Path | What |
 | --- | --- |
-| `~/.config/nexus-office/settings.toml` | Settings, shared by the three apps |
-| `~/.config/nexus-office/themes/*.toml` | Your own themes |
-| `~/.local/share/nexus-office/recent-*.json` | Each app's recent files |
-| `~/.local/state/nexus-office/recovery/` | Copies of unsaved work |
-| `~/.local/state/nexus-office/zoom-*` | Each app's zoom |
+| `~/.config/nixe-office/settings.toml` | Settings, shared by the three apps |
+| `~/.config/nixe-office/themes/*.toml` | Your own themes |
+| `~/.local/share/nixe-office/recent-*.json` | Each app's recent files |
+| `~/.local/state/nixe-office/recovery/` | Copies of unsaved work |
+| `~/.local/state/nixe-office/zoom-*` | Each app's zoom |
 
 ## Building
 
