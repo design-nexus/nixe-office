@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Nexus Write
+GenericName=Word Processor
+Comment=Write letters, recipes and other documents; opens Word files
+Exec=nexus-write %f
+Icon=x-office-document
+Terminal=false
+Categories=Office;WordProcessor;GTK;
+Keywords=document;letter;word;docx;write;text;odt;
+MimeType=application/x-nexus-write;application/vnd.openxmlformats-officedocument.wordprocessingml.document;text/markdown;text/plain;application/vnd.oasis.opendocument.text;
+StartupNotify=true
+StartupWMClass=io.github.design_nexus.Write

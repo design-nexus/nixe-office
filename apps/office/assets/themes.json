@@ -1,0 +1,12 @@
+[
+  {"id":"dracula","name":"Dracula","palette":{"dark":true,"background":"#282a36","surface":"#21222c","raised":"#343746","border":"#44475a","text":"#f8f8f2","muted":"#a6a7b5","accent":"#bd93f9","danger":"#ff5555"}},
+  {"id":"catppuccin","name":"Catppuccin Mocha","palette":{"dark":true,"background":"#1e1e2e","surface":"#181825","raised":"#313244","border":"#45475a","text":"#cdd6f4","muted":"#a6adc8","accent":"#89b4fa","danger":"#f38ba8"}},
+  {"id":"tokyo-night","name":"Tokyo Night","palette":{"dark":true,"background":"#1a1b26","surface":"#13141c","raised":"#24283b","border":"#414868","text":"#a9b1d6","muted":"#737da8","accent":"#7aa2f7","danger":"#f7768e"}},
+  {"id":"one-dark-pro","name":"One Dark Pro","palette":{"dark":true,"background":"#282c34","surface":"#21252b","raised":"#2c313a","border":"#3e4451","text":"#abb2bf","muted":"#7f848e","accent":"#61afef","danger":"#e06c75"}},
+  {"id":"monokai","name":"Monokai","palette":{"dark":true,"background":"#272822","surface":"#1e1f1c","raised":"#3e3d32","border":"#555449","text":"#f8f8f2","muted":"#a6a699","accent":"#a6e22e","danger":"#f92672"}},
+  {"id":"gruvbox","name":"Gruvbox","palette":{"dark":true,"background":"#282828","surface":"#1e1e1e","raised":"#3c3836","border":"#504945","text":"#d4be98","muted":"#a89984","accent":"#7daea3","danger":"#ea6962"}},
+  {"id":"nord","name":"Nord","palette":{"dark":true,"background":"#2e3440","surface":"#222730","raised":"#3b4252","border":"#4c566a","text":"#d8dee9","muted":"#a5acba","accent":"#81a1c1","danger":"#bf616a"}},
+  {"id":"rose-pine","name":"Rosé Pine Dawn","palette":{"dark":false,"background":"#faf4ed","surface":"#ede7e1","raised":"#f2e9e1","border":"#dfdad9","text":"#575279","muted":"#797593","accent":"#56949f","danger":"#b4637a"}},
+  {"id":"everforest","name":"Everforest","palette":{"dark":true,"background":"#2d353b","surface":"#232a2e","raised":"#343f44","border":"#475258","text":"#d3c6aa","muted":"#9da9a0","accent":"#a7c080","danger":"#e67e80"}},
+  {"id":"solarized","name":"Solarized Light","palette":{"dark":false,"background":"#fdf6e3","surface":"#eee8d5","raised":"#f7f0dd","border":"#d9d2bf","text":"#586e75","muted":"#657b83","accent":"#268bd2","danger":"#dc322f"}}
+]
