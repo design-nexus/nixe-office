@@ -7,6 +7,12 @@ use crate::prefs;
 /// Install the stylesheet and the current palette, and follow Omarchy live.
 pub fn install() {
     nixe_theme::install(Style {
+        window_class: "office-window",
+        base_skip: &[
+            "window.@APP@ scrollbar",
+            "window.@APP@ scrollbar slider",
+            ".toast",
+        ],
         css: include_str!("style.css"),
         no_glow_css: "\n.theme-card.selected, .toast, window.office-window .page-card.selected { box-shadow: 0 0 0 1px alpha(@theme_accent, 0.6); }\n\
              window.office-window scale > trough > slider { box-shadow: 0 0 0 1px alpha(@theme_accent, 0.72); }\n",
