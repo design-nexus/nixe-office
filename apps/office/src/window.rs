@@ -1,12 +1,12 @@
-//! The main window: a top bar (sidebar toggle, `App / Page`, search, settings,
-//! close), the sidebar (Home, the open file, and the editor's own group: the
+//! The main window: the sidebar (Home, the open file, and the editor's own group: the
 //! outline, the sheets or the slides), the pages (Home and the document), and a
 //! status bar. Settings open as a card over the window (`settings_dialog`).
 
 use crate::{app, doc, home, prefs, settings_dialog, theme, widgets};
 use gtk::prelude::*;
 use nixe_ui::chrome;
-use nixe_ui::ribbon::Ribbon;
+use nixe_ui::commandbar::CommandBar;
+use nixe_ui::inspector::Inspector;
 use gtk::{gdk, glib};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -509,6 +509,7 @@ fn build(app: &gtk::Application) {
             } else {
                 kind.full_name().to_string()
             }));
+            refresh_title();
             if let Some(ui) = ui() {
                 let u = ui.borrow();
                 u.doc_item.set_visible(doc::is_open());
@@ -520,60 +521,92 @@ fn build(app: &gtk::Application) {
 }
 
 thread_local! {
-    static RIBBON: RefCell<Option<Rc<Ribbon>>> = const { RefCell::new(None) };
+    static CHROME: RefCell<Option<(Rc<CommandBar>, Rc<Inspector>)>> = const { RefCell::new(None) };
+    /// View buttons the editor puts in the status bar, before the bar is built.
+    static STATUS_TOOLS: RefCell<Vec<gtk::Widget>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The editor's ribbon, so the window can collapse it (Ctrl+F1) and remember that.
-pub fn attach_ribbon(ribbon: &Rc<Ribbon>) {
-    ribbon.set_collapsed(prefs::get().ribbon_collapsed);
-    ribbon.connect_collapsed(|on| prefs::update(|p| p.ribbon_collapsed = on));
-    RIBBON.with(|r| *r.borrow_mut() = Some(ribbon.clone()));
+/// The editor's command bar and Inspector: the window finishes the bar (find,
+/// the Inspector toggle, the file's name) and remembers whether the
+/// Inspector is open.
+pub fn attach_chrome(bar: &Rc<CommandBar>, inspector: &Rc<Inspector>) {
+    bar.end(&find_button());
+    bar.end(inspector.toggle_button());
+    let title = bar.title_button();
+    title.set_tooltip_text(Some("Save as, under another name (Ctrl+Shift+S)"));
+    title.connect_clicked(|_| doc::save_as());
+    let kind = app::kind().id();
+    let open = prefs::get().inspector.get(kind).copied().unwrap_or(kind != "sheets");
+    inspector.set_open(open);
+    inspector.connect_open(move |on| {
+        prefs::update(|p| {
+            p.inspector.insert(kind.to_string(), on);
+        })
+    });
+    CHROME.with(|c| *c.borrow_mut() = Some((bar.clone(), inspector.clone())));
 }
 
-fn toggle_ribbon() {
-    if let Some(r) = RIBBON.with(|r| r.borrow().clone()) {
-        r.toggle_collapsed();
+fn inspector() -> Option<Rc<Inspector>> {
+    CHROME.with(|c| c.borrow().as_ref().map(|(_, i)| i.clone()))
+}
+
+/// Ctrl+Alt+I (and Ctrl+F1): show or hide the Inspector.
+fn toggle_inspector() {
+    if let Some(i) = inspector() {
+        i.toggle();
     }
+}
+
+/// The file's name in the middle of the command bar.
+fn refresh_title() {
+    let Some(bar) = CHROME.with(|c| c.borrow().as_ref().map(|(b, _)| b.clone())) else { return };
+    if !doc::is_open() {
+        bar.set_title("", "", false);
+        return;
+    }
+    let title = doc::title();
+    let (name, ext) = match title.rfind('.') {
+        Some(i) if i > 0 => (&title[..i], &title[i..]),
+        _ => (title.as_str(), ""),
+    };
+    bar.set_title(name, ext, doc::dirty());
+}
+
+/// A view button for the status bar (the outline, the chart pane, the sorter).
+/// The editor adds them while it builds, before the window exists.
+pub fn status_tool(w: &impl IsA<gtk::Widget>) {
+    STATUS_TOOLS.with(|t| t.borrow_mut().push(w.clone().upcast()));
 }
 
 thread_local! {
-    /// In focus mode, and whether the ribbon was collapsed before it.
-    static FOCUS: Cell<Option<bool>> = const { Cell::new(None) };
+    /// In focus mode.
+    static FOCUS: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Focus mode (Ctrl+Shift+F): just the document. The ribbon collapses to its
-/// tabs, and the sidebar and status bar hide until it's turned off again.
+/// Focus mode (Ctrl+Shift+F): just the document. The Inspector, the sidebar
+/// and the status bar hide until it's turned off again.
 pub fn toggle_focus() {
-    let ribbon = RIBBON.with(|r| r.borrow().clone());
     let Some(ui) = ui() else { return };
-    match FOCUS.with(|f| f.take()) {
-        Some(was_collapsed) => {
-            if let Some(r) = &ribbon {
-                r.set_collapsed(was_collapsed);
-            }
-            let u = ui.borrow();
-            for w in &u.chrome {
-                w.set_visible(true);
-            }
-            u.refresh_nav();
+    let on = !FOCUS.with(|f| f.get());
+    FOCUS.with(|f| f.set(on));
+    if let Some(i) = inspector() {
+        i.suspend(on);
+    }
+    let u = ui.borrow();
+    if on {
+        u.nav.set_visible(false);
+        for w in &u.chrome {
+            w.set_visible(false);
         }
-        None => {
-            if let Some(r) = &ribbon {
-                FOCUS.with(|f| f.set(Some(r.is_collapsed())));
-                r.set_collapsed(true);
-            } else {
-                FOCUS.with(|f| f.set(Some(false)));
-            }
-            let u = ui.borrow();
-            u.nav.set_visible(false);
-            for w in &u.chrome {
-                w.set_visible(false);
-            }
+    } else {
+        for w in &u.chrome {
+            w.set_visible(true);
         }
+        u.refresh_nav();
     }
 }
 
-/// Find, for the end of the ribbon's tab strip.
+/// Find, for the end of the command bar.
 pub fn find_button() -> gtk::Button {
     let b = widgets::bar_button("nxo-search-symbolic", "Find and replace (Ctrl+F, Ctrl+H)");
     b.connect_clicked(|_| find_or_search(false));
@@ -764,16 +797,39 @@ fn status_bar() -> gtk::Box {
     readout.add_css_class("mono");
     readout.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
     bar.append(&readout);
+    // The editor's view buttons, focus mode and full screen, beside the zoom.
+    let views = widgets::hbox(2);
+    views.add_css_class("status-views");
+    for w in STATUS_TOOLS.with(|t| t.take()) {
+        views.append(&w);
+    }
+    let focus = status_icon("view-conceal-symbolic", "Focus mode: just the document (Ctrl+Shift+F)");
+    focus.connect_clicked(|_| toggle_focus());
+    views.append(&focus);
+    let full = status_icon("view-fullscreen-symbolic", "Full screen (F11)");
+    full.connect_clicked(|_| toggle_fullscreen());
+    views.append(&full);
+    bar.append(&views);
     let (zoom, level) = zoom_control();
     bar.append(&zoom);
     let r = readout.clone();
     doc::subscribe(&readout, move |_| {
         refresh_status(&r);
+        views.set_visible(current() == "document" && doc::is_open());
         zoom.set_visible(current() == "document" && doc::is_open());
         level.set_label(&format!("{:.0}%", doc::zoom() * 100.0));
     });
     bar.append(&chrome::gear(settings_dialog::open));
     bar
+}
+
+/// A small icon button for the status bar.
+pub fn status_icon(icon: &str, tip: &str) -> gtk::Button {
+    let b = gtk::Button::from_icon_name(icon);
+    b.add_css_class("status-help");
+    b.add_css_class("status-icon");
+    b.set_tooltip_text(Some(tip));
+    b
 }
 
 /// − 100% + at the end of the status bar; the number goes back to 100%.
@@ -823,6 +879,7 @@ pub const WINDOW_SHORTCUTS: &[doc::Shortcut] = &[
     (&["Ctrl", "Shift", "B"], "Collapse or expand the sidebar"),
     (&["Ctrl", ","], "Settings"),
     (&["F11"], "Fullscreen"),
+    (&["Ctrl", "Alt", "I"], "Show or hide the Inspector (also Ctrl+F1)"),
     (&["Ctrl", "Shift", "F"], "Focus mode: just the document"),
     (&["Esc"], "Close the find bar or search"),
     (&["F1"], "Show these shortcuts (or ?)"),
@@ -965,6 +1022,7 @@ fn install_keys(window: &gtk::ApplicationWindow) {
                 gdk::Key::equal | gdk::Key::plus | gdk::Key::KP_Add => doc::zoom_step(true),
                 gdk::Key::minus | gdk::Key::KP_Subtract => doc::zoom_step(false),
                 gdk::Key::_0 | gdk::Key::KP_0 => doc::set_zoom(1.0),
+                gdk::Key::i => toggle_inspector(),
                 _ => return glib::Propagation::Proceed,
             }
             return stop;
@@ -1049,7 +1107,7 @@ fn install_keys(window: &gtk::ApplicationWindow) {
         }
         match key {
             gdk::Key::F1 if ctrl => {
-                toggle_ribbon();
+                toggle_inspector();
                 return stop;
             }
             gdk::Key::F1 => {
@@ -1065,6 +1123,9 @@ fn install_keys(window: &gtk::ApplicationWindow) {
                 let find_open = ui().is_some_and(|u| u.borrow().find.bar.is_visible());
                 if find_open && in_doc {
                     hide_find();
+                    return stop;
+                }
+                if in_doc && inspector().is_some_and(|i| i.escape()) {
                     return stop;
                 }
                 if let Some(s) = search.filter(|s| s.is_visible()) {

@@ -28,7 +28,8 @@ use crate::print::Pages;
 use crate::{color, container, widgets, window};
 use anyhow::{Result, bail};
 use gtk::prelude::*;
-use nixe_ui::ribbon::{self, Ribbon};
+use nixe_ui::commandbar::CommandBar;
+use nixe_ui::inspector::{self, Inspector};
 use gtk::{gdk, glib};
 use model::*;
 use std::cell::{Cell, RefCell};
@@ -239,15 +240,15 @@ impl Sheets {
         });
         *s.me.borrow_mut() = Rc::downgrade(&s);
         s.root.add_css_class("sheets-editor");
-        let toolbar = s.build_toolbar();
-        s.root.append(&toolbar);
+        let (bar, insp) = s.build_toolbar();
+        s.root.append(&bar.root);
         s.root.append(&s.build_formula_bar());
         let body = widgets::hbox(0);
         body.set_vexpand(true);
         body.append(&s.build_grid());
         s.build_chart_pane();
         body.append(&s.chart.pane);
-        s.root.append(&body);
+        s.root.append(&insp.wrap(&body));
         s.root.append(&s.build_tabs());
         s.relayout();
         s.refresh_sheets();
@@ -265,8 +266,8 @@ impl Sheets {
 
     // ---------- Toolbar ----------
 
-    fn build_toolbar(self: &Rc<Self>) -> gtk::Box {
-        // Controls are made in groups first, then laid out on the ribbon below.
+    fn build_toolbar(self: &Rc<Self>) -> (Rc<CommandBar>, Rc<Inspector>) {
+        // Controls are made first, then laid out on the command bar and the Inspector below.
         let group = || {
             let g = widgets::hbox(2);
             g.add_css_class("tool-group");
@@ -298,10 +299,8 @@ impl Sheets {
             b
         };
 
-        let g = group();
-        g.append(&button("nxo-undo-2-symbolic", "Undo (Ctrl+Z)", doc::Editor::undo));
-        g.append(&button("nxo-redo-2-symbolic", "Redo (Ctrl+Shift+Z)", doc::Editor::redo));
-        let undo_group = g;
+        let undo = button("nxo-undo-2-symbolic", "Undo (Ctrl+Z)", doc::Editor::undo);
+        let redo = button("nxo-redo-2-symbolic", "Redo (Ctrl+Shift+Z)", doc::Editor::redo);
 
         let g = group();
         let mut numbers = Vec::new();
@@ -332,7 +331,6 @@ impl Sheets {
         }
         let formats = self.formats_button();
         g.append(&formats);
-        let number_group = g;
 
         let g = group();
         let bold = toggle("nxo-bold-symbolic", "Bold (Ctrl+B)", |s, on| s.format_selection(move |f| f.bold = on));
@@ -353,7 +351,8 @@ impl Sheets {
         });
         g.append(&color.button);
         g.append(&fill.button);
-        g.append(&self.borders_button());
+        let borders = self.borders_button();
+        g.append(&borders);
         let wrap = toggle("nxo-wrap-text-symbolic", "Wrap text in the cell", |s, on| s.set_wrap(on));
         g.append(&wrap);
         let checkbox = toggle("nxo-square-check-symbolic", "Checkboxes: click one or press Space to tick it", |s, on| {
@@ -372,7 +371,6 @@ impl Sheets {
             s.area.grab_focus();
         });
         g.append(&checkbox);
-        let format_group = g;
 
         let g = group();
         let mut align = Vec::new();
@@ -398,7 +396,6 @@ impl Sheets {
             g.append(&b);
             align.push((a, b));
         }
-        let align_group = g;
 
         let merge = button("nxo-table-cells-merge-symbolic", "Merge the selected cells, or unmerge them", |s| s.merge_cells());
         let comment = button("nxo-message-square-text-symbolic", "Comment on this cell (Ctrl+Alt+M)", |s| s.edit_comment());
@@ -420,47 +417,87 @@ impl Sheets {
         let print = self.print_button();
         let chart = toggle("nxo-chart-column-symbolic", "Chart pane", |s, on| s.show_chart(on));
 
-        // ----- The ribbon -----
-        let ribbon = Ribbon::new();
-        ribbon.start(&doc::file_menu(Vec::new()));
-        ribbon.end(&crate::window::find_button());
+        // ----- The command bar: what you add and do -----
+        let bar = CommandBar::new();
+        let file = doc::file_menu(Vec::new());
+        bar.lead(&[file.upcast_ref(), undo.upcast_ref(), redo.upcast_ref()]);
+        bar.tool(&place_chart, "nxo-chart-area-symbolic", "Chart", 50);
+        bar.tool(&as_table, "nxo-table-2-symbolic", "Table", 40);
+        bar.tool(&comment, "nxo-message-square-text-symbolic", "Comment", 30);
+        bar.tool(&sort_up, "nxo-arrow-up-narrow-wide-symbolic", "Sort A→Z", 45);
+        bar.tool(&filter, "nxo-filter-symbolic", "Filter", 45);
+        let print_now = gtk::Button::new();
+        print_now.set_tooltip_text(Some("Print (Ctrl+P)"));
+        print_now.connect_clicked(|_| doc::print_now());
+        bar.more(&print_now, "nxo-printer-symbolic", "Print…");
 
-        let home = ribbon.tab("Home");
-        home.group("Undo", "nxo-undo-2-symbolic", 30).row(&[undo_group.upcast_ref()]);
-        home.group("Font", "nxo-baseline-symbolic", 100).row(&[format_group.upcast_ref()]);
-        home.group("Alignment", "nxo-align-left-symbolic", 90).row(&[align_group.upcast_ref()]);
-        let g = home.group("Cells", "nxo-table-cells-merge-symbolic", 70);
-        g.row(&[merge.upcast_ref()]);
-        home.group("Number", "nxo-decimal-symbolic", 80).row(&[number_group.upcast_ref()]);
+        // ----- The Inspector: how the cells look -----
+        let insp = Inspector::new();
+        let cell = insp.segment("Cell");
+        let s = cell.section("Text");
+        let style = inspector::segmented(&[bold.upcast_ref(), italic.upcast_ref()]);
+        s.row(&[style.upcast_ref(), color.button.upcast_ref()]);
+        let s = cell.section("Fill and borders");
+        inspector::labelled(&borders, "nxo-grid-2x2-symbolic", "Borders");
+        s.row(&[fill.button.upcast_ref(), borders.upcast_ref()]);
+        let s = cell.section("Alignment");
+        let aligns: Vec<gtk::Widget> = align.iter().map(|(_, b)| b.clone().upcast()).collect();
+        s.segmented(&aligns.iter().collect::<Vec<_>>());
+        inspector::labelled(&wrap, "nxo-wrap-text-symbolic", "Wrap");
+        inspector::labelled(&merge, "nxo-table-cells-merge-symbolic", "Merge");
+        s.row(&[wrap.upcast_ref(), merge.upcast_ref()]);
+        let s = cell.section("Cell type");
+        inspector::labelled(&checkbox, "nxo-square-check-symbolic", "Checkboxes");
+        s.add(&checkbox);
+        s.note("Click a box or press Space to tick it.");
 
-        let insert = ribbon.tab("Insert");
-        insert.group("Objects", "nxo-chart-area-symbolic", 80).row(&[
-            place_chart.upcast_ref(),
-            as_table.upcast_ref(),
-        ]);
-        insert.group("Notes", "nxo-message-square-text-symbolic", 70).row(&[comment.upcast_ref()]);
+        let number = insp.segment("Number");
+        let s = number.section("Format");
+        let kinds: Vec<gtk::Widget> = numbers.iter().map(|(_, b)| b.clone().upcast()).collect();
+        s.segmented(&kinds.iter().collect::<Vec<_>>());
+        inspector::labelled(&formats, "nxo-sliders-horizontal-symbolic", "More formats");
+        s.add(&formats);
+        s.note("Thousands, currencies, date styles, times and your own format codes.");
 
-        let data = ribbon.tab("Data");
-        data.group("Sort and filter", "nxo-arrow-up-narrow-wide-symbolic", 90).row(&[
-            sort_up.upcast_ref(),
-            sort_down.upcast_ref(),
-            sort_more.upcast_ref(),
-            filter.upcast_ref(),
-            header.upcast_ref(),
-        ]);
-        data.group("Analyze", "nxo-sigma-symbolic", 80).row(&[rules.upcast_ref(), summarize.upcast_ref()]);
+        let data = insp.segment("Data");
+        let s = data.section("Sort");
+        let sort_az = inspector::button("nxo-arrow-up-narrow-wide-symbolic", "A → Z", "Sort A to Z by this column");
+        let me = Rc::downgrade(self);
+        sort_az.connect_clicked(move |_| {
+            if let Some(s) = me.upgrade() {
+                s.sort(true);
+            }
+        });
+        inspector::labelled(&sort_down, "nxo-arrow-down-symbolic", "Z → A");
+        s.row(&[sort_az.upcast_ref(), sort_down.upcast_ref()]);
+        inspector::labelled(&sort_more, "nxo-sliders-horizontal-symbolic", "By several columns");
+        s.add(&sort_more);
+        let s = data.section("Rows");
+        inspector::labelled(&header, "nxo-table-rows-split-symbolic", "Header row");
+        inspector::labelled(&freeze, "nxo-snowflake-symbolic", "Freeze");
+        s.row(&[header.upcast_ref(), freeze.upcast_ref()]);
+        let s = data.section("Analyze");
+        inspector::labelled(&rules, "nxo-highlighter-symbolic", "Highlight");
+        inspector::labelled(&summarize, "nxo-sigma-symbolic", "Summarize");
+        s.row(&[rules.upcast_ref(), summarize.upcast_ref()]);
 
-        let page = ribbon.tab("Page Layout");
-        page.group("Print", "nxo-printer-symbolic", 80).row(&[print.upcast_ref()]);
+        let page = insp.segment("Page");
+        let s = page.section("Printing");
+        inspector::labelled(&print, "nxo-printer-symbolic", "Print area and fit");
+        s.add(&print);
+        let print_page = inspector::button("nxo-printer-symbolic", "Print…", "Print (Ctrl+P)");
+        print_page.connect_clicked(|_| doc::print_now());
+        s.add(&print_page);
+        s.note("Paper size comes from Settings.");
 
-        let view = ribbon.tab("View");
-        view.group("Show", "nxo-chart-column-symbolic", 80).row(&[freeze.upcast_ref(), chart.upcast_ref()]);
-        let focus = ribbon::large_button("view-fullscreen-symbolic", "Focus", "Focus mode: just the document (Ctrl+Shift+F)");
-        focus.connect_clicked(|_| crate::window::toggle_focus());
-        view.group("Focus", "view-fullscreen-symbolic", 60).row(&[focus.upcast_ref()]);
-        crate::window::attach_ribbon(&ribbon);
+        // The chart pane is a view: its switch sits in the status bar.
+        chart.remove_css_class("tool-toggle");
+        chart.add_css_class("status-help");
+        chart.add_css_class("status-icon");
+        window::status_tool(&chart);
+        crate::window::attach_chrome(&bar, &insp);
         *self.controls.borrow_mut() = Some(Controls { bold, italic, numbers, formats, align, header, freeze, print, chart, color, fill, filter, wrap, checkbox });
-        ribbon.root.clone()
+        (bar, insp)
     }
 
     /// Number formats beyond the toolbar's: thousands, currencies, date styles, times,

@@ -9,7 +9,9 @@ half-screen tile; the page itself keeps its own colors, so what you see is what 
 ## What they do
 
 Every app starts on **Home**: a blank file, starter templates, and your recent files.
-Then:
+In a file, the bar at the top holds what you add (a table, a picture, a slide) and the
+**Inspector** at the right holds the formatting for what's selected, in labelled
+sections (<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>I</kbd> shows and hides it). Then:
 
 - **Write**
   - Paragraph styles (title, three headings, quote), font, size, bold, italic,
@@ -34,7 +36,8 @@ Then:
     (<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>D</kbd>), numbered i, ii, iii, gather under
     "Notes" at the end.
   - Comments on selected text (<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>M</kbd>), shown as
-    cards beside the page; edit, resolve or delete them there.
+    cards beside the page (in the Inspector's Review section while it's open); edit,
+    resolve or delete them there.
   - A table of contents built from the headings, with page numbers in print and PDF.
   - Page breaks (<kbd>Ctrl</kbd>+<kbd>Enter</kbd>), two or three text columns, and
     section breaks to change the columns partway, on a new page or straight on.
@@ -92,8 +95,8 @@ Then:
       EOMONTH, WEEKDAY, WEEKNUM, NETWORKDAYS.
   - Typed dates (`2026-10-05`, `10/5/2026`), money (`$12.50`), percentages and
     thousands separators are understood as numbers.
-  - Number formats: two decimals, currency, percent and date on the toolbar; more under
-    its arrow (whole numbers, euros, pounds, yen, date styles like "5 Oct 2026", times),
+  - Number formats: two decimals, currency, percent and date in the Inspector; more
+    under More formats (whole numbers, euros, pounds, yen, date styles like "5 Oct 2026", times),
     or type a format code of your own (`#,##0.0 "kg"`). Bold, italic, text and fill
     colors, alignment, and column widths and row heights you drag.
   - Merged cells, cell borders, text that wraps inside its cell (the row grows to fit),

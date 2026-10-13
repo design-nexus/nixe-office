@@ -319,7 +319,10 @@ impl Writer {
         placed.sort_by_key(|(o, _, _)| *o);
         panel.set_visible(!placed.is_empty());
         if !placed.is_empty() {
-            panel.append(&widgets::label("COMMENTS", "group-title"));
+            let head = widgets::label("COMMENTS", "group-title");
+            // In the Inspector, its section has the heading.
+            head.set_visible(!panel.has_css_class("in-inspector"));
+            panel.append(&head);
         }
         for (_, c, quote) in placed {
             let card = widgets::vbox(6);

@@ -29,7 +29,8 @@ use crate::{color, container, prefs, widgets, window};
 use anyhow::{Result, bail};
 use buffer::{ParaProps, Tables};
 use gtk::prelude::*;
-use nixe_ui::ribbon::{self, Ribbon};
+use nixe_ui::commandbar::CommandBar;
+use nixe_ui::inspector::{self, Inspector};
 use gtk::{gdk, gio, glib};
 use model::*;
 use picture::{PX, Picture};
@@ -236,9 +237,9 @@ impl Writer {
         w.comment_panel.set_valign(gtk::Align::Start);
         w.comment_panel.set_visible(false);
         desk_row.append(&w.comment_panel);
-        let toolbar = w.build_toolbar();
-        root.append(&toolbar);
-        root.append(&w.scroll);
+        let (bar, insp) = w.build_toolbar();
+        root.append(&bar.root);
+        root.append(&insp.wrap(&w.scroll));
         w.connect_buffer();
         w.connect_view();
         w.connect_links();
@@ -266,8 +267,8 @@ impl Writer {
 
     // ---------- Toolbar ----------
 
-    fn build_toolbar(self: &Rc<Self>) -> gtk::Box {
-        // Controls are made first, then laid out on the ribbon's tabs below.
+    fn build_toolbar(self: &Rc<Self>) -> (Rc<CommandBar>, Rc<Inspector>) {
+        // Controls are made first, then laid out on the command bar and the Inspector below.
         let group = || {
             let g = widgets::hbox(2);
             g.add_css_class("tool-group");
@@ -519,77 +520,131 @@ impl Writer {
         });
         let file = doc::file_menu(vec![("Page setup…", setup.clone())]);
 
-        // ----- The ribbon -----
-        let ribbon = Ribbon::new();
-        ribbon.start(&file);
-        ribbon.end(&crate::window::find_button());
+        // ----- The command bar: what you add -----
+        let bar = CommandBar::new();
+        bar.lead(&[file.upcast_ref(), undo.upcast_ref(), redo.upcast_ref()]);
+        bar.tool(&table, "nxo-table-2-symbolic", "Table", 50);
+        bar.tool(&image, "nxo-image-symbolic", "Picture", 50);
+        bar.tool(&chart, "nxo-chart-column-symbolic", "Chart", 40);
+        bar.tool(&shapes, "nxo-shapes-symbolic", "Shape", 40);
+        bar.tool(&comment, "nxo-message-square-plus-symbolic", "Comment", 30);
+        bar.more(&note, "nxo-superscript-symbolic", "Footnote");
+        bar.more(&endnote, "nxo-notebook-pen-symbolic", "Endnote");
+        bar.more(&toc, "nxo-list-tree-symbolic", "Contents");
+        bar.more(&brk, "nxo-separator-horizontal-symbolic", "Page break");
+        bar.more(&section, "nxo-between-horizontal-start-symbolic", "Section break");
 
-        let home = ribbon.tab("Home");
-        let g = home.group("Undo", "nxo-undo-2-symbolic", 30);
-        g.row(&[undo.upcast_ref()]);
-        g.row(&[redo.upcast_ref()]);
-        let g = home.group("Font", "nxo-baseline-symbolic", 100);
-        g.row(&[style.upcast_ref(), style_menu.upcast_ref(), font.upcast_ref(), size.upcast_ref()]);
-        g.row(&[bold.upcast_ref(), italic.upcast_ref(), underline.upcast_ref(), strike.upcast_ref(), superscript.upcast_ref(), subscript.upcast_ref(), color.button.upcast_ref(), highlight.button.upcast_ref()]);
-        let g = home.group("Paragraph", "nxo-align-left-symbolic", 90);
+        // ----- The Inspector: how it looks -----
+        let insp = Inspector::new();
+        let text = insp.segment("Text");
+        text.section("Style").row_wide_first(&[style.upcast_ref(), style_menu.upcast_ref()]);
+        let s = text.section("Font");
+        s.row_wide_first(&[font.upcast_ref(), size.upcast_ref()]);
+        s.segmented(&[
+            bold.upcast_ref(),
+            italic.upcast_ref(),
+            underline.upcast_ref(),
+            strike.upcast_ref(),
+            superscript.upcast_ref(),
+            subscript.upcast_ref(),
+        ]);
+        s.row(&[color.button.upcast_ref(), highlight.button.upcast_ref(), painter.upcast_ref()]);
+        let s = text.section("Paragraph");
         let aligns: Vec<gtk::Widget> = align.iter().map(|(_, b)| b.clone().upcast()).collect();
-        g.row(&aligns.iter().collect::<Vec<_>>());
-        g.row(&[bullet.upcast_ref(), number.upcast_ref(), less.upcast_ref(), more.upcast_ref(), spacing.upcast_ref()]);
-        let g = home.group("Tools", "nxo-paintbrush-symbolic", 20);
-        g.row(&[painter.upcast_ref(), symbols.upcast_ref()]);
-        g.row(&[link.upcast_ref()]);
+        s.segmented(&aligns.iter().collect::<Vec<_>>());
+        let lists = inspector::segmented(&[bullet.upcast_ref(), number.upcast_ref()]);
+        let indents = inspector::segmented(&[less.upcast_ref(), more.upcast_ref()]);
+        s.row(&[lists.upcast_ref(), indents.upcast_ref()]);
+        inspector::labelled(&spacing, "nxo-unfold-vertical-symbolic", "Line spacing");
+        s.add(&spacing);
+        let s = text.section("In the text");
+        inspector::labelled(&link, "nxo-link-symbolic", "Link");
+        inspector::labelled(&symbols, "nxo-omega-symbolic", "Symbol");
+        s.row(&[link.upcast_ref(), symbols.upcast_ref()]);
 
-        let insert = ribbon.tab("Insert");
-        let g = insert.group("Illustrations", "nxo-image-symbolic", 80);
-        g.row(&[image.upcast_ref(), table.upcast_ref(), shapes.upcast_ref(), chart.upcast_ref()]);
-        let g = insert.group("Notes", "nxo-notebook-pen-symbolic", 60);
-        g.row(&[note.upcast_ref(), endnote.upcast_ref()]);
-        let g = insert.group("Pages", "nxo-separator-horizontal-symbolic", 70);
-        g.row(&[toc.upcast_ref(), brk.upcast_ref(), section.upcast_ref()]);
-        let g = insert.group("Links", "nxo-link-symbolic", 50);
-        let link2 = widgets::bar_button("nxo-link-symbolic", "Add or edit a link (Ctrl+K)");
-        let f = act(|w| w.link_dialog());
-        link2.connect_clicked(move |_| f());
-        g.row(&[link2.upcast_ref()]);
-
-        let layout = ribbon.tab("Layout");
-        let g = layout.group("Page", "nxo-file-text-symbolic", 80);
-        let page_setup = ribbon::large_button("nxo-file-text-symbolic", "Page setup", "Paper, margins, header and footer");
+        let page = insp.segment("Page");
+        let s = page.section("Page");
+        let page_setup = inspector::button("nxo-file-text-symbolic", "Page setup…", "Paper, margins, columns, header and footer");
         let f = setup.clone();
         page_setup.connect_clicked(move |_| f());
-        g.row(&[page_setup.upcast_ref()]);
+        s.add(&page_setup);
+        s.note("Paper, margins, columns, header and footer.");
+        let s = page.section("Breaks");
+        let page_break = inspector::button("nxo-separator-horizontal-symbolic", "Page", "Insert a page break (Ctrl+Enter)");
+        let f = act(|w| w.insert_mark_block(marks::MarkKind::PageBreak));
+        page_break.connect_clicked(move |_| f());
+        let section_break = inspector::button("nxo-between-horizontal-start-symbolic", "Section", "Insert a section break: change the columns from here on");
+        let f = act(|w| w.insert_mark_block(marks::MarkKind::Section(Section { columns: 2, new_page: false })));
+        section_break.connect_clicked(move |_| f());
+        s.row(&[page_break.upcast_ref(), section_break.upcast_ref()]);
+        let s = page.section("Contents and notes");
+        let contents = inspector::button("nxo-list-tree-symbolic", "Contents", "Insert a table of contents");
+        let f = act(|w| w.insert_mark_block(marks::MarkKind::Contents));
+        contents.connect_clicked(move |_| f());
+        let footnote = inspector::button("nxo-superscript-symbolic", "Footnote", "Insert a footnote (Ctrl+Alt+F)");
+        let f = act(|w| w.insert_note(false));
+        footnote.connect_clicked(move |_| f());
+        s.row(&[contents.upcast_ref(), footnote.upcast_ref()]);
 
-        let review_tab = ribbon.tab("Review");
-        let g = review_tab.group("Comments", "nxo-message-square-plus-symbolic", 80);
-        g.row(&[comment.upcast_ref()]);
-        let g = review_tab.group("Changes", "nxo-file-pen-line-symbolic", 90);
-        g.row(&[track.upcast_ref(), review.upcast_ref()]);
-
-        let view = ribbon.tab("View");
-        let g = view.group("Show", "sidebar-show-symbolic", 80);
-        let outline = ribbon::large_button("sidebar-show-symbolic", "Outline", "Show or hide the outline (Ctrl+Shift+B)");
-        outline.connect_clicked(|_| crate::window::toggle_sidebar());
-        let full = ribbon::large_button("view-fullscreen-symbolic", "Full screen", "Full screen (F11)");
-        full.connect_clicked(|_| crate::window::toggle_fullscreen());
-        g.row(&[outline.upcast_ref(), full.upcast_ref()]);
-        let focus = ribbon::large_button("view-fullscreen-symbolic", "Focus", "Focus mode: just the document (Ctrl+Shift+F)");
-        focus.connect_clicked(|_| crate::window::toggle_focus());
-        view.group("Focus", "view-fullscreen-symbolic", 60).row(&[focus.upcast_ref()]);
+        let review_seg = insp.segment("Review");
+        let s = review_seg.section("Comments");
+        let new_comment = inspector::button("nxo-message-square-plus-symbolic", "New comment", "Comment on the selection (Ctrl+Alt+M)");
+        let f = act(|w| w.add_comment());
+        new_comment.connect_clicked(move |_| f());
+        s.add(&new_comment);
+        // While the Inspector is open the comments move in here, so the page
+        // and the Inspector fit side by side; closed, they're beside the page.
+        s.note("While the Inspector is open, comments show here instead of beside the page.");
+        let slot = widgets::vbox(0);
+        s.add(&slot);
+        let (panel, me) = (self.comment_panel.clone(), Rc::downgrade(self));
+        insp.connect_open(move |open| {
+            let Some(w) = me.upgrade() else { return };
+            let Some(parent) = panel.parent().and_downcast::<gtk::Box>() else { return };
+            parent.remove(&panel);
+            if open {
+                slot.append(&panel);
+                panel.add_css_class("in-inspector");
+            } else {
+                if let Some(row) = w.paper.parent().and_downcast::<gtk::Box>() {
+                    row.append(&panel);
+                }
+                panel.remove_css_class("in-inspector");
+            }
+            // The section has its own heading.
+            if let Some(head) = panel.first_child().filter(|h| h.has_css_class("group-title")) {
+                head.set_visible(!open);
+            }
+        });
+        let s = review_seg.section("Changes");
+        inspector::labelled(&track, "nxo-file-pen-line-symbolic", "Track");
+        inspector::labelled(&review, "nxo-check-check-symbolic", "Review");
+        s.row(&[track.upcast_ref(), review.upcast_ref()]);
+        s.note("Tracked changes are marked until you accept or reject them.");
 
         // Shown while the cursor is beside a picture, or a drawing is selected.
-        let picture_tab = ribbon.contextual_tab("Picture");
-        picture_tab.group("Picture", "nxo-image-symbolic", 80).row(&[picture.upcast_ref()]);
-        let drawing_tab = ribbon.contextual_tab("Drawing");
-        drawing_tab.group("Drawing", "nxo-shapes-symbolic", 80).row(&[figure.upcast_ref()]);
-        for (part, tab) in [(&picture, "Picture"), (&figure, "Drawing")] {
-            let r = Rc::downgrade(&ribbon);
+        let picture_seg = insp.contextual_segment("Picture");
+        let s = picture_seg.section("Picture");
+        s.field("Width", &picture_width);
+        s.field("Wrap", &wrap);
+        let drawing_seg = insp.contextual_segment("Drawing");
+        let s = drawing_seg.section("Drawing");
+        s.field("Width", &figure_width);
+        s.row(&[figure_fill.button.upcast_ref(), figure_data.upcast_ref()]);
+        for (part, name) in [(&picture, "Picture"), (&figure, "Drawing")] {
+            let i = Rc::downgrade(&insp);
             part.connect_visible_notify(move |p| {
-                if let Some(r) = r.upgrade() {
-                    r.show_contextual(tab, p.is_visible());
+                if let Some(i) = i.upgrade() {
+                    i.show_contextual(name, p.is_visible());
                 }
             });
         }
-        crate::window::attach_ribbon(&ribbon);
+
+        // The outline is a view: its switch sits in the status bar.
+        let outline = window::status_icon("sidebar-show-symbolic", "Show or hide the outline (Ctrl+Shift+B)");
+        outline.connect_clicked(|_| crate::window::toggle_sidebar());
+        window::status_tool(&outline);
+        crate::window::attach_chrome(&bar, &insp);
 
         *self.controls.borrow_mut() = Some(Controls {
             style,
@@ -616,7 +671,7 @@ impl Writer {
             figure_fill,
             figure_data,
         });
-        ribbon.root.clone()
+        (bar, insp)
     }
 
     fn table_button(self: &Rc<Self>) -> gtk::MenuButton {

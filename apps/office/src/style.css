@@ -971,3 +971,9 @@ window.office-window button.symbol-key {
   padding: 0;
   font-size: 1.1em;
 }
+
+/* Comment cards in the Inspector's Review segment. */
+.comment-panel.in-inspector {
+  min-width: 0;
+  margin-top: 4px;
+}

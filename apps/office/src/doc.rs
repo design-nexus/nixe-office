@@ -756,7 +756,7 @@ fn menu_row(label: &str, keys: &str, act: Action, popover: &gtk::Popover) -> gtk
 pub fn file_menu(extra: Vec<MenuItem>) -> gtk::MenuButton {
     let menu = gtk::MenuButton::new();
     menu.set_label("File");
-    menu.add_css_class("ribbon-file");
+    menu.add_css_class("commandbar-file");
     menu.set_tooltip_text(Some("File: save, export, print"));
     menu.set_valign(gtk::Align::Center);
     let popover = gtk::Popover::new();

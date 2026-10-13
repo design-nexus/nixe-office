@@ -13,8 +13,9 @@ pub struct Prefs {
     pub glow: bool,
     /// The sidebar shows only icons, whatever the window width.
     pub sidebar_collapsed: bool,
-    /// The ribbon shows only its tabs until one is clicked.
-    pub ribbon_collapsed: bool,
+    /// Whether each editor's Inspector is open (`write`, `sheets`, `present`).
+    /// Missing: open, except in Sheets, where the grid gets the width.
+    pub inspector: std::collections::BTreeMap<String, bool>,
     /// Paper for new documents, PDF export and printing: letter or a4.
     pub paper: String,
     /// Write: underline misspelled words while typing.
@@ -39,7 +40,7 @@ impl Default for Prefs {
             reduce_motion: false,
             glow: true,
             sidebar_collapsed: false,
-            ribbon_collapsed: false,
+            inspector: Default::default(),
             paper: default_paper().into(),
             spellcheck: true,
             spelling_language: String::new(),

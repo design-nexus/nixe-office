@@ -5,9 +5,13 @@
   Each is its own GApplication (`io.github.design_nexus.nixe.Write` …) with its own window.
   Config, data and state folders are shared: `nixe-office`. GTK4 (gtk4-rs 0.11), no
   libadwaita. The look follows `STYLE.md`; the theme, widgets, settings card, window
-  frame and ribbon come from the `nixe-*` crates. Each editor's `build_toolbar` makes its
-  controls and lays them out on a `nixe_ui::ribbon` (File menu first, Find last;
-  contextual tabs follow the visibility of their control groups). Every window colour is a `@theme_*` token. Page
+  frame, command bar and Inspector come from the `nixe-*` crates. Each editor's
+  `build_toolbar` makes its controls and lays them out: what you add on a
+  `nixe_ui::commandbar`, formatting in `nixe_ui::inspector` segments (contextual
+  segments follow the visibility of their control groups), view switches in the status
+  bar (`window::status_tool`). `window::attach_chrome` adds Find, the Inspector toggle
+  and the file's name, and remembers whether the Inspector is open. In Write the
+  comment cards move into the Review segment while the Inspector is open. Every window colour is a `@theme_*` token. Page
   content (paper, ink, cells, slides, charts) keeps fixed document colours so the screen
   matches print; don't theme it.
 - **Shell** (`window.rs`, `home.rs`, `doc.rs`): the window has two pages, Home and the
@@ -17,9 +21,9 @@
   (widget, sidebar group, templates, open/save/snapshot, undo/redo, status, `Find`,
   `Pages`, keys). Editors call `doc::edited()` on every change and
   `doc::status_changed()` when the readout may change. The find bar is inserted after
-  the editor widget's first child (its ribbon). The ribbon folds groups into buttons at
-  narrow widths instead of wrapping. Focus mode (Ctrl+Shift+F, `window::toggle_focus`)
-  collapses it and hides the sidebar and status bar.
+  the editor widget's first child (its command bar). The bar drops labels, then folds
+  tools into `⋯`, at narrow widths instead of wrapping. Focus mode (Ctrl+Shift+F,
+  `window::toggle_focus`) hides the Inspector, the sidebar and the status bar.
   Zoom (`doc::zoom`/`set_zoom`, kept in `~/.local/state/nixe-office/zoom-<app>`, not
   the shared settings) reaches editors through `Editor::set_zoom`. Write and Sheets
   wrap their view in `widgets::zoom_box` (a layout manager that allocates the child
