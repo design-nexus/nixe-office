@@ -1,4 +1,4 @@
-//! Nexus Write: the word processor.
+//! Write: the word processor.
 
 mod autocorrect;
 mod buffer;
@@ -39,7 +39,7 @@ use std::path::Path;
 use std::rc::{Rc, Weak};
 use table::TableWidget;
 
-const FORMAT: &str = "nexus-write";
+const FORMAT: &str = "nixe-write";
 const SIZES: &[&str] =
     &["8", "9", "10", "10.5", "11", "12", "13", "14", "15.5", "16", "18", "20", "24", "26", "28", "32", "36", "48", "60", "72"];
 const UNDO_LIMIT: usize = 100;
@@ -1013,7 +1013,7 @@ impl Writer {
 
     fn read_native(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
         if !container::is_zip(bytes) {
-            bail!("it isn't a Nexus Write file");
+            bail!("it isn't a Write file");
         }
         // Qt-era files hold document.html instead of content.json.
         let legacy = zip::ZipArchive::new(std::io::Cursor::new(bytes)).is_ok_and(|a| a.index_for_name("document.html").is_some());
@@ -1750,7 +1750,7 @@ impl doc::Editor for Writer {
             }
             "md" | "markdown" => markdown::read(&String::from_utf8_lossy(&std::fs::read(path)?), path.parent()),
             "txt" | "text" => (markdown::read_text(&String::from_utf8_lossy(&std::fs::read(path)?)), BTreeMap::new()),
-            _ => bail!("Nexus Write opens .nwrite, .docx, .odt, .md and .txt files"),
+            _ => bail!("Write opens .nwrite, .docx, .odt, .md and .txt files"),
         };
         self.load_fresh(&d, &media);
         Ok(())
@@ -1796,7 +1796,7 @@ impl doc::Editor for Writer {
                 crate::cmd::atomic_write(path, markdown::write_text(&self.document()))?;
                 Ok(vec!["formatting, pictures and tables' layout".into()])
             }
-            _ => bail!("Nexus Write saves .nwrite, .docx, .odt, .md and .txt files"),
+            _ => bail!("Write saves .nwrite, .docx, .odt, .md and .txt files"),
         }
     }
 

@@ -1,4 +1,4 @@
-//! Nexus Sheets: the spreadsheet.
+//! Sheets: the spreadsheet.
 
 mod arrays;
 mod cells;
@@ -34,7 +34,7 @@ use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::{Rc, Weak};
 
-const FORMAT: &str = "nexus-sheets";
+const FORMAT: &str = "nixe-sheets";
 const UNDO_LIMIT: usize = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1673,7 +1673,7 @@ impl doc::Editor for Sheets {
                 }
                 opened.workbook
             }
-            _ => bail!("Nexus Sheets opens .nsheets, .xlsx, .ods and .csv files"),
+            _ => bail!("Sheets opens .nsheets, .xlsx, .ods and .csv files"),
         };
         let chart = wb.sheet().chart.is_some();
         self.load(wb);
@@ -1712,7 +1712,7 @@ impl doc::Editor for Sheets {
                 crate::cmd::atomic_write(path, bytes)?;
                 Ok(lost)
             }
-            _ => bail!("Nexus Sheets saves .nsheets, .xlsx, .ods and .csv files"),
+            _ => bail!("Sheets saves .nsheets, .xlsx, .ods and .csv files"),
         }
     }
 

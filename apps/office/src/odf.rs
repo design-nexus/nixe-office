@@ -122,7 +122,7 @@ pub fn package(mime: &str, content: &str, styles: &str, extras: &[Extra]) -> Res
     }
     manifest.push_str("</manifest:manifest>");
     let meta = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?><office:document-meta {NAMESPACES} xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0"><office:meta><meta:generator>Nexus Office {}</meta:generator></office:meta></office:document-meta>"#,
+        r#"<?xml version="1.0" encoding="UTF-8"?><office:document-meta {NAMESPACES} xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0"><office:meta><meta:generator>Nixe Office {}</meta:generator></office:meta></office:document-meta>"#,
         env!("CARGO_PKG_VERSION")
     );
     for (name, body) in
@@ -174,7 +174,7 @@ impl<'b> Package<'b> {
     pub fn content(&mut self) -> Result<String> {
         // An encrypted package says so in its manifest; its parts are unreadable.
         if self.text("META-INF/manifest.xml").is_some_and(|m| m.contains("encryption-data")) {
-            bail!("it's protected with a password, which Nexus can't open");
+            bail!("it's protected with a password, which can't be opened here");
         }
         self.text("content.xml").context("the file has no content.xml")
     }

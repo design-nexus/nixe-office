@@ -1,5 +1,5 @@
-//! Nexus Office: Write, Sheets and Present in one binary. Each runs as its own
-//! application (`nexus-write`, `nexus-sheets`, `nexus-present`).
+//! Office: Write, Sheets and Present in one binary. Each runs as its own
+//! application (`nixe-write`, `nixe-sheets`, `nixe-present`).
 
 mod app;
 mod cmd;
@@ -28,21 +28,22 @@ use gtk::{gio, glib};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-const USAGE: &str = "Usage: nexus-office --app write|sheets|present [OPTIONS] [FILE]\n\
-       nexus-write [OPTIONS] [FILE]   (also nexus-sheets, nexus-present)\n\
+const USAGE: &str = "Usage: nixe-office --app write|sheets|present [OPTIONS] [FILE]\n\
+       nixe-write [OPTIONS] [FILE]   (also nixe-sheets, nixe-present)\n\
 \n\
   FILE                  open this file\n\
   --new [TEMPLATE]      start a blank file, or one from a template\n\
   --export-pdf OUT      export FILE as a PDF to OUT and quit, without a window\n";
 
 fn main() -> glib::ExitCode {
-    nixe_core::app::init(nixe_core::app::App { slug: "nexus-office", name: "Office" });
+    nixe_core::app::init(nixe_core::app::App { slug: "nixe-office", name: "Office" });
+    nixe_core::migrate::from(&["nexus-office"]);
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print!("{USAGE}");
         return glib::ExitCode::SUCCESS;
     }
-    // nexus-write, or nexus-office --app write.
+    // nixe-write, or nixe-office --app write.
     let from_name =
         args.first().and_then(|a| std::path::Path::new(a).file_name()).and_then(|n| app::Kind::parse(&n.to_string_lossy()));
     let from_flag = args.iter().position(|a| a == "--app").and_then(|i| args.get(i + 1)).and_then(|v| app::Kind::parse(v));
@@ -122,7 +123,7 @@ fn make_editor() -> Rc<dyn doc::Editor> {
 /// `--export-pdf OUT FILE`: open FILE, write OUT, and quit.
 fn export_headless(file: Option<&PathBuf>, out: Option<PathBuf>) -> glib::ExitCode {
     let (Some(file), Some(out)) = (file, out) else {
-        eprintln!("nexus-office: --export-pdf needs a file to open and a PDF to write");
+        eprintln!("nixe-office: --export-pdf needs a file to open and a PDF to write");
         return glib::ExitCode::FAILURE;
     };
     theme::install();
@@ -134,7 +135,7 @@ fn export_headless(file: Option<&PathBuf>, out: Option<PathBuf>) -> glib::ExitCo
             glib::ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("nexus-office: couldn't export {}: {e:#}", file.display());
+            eprintln!("nixe-office: couldn't export {}: {e:#}", file.display());
             glib::ExitCode::FAILURE
         }
     }

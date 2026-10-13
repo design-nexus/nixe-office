@@ -789,7 +789,7 @@ impl Deck {
     pub fn from_legacy_json(bytes: &[u8]) -> anyhow::Result<(Deck, BTreeMap<String, Vec<u8>>)> {
         let v: serde_json::Value = serde_json::from_slice(bytes)?;
         if v.get("format").and_then(|f| f.as_str()) != Some("nexus-present") {
-            anyhow::bail!("it isn't a Nexus Present file");
+            anyhow::bail!("it isn't a Present file");
         }
         let mut media = BTreeMap::new();
         let mut slides = Vec::new();

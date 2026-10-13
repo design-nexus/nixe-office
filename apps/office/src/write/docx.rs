@@ -166,7 +166,7 @@ fn tracked_run(t: &TextRun, revisions: &[Revision]) -> String {
         _ => return text_run(t),
     };
     let rev = revisions.iter().find(|r| r.id == id);
-    let author = esc(rev.map(|r| r.author.as_str()).filter(|a| !a.is_empty()).unwrap_or("Nexus Write"));
+    let author = esc(rev.map(|r| r.author.as_str()).filter(|a| !a.is_empty()).unwrap_or("Write"));
     let date = rev.map(|r| r.date.as_str()).filter(|d| !d.is_empty()).map(|d| format!(r#" w:date="{}""#, esc(d))).unwrap_or_default();
     let mut runs = text_run(t);
     if tag == "del" {

@@ -514,7 +514,7 @@ fn media_file(name: &str, bytes: &[u8]) -> Option<std::path::PathBuf> {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     bytes.hash(&mut h);
     let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("bin");
-    let dir = glib::user_cache_dir().join("nexus-office").join("media");
+    let dir = crate::paths::cache_dir().join("media");
     let path = dir.join(format!("{:016x}.{ext}", h.finish()));
     if !path.exists() {
         std::fs::create_dir_all(&dir).ok()?;

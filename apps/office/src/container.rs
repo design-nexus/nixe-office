@@ -1,7 +1,7 @@
 //! The native file format shared by all three apps: a ZIP holding
 //!
 //! - `mimetype` (stored first and uncompressed, like ODF, so tools can sniff it),
-//! - `manifest.json` (`{"format": "nexus-write", "version": 3}`),
+//! - `manifest.json` (`{"format": "nixe-write", "version": 3}`),
 //! - `content.json` (the app's own document model),
 //! - `media/…` (pictures, referenced from the content by name).
 
@@ -28,7 +28,7 @@ pub struct Container {
     pub media: BTreeMap<String, Vec<u8>>,
 }
 
-/// `format` is `nexus-write`, `nexus-sheets` or `nexus-present`.
+/// `format` is `nixe-write`, `nixe-sheets` or `nixe-present`.
 pub fn write(format: &str, content: &[u8], media: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>> {
     use zip::write::SimpleFileOptions;
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
@@ -37,7 +37,7 @@ pub fn write(format: &str, content: &[u8], media: &BTreeMap<String, Vec<u8>>) ->
     zip.start_file("mimetype", stored)?;
     zip.write_all(format!("application/x-{format}").as_bytes())?;
     let manifest =
-        Manifest { format: format.into(), version: VERSION, generator: format!("Nexus Office {}", env!("CARGO_PKG_VERSION")) };
+        Manifest { format: format.into(), version: VERSION, generator: format!("Nixe Office {}", env!("CARGO_PKG_VERSION")) };
     zip.start_file("manifest.json", deflated)?;
     zip.write_all(&serde_json::to_vec_pretty(&manifest)?)?;
     zip.start_file("content.json", deflated)?;
@@ -114,7 +114,7 @@ pub fn transitional(xml: String) -> String {
 pub fn not_a_package(bytes: &[u8], what: &str) -> String {
     if bytes.starts_with(&[0xd0, 0xcf, 0x11, 0xe0]) {
         // The old binary container: Office 97–2003 files, and password-protected ones.
-        format!("it's protected with a password, or an older {what} (from Office 97–2003), which Nexus can't open")
+        format!("it's protected with a password, or an older {what} (from Office 97–2003), which can't be opened here")
     } else {
         let article = if what.starts_with(['A', 'E', 'I', 'O', 'U']) { "an" } else { "a" };
         format!("it isn't {article} {what}, or it's damaged")
@@ -146,16 +146,28 @@ pub fn read_capped(r: impl Read, max: u64) -> std::io::Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Files saved before the suite was called Nixe say `nexus-write` and so on.
+fn same_format(found: &str, wanted: &str) -> bool {
+    found == wanted || found.strip_prefix("nexus-").is_some_and(|k| wanted.strip_prefix("nixe-") == Some(k))
+}
+
+/// `nixe-sheets` → "Sheets".
+fn display_format(format: &str) -> String {
+    let kind = format.trim_start_matches("nixe-").trim_start_matches("nexus-");
+    let mut c = kind.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+}
+
 pub fn read(bytes: &[u8], format: &str) -> Result<Container> {
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).context("not a Nexus file")?;
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).context("not a Write, Sheets or Present file")?;
     let manifest: Manifest =
         serde_json::from_slice(&read_entry(&mut archive, "manifest.json")?.context("the file has no manifest")?)
             .context("the manifest is damaged")?;
-    if manifest.format != format {
-        bail!("this is a {} file", manifest.format.replace("nexus-", "Nexus "));
+    if !same_format(&manifest.format, format) {
+        bail!("this is a {} file", display_format(&manifest.format));
     }
     if manifest.version > VERSION {
-        bail!("it was made by a newer version of Nexus Office");
+        bail!("it was made by a newer version of Nixe Office");
     }
     let content = read_entry(&mut archive, "content.json")?.context("the file has no content")?;
     let mut media = BTreeMap::new();
@@ -177,14 +189,18 @@ mod tests {
     fn round_trips() {
         let mut media = BTreeMap::new();
         media.insert("a.png".to_string(), vec![1, 2, 3]);
-        let bytes = write("nexus-write", br#"{"x":1}"#, &media).unwrap();
+        let bytes = write("nixe-write", br#"{"x":1}"#, &media).unwrap();
         assert!(is_zip(&bytes));
-        // File managers find the type at byte 38, as in ODF (packaging/nexus-office.xml).
-        assert_eq!(&bytes[38..38 + 25], b"application/x-nexus-write");
-        let c = read(&bytes, "nexus-write").unwrap();
+        // File managers find the type at byte 38, as in ODF (data/nixe-office.xml).
+        assert_eq!(&bytes[38..38 + 24], b"application/x-nixe-write");
+        let c = read(&bytes, "nixe-write").unwrap();
         assert_eq!(c.content, br#"{"x":1}"#);
         assert_eq!(c.media["a.png"], vec![1, 2, 3]);
-        assert!(read(&bytes, "nexus-sheets").is_err());
+        assert!(read(&bytes, "nixe-sheets").is_err());
+        // A file saved before the rename still opens.
+        let old = write("nexus-write", br#"{"x":1}"#, &media).unwrap();
+        assert!(read(&old, "nixe-write").is_ok());
+        assert_eq!(read(&old, "nixe-sheets").err().map(|e| e.to_string()).as_deref(), Some("this is a Write file"));
     }
 
     #[test]

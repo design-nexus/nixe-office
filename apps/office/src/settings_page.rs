@@ -89,7 +89,7 @@ pub fn build(page: &Page) {
     let options: Vec<(String, String)> = app_themes.iter().map(|t| (t.id.clone(), t.name.clone())).collect();
     let (theme_row, theme_dd) = widgets::choice_row(
         "Theme",
-        "Dracula, Catppuccin, Tokyo Night, One Dark Pro and more. Add your own in <tt>~/.config/nexus-office/themes</tt>.",
+        "Dracula, Catppuccin, Tokyo Night, One Dark Pro and more. Add your own in <tt>~/.config/nixe-office/themes</tt>.",
         options,
         &p.theme,
         |id| {
@@ -160,5 +160,5 @@ pub fn build(page: &Page) {
             g.add(&widgets::row(what, "", Some(widgets::key_caps(k).upcast_ref())));
         }
     }
-    g.note(&format!("Open a file from a terminal or a binding with <tt>nexus-{} FILE</tt>.", kind.id()));
+    g.note(&format!("Open a file from a terminal or a binding with <tt>nixe-{} FILE</tt>.", kind.id()));
 }

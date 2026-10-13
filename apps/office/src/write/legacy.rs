@@ -1,4 +1,4 @@
-//! Documents saved by the Qt version of Nexus Write: a ZIP of `manifest.json`,
+//! Documents saved by the Qt version of Write (then Nexus Write): a ZIP of `manifest.json`,
 //! `document.html` (Qt rich text) and `media/*.png`. They open as before and
 //! save in the current format.
 
@@ -9,12 +9,12 @@ use std::collections::BTreeMap;
 use std::io::Cursor;
 
 pub fn read(bytes: &[u8]) -> Result<(Document, BTreeMap<String, Vec<u8>>)> {
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).context("not a Nexus Write file")?;
-    let html = container::read_entry(&mut archive, "document.html")?.context("not a Nexus Write file")?;
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).context("not a Write file")?;
+    let html = container::read_entry(&mut archive, "document.html")?.context("not a Write file")?;
     let manifest: serde_json::Value =
         container::read_entry(&mut archive, "manifest.json")?.and_then(|m| serde_json::from_slice(&m).ok()).unwrap_or_default();
     if manifest.get("format").and_then(|v| v.as_str()) != Some("nexus-write") {
-        bail!("not a Nexus Write file");
+        bail!("not a Write file");
     }
     let mut media = BTreeMap::new();
     let names: Vec<String> =

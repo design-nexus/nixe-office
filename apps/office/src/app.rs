@@ -24,7 +24,7 @@ pub fn kind() -> Kind {
 
 impl Kind {
     pub fn parse(id: &str) -> Option<Kind> {
-        match id.trim_start_matches("nexus-") {
+        match id.trim_start_matches("nixe-").trim_start_matches("nexus-") {
             "write" => Some(Kind::Write),
             "sheets" => Some(Kind::Sheets),
             "present" => Some(Kind::Present),
@@ -52,17 +52,17 @@ impl Kind {
 
     pub fn full_name(self) -> &'static str {
         match self {
-            Kind::Write => "Nexus Write",
-            Kind::Sheets => "Nexus Sheets",
-            Kind::Present => "Nexus Present",
+            Kind::Write => "Write",
+            Kind::Sheets => "Sheets",
+            Kind::Present => "Present",
         }
     }
 
     pub fn app_id(self) -> &'static str {
         match self {
-            Kind::Write => "io.github.design_nexus.Write",
-            Kind::Sheets => "io.github.design_nexus.Sheets",
-            Kind::Present => "io.github.design_nexus.Present",
+            Kind::Write => "io.github.design_nexus.nixe.Write",
+            Kind::Sheets => "io.github.design_nexus.nixe.Sheets",
+            Kind::Present => "io.github.design_nexus.nixe.Present",
         }
     }
 
@@ -106,7 +106,7 @@ impl Kind {
     pub fn save_formats(self) -> &'static [(&'static str, &'static str)] {
         match self {
             Kind::Write => &[
-                ("Nexus Write document", "nwrite"),
+                ("Write document", "nwrite"),
                 ("Word document", "docx"),
                 ("OpenDocument text", "odt"),
                 ("Markdown", "md"),
@@ -114,14 +114,14 @@ impl Kind {
             ],
             Kind::Sheets => {
                 &[
-                    ("Nexus Sheets workbook", "nsheets"),
+                    ("Sheets workbook", "nsheets"),
                     ("Excel workbook", "xlsx"),
                     ("OpenDocument spreadsheet", "ods"),
                     ("CSV (one sheet, values only)", "csv"),
                 ]
             }
             Kind::Present => {
-                &[("Nexus Present slides", "npresent"), ("PowerPoint slides", "pptx"), ("OpenDocument presentation", "odp")]
+                &[("Present slides", "npresent"), ("PowerPoint slides", "pptx"), ("OpenDocument presentation", "odp")]
             }
         }
     }

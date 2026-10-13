@@ -1,4 +1,4 @@
-//! Preferences shared by Write, Sheets and Present (`~/.config/nexus-office/settings.toml`).
+//! Preferences shared by Write, Sheets and Present (`~/.config/nixe-office/settings.toml`).
 
 pub use nixe_theme::ThemeMode;
 

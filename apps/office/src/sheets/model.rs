@@ -1657,7 +1657,7 @@ impl Workbook {
     pub fn from_legacy_json(bytes: &[u8]) -> anyhow::Result<Workbook> {
         let v: serde_json::Value = serde_json::from_slice(bytes)?;
         if v.get("format").and_then(|f| f.as_str()) != Some("nexus-sheets") {
-            anyhow::bail!("it isn't a Nexus Sheets file");
+            anyhow::bail!("it isn't a Sheets file");
         }
         let one = |o: &serde_json::Value| -> (Sheet, Option<Sort>) {
             let get_i = |k: &str, d: i64| o.get(k).and_then(|x| x.as_i64()).unwrap_or(d);
@@ -1731,7 +1731,7 @@ impl Workbook {
                 let active = (v.get("activeSheet").and_then(|x| x.as_u64()).unwrap_or(0) as usize).min(parts.len() - 1);
                 (parts, active)
             }
-            _ => anyhow::bail!("it was made by a newer version of Nexus Sheets"),
+            _ => anyhow::bail!("it was made by a newer version of Sheets"),
         };
         let sorts: Vec<Option<Sort>> = parts.iter().map(|(_, s)| *s).collect();
         let mut wb = Workbook { sheets: parts.into_iter().map(|(s, _)| s).collect(), active, names: Vec::new() };

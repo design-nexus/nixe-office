@@ -39,12 +39,12 @@ fn shape_from_type(t: &str) -> Shape {
 /// Our layouts by the name we give their ODF page layouts.
 fn layout_id(l: Layout) -> &'static str {
     match l {
-        Layout::Title => "Nexus-Title",
-        Layout::Content => "Nexus-Content",
-        Layout::TwoColumns => "Nexus-TwoColumns",
-        Layout::Picture => "Nexus-Picture",
-        Layout::Section => "Nexus-Section",
-        Layout::Blank => "Nexus-Blank",
+        Layout::Title => "Nixe-Title",
+        Layout::Content => "Nixe-Content",
+        Layout::TwoColumns => "Nixe-TwoColumns",
+        Layout::Picture => "Nixe-Picture",
+        Layout::Section => "Nixe-Section",
+        Layout::Blank => "Nixe-Blank",
     }
 }
 

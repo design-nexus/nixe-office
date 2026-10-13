@@ -834,7 +834,7 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
                 if let Some(text) = &cell.comment {
                     let _ = write!(
                         body,
-                        "<office:annotation><dc:creator>Nexus Sheets</dc:creator>{}</office:annotation>",
+                        "<office:annotation><dc:creator>Sheets</dc:creator>{}</office:annotation>",
                         text.split('\n').map(|l| format!("<text:p>{}</text:p>", odf::text_xml(l))).collect::<String>()
                     );
                 }

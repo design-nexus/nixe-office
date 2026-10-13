@@ -1,4 +1,4 @@
-//! Recently opened files, one list per app (`~/.local/share/nexus-office/recent-<app>.json`).
+//! Recently opened files, one list per app (`~/.local/share/nixe-office/recent-<app>.json`).
 
 use crate::{app, cmd, paths};
 use serde::{Deserialize, Serialize};

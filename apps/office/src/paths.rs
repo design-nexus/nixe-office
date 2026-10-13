@@ -12,12 +12,12 @@ pub fn recent_file(app: &str) -> PathBuf {
 
 /// Snapshots of unsaved work, one folder per app.
 pub fn recovery_dir(app: &str) -> PathBuf {
-    state_home().join("nexus-office/recovery").join(app)
+    state_dir().join("recovery").join(app)
 }
 
 /// Each app's zoom, a number on its own (`write`, `sheets`, `present`).
 pub fn zoom_file(app: &str) -> PathBuf {
-    state_home().join("nexus-office").join(format!("zoom-{app}"))
+    state_dir().join(format!("zoom-{app}"))
 }
 
 pub fn documents_dir() -> PathBuf {

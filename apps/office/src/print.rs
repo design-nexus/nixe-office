@@ -111,7 +111,7 @@ pub fn print(pages: Rc<dyn Pages>, title: &str) {
     op.set_embed_page_setup(true);
     let (w, h) = pages.size();
     let setup = gtk::PageSetup::new();
-    let size = gtk::PaperSize::new_custom("nexus", "Document", w, h, gtk::Unit::Points);
+    let size = gtk::PaperSize::new_custom("nixe", "Document", w, h, gtk::Unit::Points);
     setup.set_paper_size(&size);
     setup.set_orientation(if w > h { gtk::PageOrientation::Landscape } else { gtk::PageOrientation::Portrait });
     op.set_default_page_setup(Some(&setup));

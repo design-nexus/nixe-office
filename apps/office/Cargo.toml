@@ -1,14 +1,14 @@
 [package]
-name = "nexus-office"
+name = "nixe-office"
 version = "0.2.0"
-description = "Nexus Write, Sheets and Present: documents, spreadsheets and slides for Omarchy"
+description = "Write, Sheets and Present: documents, spreadsheets and slides for Omarchy"
 license = "MIT"
-repository = "https://github.com/design-nexus/nexus-office-suite"
+repository = "https://github.com/design-nexus/nixe"
 authors = ["Ken Smith"]
 edition = "2024"
 
 [[bin]]
-name = "nexus-office"
+name = "nixe-office"
 path = "src/main.rs"
 
 [dependencies]

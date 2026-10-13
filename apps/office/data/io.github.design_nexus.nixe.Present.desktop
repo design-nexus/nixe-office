@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Present
+GenericName=Presentation
+Comment=Make and show slides; opens PowerPoint files
+Exec=nixe-present %f
+Icon=x-office-presentation
+Terminal=false
+Categories=Office;Presentation;GTK;
+Keywords=presentation;slides;slideshow;powerpoint;pptx;odp;
+MimeType=application/x-nixe-present;application/x-nexus-present;application/vnd.openxmlformats-officedocument.presentationml.presentation;application/vnd.oasis.opendocument.presentation;
+StartupNotify=true
+StartupWMClass=io.github.design_nexus.nixe.Present

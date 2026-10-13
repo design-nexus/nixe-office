@@ -1,4 +1,4 @@
-//! Nexus Present: slides.
+//! Present: slides.
 
 pub mod model;
 mod arrange;
@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::rc::{Rc, Weak};
 
-const FORMAT: &str = "nexus-present";
+const FORMAT: &str = "nixe-present";
 const UNDO_LIMIT: usize = 80;
 const SIZES: &[&str] =
     &["14", "16", "18", "20", "24", "26", "28", "32", "36", "40", "42", "44", "48", "50", "54", "60", "72", "88"];
@@ -1834,7 +1834,7 @@ impl doc::Editor for Present {
                 None if ext == "odp" => odp::read(&bytes)?,
                 None => pptx::read(&bytes)?,
             },
-            _ => bail!("Nexus Present opens .npresent, .pptx and .odp files"),
+            _ => bail!("Present opens .npresent, .pptx and .odp files"),
         };
         self.load(deck, media);
         Ok(())
@@ -1858,7 +1858,7 @@ impl doc::Editor for Present {
                 crate::cmd::atomic_write(path, bytes)?;
                 Ok(lost)
             }
-            _ => bail!("Nexus Present saves .npresent, .pptx and .odp files"),
+            _ => bail!("Present saves .npresent, .pptx and .odp files"),
         }
     }
 

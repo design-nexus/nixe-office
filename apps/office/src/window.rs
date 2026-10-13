@@ -1131,7 +1131,7 @@ pub fn navigate(id: &str) {
 /// Show a short message at the bottom of the window. It replaces any toast showing.
 pub fn toast(message: &str) {
     let Some(overlay) = overlay() else {
-        eprintln!("nexus-office: {message}");
+        eprintln!("nixe-office: {message}");
         return;
     };
     if let Some(old) = TOAST.with(|t| t.borrow_mut().take()) {
@@ -1175,7 +1175,7 @@ fn snapshot_and_quit(app: &gtk::Application, out: std::path::PathBuf) {
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     keys.connect_key_pressed(|_, _, _, _| glib::Propagation::Stop);
     window.add_controller(keys);
-    window.set_title(Some("Nexus Office snapshot"));
+    window.set_title(Some("Office snapshot"));
     window.set_default_size(
         std::env::var("NXO_SNAPSHOT_W").ok().and_then(|v| v.parse().ok()).unwrap_or(1120),
         std::env::var("NXO_SNAPSHOT_H").ok().and_then(|v| v.parse().ok()).unwrap_or(800),

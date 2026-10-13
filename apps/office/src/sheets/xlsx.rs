@@ -1081,7 +1081,7 @@ pub fn write(wb: &Workbook, calc: &Calc) -> Result<(Vec<u8>, Vec<String>)> {
         }
         for ((r, c), cell) in &s.cells {
             if let Some(text) = &cell.comment {
-                ws.insert_note(*r, *c as u16, &rust_xlsxwriter::Note::new(text).set_author("Nexus Sheets").add_author_prefix(false))?;
+                ws.insert_note(*r, *c as u16, &rust_xlsxwriter::Note::new(text).set_author("Sheets").add_author_prefix(false))?;
             }
         }
         for rule in &s.rules {
