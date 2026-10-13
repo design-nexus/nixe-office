@@ -36,6 +36,7 @@ const USAGE: &str = "Usage: nexus-office --app write|sheets|present [OPTIONS] [F
   --export-pdf OUT      export FILE as a PDF to OUT and quit, without a window\n";
 
 fn main() -> glib::ExitCode {
+    nixe_core::app::init(nixe_core::app::App { slug: "nexus-office", name: "Office" });
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print!("{USAGE}");
