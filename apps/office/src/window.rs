@@ -269,6 +269,7 @@ fn build(app: &gtk::Application) {
     window.add_css_class(&format!("app-{}", kind.id()));
     // No client-side titlebar: Hyprland manages the window.
     window.set_titlebar(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
+    nixe_ui::keys::install(&window, nixe_ui::keys::Common { shortcuts: Some(show_shortcuts), ..Default::default() });
     window.set_icon_name(Some(kind.app_id()));
     let editor = doc::editor().expect("the editor is set before the window is built");
 
@@ -786,7 +787,7 @@ pub const WINDOW_SHORTCUTS: &[doc::Shortcut] = &[
     (&["Ctrl", ","], "Settings"),
     (&["F11"], "Fullscreen"),
     (&["Esc"], "Close the find bar or search"),
-    (&["F1"], "Show these shortcuts"),
+    (&["F1"], "Show these shortcuts (or ?)"),
     (&["Ctrl", "Q"], "Quit (also Ctrl+W)"),
 ];
 
