@@ -1,6 +1,6 @@
 [package]
 name = "nixe-office"
-version = "0.2.0"
+version = "0.1.0"
 description = "Write, Sheets and Present: documents, spreadsheets and slides for Omarchy"
 license = "MIT"
 repository = "https://github.com/design-nexus/nixe"
