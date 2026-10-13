@@ -417,35 +417,66 @@ impl Sheets {
         let print = self.print_button();
         let chart = toggle("nxo-chart-column-symbolic", "Chart pane", |s, on| s.show_chart(on));
 
-        // ----- The command bar: what you add and do -----
+        // ----- The command bar: what's used most, as icons -----
         let bar = CommandBar::new();
         let file = doc::file_menu(Vec::new());
         bar.lead(&[file.upcast_ref(), undo.upcast_ref(), redo.upcast_ref()]);
-        bar.tool(&place_chart, "nxo-chart-area-symbolic", "Chart", 50);
-        bar.tool(&as_table, "nxo-table-2-symbolic", "Table", 40);
-        bar.tool(&comment, "nxo-message-square-text-symbolic", "Comment", 30);
-        bar.tool(&sort_up, "nxo-arrow-up-narrow-wide-symbolic", "Sort A→Z", 45);
-        bar.tool(&filter, "nxo-filter-symbolic", "Filter", 45);
+        bar.group(90);
+        bar.toggle_of(&bold, "nxo-bold-symbolic", "Bold");
+        bar.toggle_of(&italic, "nxo-italic-symbolic", "Italic");
+        bar.group(60);
+        let align_names =
+            [("nxo-align-left-symbolic", "Align left"), ("nxo-align-center-symbolic", "Centre"), ("nxo-align-right-symbolic", "Align right")];
+        for ((_, b), (icon, name)) in align.iter().zip(align_names) {
+            bar.toggle_of(b, icon, name);
+        }
+        bar.group(70);
+        bar.toggle_of(&numbers[2].1, "nxo-currency-symbolic", "Currency");
+        bar.toggle_of(&numbers[3].1, "nxo-percent-symbolic", "Percent");
+        bar.group(50);
+        bar.button_of(&merge, "nxo-table-cells-merge-symbolic", "Merge");
+        bar.toggle_of(&wrap, "nxo-wrap-text-symbolic", "Wrap text");
+        bar.group(80);
+        bar.tool(&sort_up, "nxo-arrow-up-narrow-wide-symbolic", "Sort A to Z");
+        bar.tool(&filter, "nxo-filter-symbolic", "Filter");
+        bar.group(75);
+        bar.tool(&place_chart, "nxo-chart-area-symbolic", "Chart");
+        bar.tool(&comment, "nxo-message-square-text-symbolic", "Comment");
+        // In ⋯: copies of the Inspector's, so both work.
+        let forward = |src: &gtk::Button| {
+            let b = gtk::Button::new();
+            b.set_tooltip_text(src.tooltip_text().as_deref());
+            let s = src.clone();
+            b.connect_clicked(move |_| s.emit_clicked());
+            b
+        };
+        bar.more(&as_table, "nxo-table-2-symbolic", "Format as table");
+        bar.more(&forward(&sort_down), "nxo-arrow-down-symbolic", "Sort Z to A");
+        bar.more(&forward(&sort_more), "nxo-sliders-horizontal-symbolic", "Sort by several columns");
+        bar.more(&forward(&rules), "nxo-highlighter-symbolic", "Highlight rules");
+        bar.more(&forward(&summarize), "nxo-sigma-symbolic", "Summarize");
         let print_now = gtk::Button::new();
         print_now.set_tooltip_text(Some("Print (Ctrl+P)"));
         print_now.connect_clicked(|_| doc::print_now());
-        bar.more(&print_now, "nxo-printer-symbolic", "Print…");
+        bar.more(&print_now, "nxo-printer-symbolic", "Print");
 
         // ----- The Inspector: how the cells look -----
         let insp = Inspector::new();
         let cell = insp.segment("Cell");
         let s = cell.section("Text");
-        let style = inspector::segmented(&[bold.upcast_ref(), italic.upcast_ref()]);
-        s.row(&[style.upcast_ref(), color.button.upcast_ref()]);
-        let s = cell.section("Fill and borders");
-        inspector::labelled(&borders, "nxo-grid-2x2-symbolic", "Borders");
-        s.row(&[fill.button.upcast_ref(), borders.upcast_ref()]);
+        s.segmented(&[bold.upcast_ref(), italic.upcast_ref()]);
+        color.labelled("Text colour");
+        fill.labelled("Fill");
+        s.row(&[color.button.upcast_ref(), fill.button.upcast_ref()]);
         let s = cell.section("Alignment");
         let aligns: Vec<gtk::Widget> = align.iter().map(|(_, b)| b.clone().upcast()).collect();
         s.segmented(&aligns.iter().collect::<Vec<_>>());
         inspector::labelled(&wrap, "nxo-wrap-text-symbolic", "Wrap");
         inspector::labelled(&merge, "nxo-table-cells-merge-symbolic", "Merge");
         s.row(&[wrap.upcast_ref(), merge.upcast_ref()]);
+        let s = cell.section("Borders");
+        inspector::labelled(&borders, "nxo-grid-2x2-symbolic", "Borders");
+        s.add(&borders);
         let s = cell.section("Cell type");
         inspector::labelled(&checkbox, "nxo-square-check-symbolic", "Checkboxes");
         s.add(&checkbox);

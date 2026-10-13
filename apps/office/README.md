@@ -9,9 +9,9 @@ half-screen tile; the page itself keeps its own colors, so what you see is what 
 ## What they do
 
 Every app starts on **Home**: a blank file, starter templates, and your recent files.
-In a file, the bar at the top holds what you add (a table, a picture, a slide) and the
-**Inspector** at the right holds the formatting for what's selected, in labelled
-sections (<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>I</kbd> shows and hides it). Then:
+In a file, the bar at the top holds what you use most, as icons (bold, alignment,
+lists, a picture, a table, a new slide), and the **Inspector** at the right holds all
+the formatting for what's selected, in labelled sections (<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>I</kbd> shows and hides it). Then:
 
 - **Write**
   - Paragraph styles (title, three headings, quote), font, size, bold, italic,

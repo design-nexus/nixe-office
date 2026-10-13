@@ -95,6 +95,19 @@ pub fn button(
     cb
 }
 
+impl ColorButton {
+    /// Show `label` beside the icon and its colour strip (in the Inspector).
+    pub fn labelled(&self, label: &str) {
+        let Some(face) = self.button.child() else { return };
+        self.button.set_child(None::<&gtk::Widget>);
+        let row = widgets::hbox(8);
+        row.set_halign(gtk::Align::Center);
+        row.append(&face);
+        row.append(&widgets::label(label, ""));
+        self.button.set_child(Some(&row));
+    }
+}
+
 /// A round swatch of colour `c`.
 pub fn dot(c: &str) -> gtk::Box {
     let d = gtk::Box::new(gtk::Orientation::Horizontal, 0);

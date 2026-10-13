@@ -520,14 +520,33 @@ impl Writer {
         });
         let file = doc::file_menu(vec![("Page setup…", setup.clone())]);
 
-        // ----- The command bar: what you add -----
+        // ----- The command bar: what's used most, as icons -----
         let bar = CommandBar::new();
         bar.lead(&[file.upcast_ref(), undo.upcast_ref(), redo.upcast_ref()]);
-        bar.tool(&table, "nxo-table-2-symbolic", "Table", 50);
-        bar.tool(&image, "nxo-image-symbolic", "Picture", 50);
-        bar.tool(&chart, "nxo-chart-column-symbolic", "Chart", 40);
-        bar.tool(&shapes, "nxo-shapes-symbolic", "Shape", 40);
-        bar.tool(&comment, "nxo-message-square-plus-symbolic", "Comment", 30);
+        bar.group(90);
+        bar.toggle_of(&bold, "nxo-bold-symbolic", "Bold");
+        bar.toggle_of(&italic, "nxo-italic-symbolic", "Italic");
+        bar.toggle_of(&underline, "nxo-underline-symbolic", "Underline");
+        bar.group(60);
+        let align_names = [
+            ("nxo-align-left-symbolic", "Align left"),
+            ("nxo-align-center-symbolic", "Centre"),
+            ("nxo-align-right-symbolic", "Align right"),
+            ("format-justify-fill-symbolic", "Justify"),
+        ];
+        for ((_, b), (icon, name)) in align.iter().zip(align_names) {
+            bar.toggle_of(b, icon, name);
+        }
+        bar.group(70);
+        bar.toggle_of(&bullet, "nxo-list-symbolic", "Bulleted list");
+        bar.toggle_of(&number, "nxo-list-ordered-symbolic", "Numbered list");
+        bar.group(80);
+        bar.tool(&image, "nxo-image-symbolic", "Picture");
+        bar.tool(&table, "nxo-table-2-symbolic", "Table");
+        bar.button_of(&link, "nxo-link-symbolic", "Link");
+        bar.tool(&comment, "nxo-message-square-plus-symbolic", "Comment");
+        bar.more(&chart, "nxo-chart-column-symbolic", "Chart");
+        bar.more(&shapes, "nxo-shapes-symbolic", "Shape");
         bar.more(&note, "nxo-superscript-symbolic", "Footnote");
         bar.more(&endnote, "nxo-notebook-pen-symbolic", "Endnote");
         bar.more(&toc, "nxo-list-tree-symbolic", "Contents");
@@ -548,7 +567,9 @@ impl Writer {
             superscript.upcast_ref(),
             subscript.upcast_ref(),
         ]);
-        s.row(&[color.button.upcast_ref(), highlight.button.upcast_ref(), painter.upcast_ref()]);
+        color.labelled("Text colour");
+        highlight.labelled("Highlight");
+        s.row(&[color.button.upcast_ref(), highlight.button.upcast_ref()]);
         let s = text.section("Paragraph");
         let aligns: Vec<gtk::Widget> = align.iter().map(|(_, b)| b.clone().upcast()).collect();
         s.segmented(&aligns.iter().collect::<Vec<_>>());
@@ -561,6 +582,8 @@ impl Writer {
         inspector::labelled(&link, "nxo-link-symbolic", "Link");
         inspector::labelled(&symbols, "nxo-omega-symbolic", "Symbol");
         s.row(&[link.upcast_ref(), symbols.upcast_ref()]);
+        inspector::labelled(&painter, "nxo-paintbrush-symbolic", "Copy formatting");
+        s.add(&painter);
 
         let page = insp.segment("Page");
         let s = page.section("Page");
@@ -630,6 +653,7 @@ impl Writer {
         let drawing_seg = insp.contextual_segment("Drawing");
         let s = drawing_seg.section("Drawing");
         s.field("Width", &figure_width);
+        figure_fill.labelled("Shape colour");
         s.row(&[figure_fill.button.upcast_ref(), figure_data.upcast_ref()]);
         for (part, name) in [(&picture, "Picture"), (&figure, "Drawing")] {
             let i = Rc::downgrade(&insp);

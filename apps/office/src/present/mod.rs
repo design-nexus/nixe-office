@@ -507,33 +507,53 @@ impl Present {
         let mut extra: Vec<doc::MenuItem> = vec![("Present from the start", from_start)];
         extra.extend(self.export_items());
 
-        // ----- The command bar: what you add, and playing the show -----
+        // ----- The command bar: what's used most, as icons -----
         let bar = CommandBar::new();
         let file = doc::file_menu(extra);
         bar.lead(&[file.upcast_ref(), undo.upcast_ref(), redo.upcast_ref()]);
-        bar.primary(&new_slide, "nxo-plus-symbolic", "New slide");
-        bar.tool(&text_box, "nxo-text-cursor-symbolic", "Text", 50);
-        bar.tool(&picture, "nxo-image-symbolic", "Picture", 50);
-        bar.tool(&shapes, "nxo-shapes-symbolic", "Shape", 40);
-        bar.tool(&table, "nxo-table-2-symbolic", "Table", 30);
-        bar.tool(&chart, "nxo-chart-column-symbolic", "Chart", 30);
-        bar.tool(&media, "nxo-film-symbolic", "Media", 20);
+        bar.primary(&new_slide, "nxo-plus-symbolic");
+        bar.group(80);
+        bar.tool(&text_box, "nxo-text-cursor-symbolic", "Text box");
+        bar.tool(&picture, "nxo-image-symbolic", "Picture");
+        bar.tool(&shapes, "nxo-shapes-symbolic", "Shape");
+        bar.group(60);
+        bar.tool(&table, "nxo-table-2-symbolic", "Table");
+        bar.tool(&chart, "nxo-chart-column-symbolic", "Chart");
+        bar.tool(&media, "nxo-film-symbolic", "Video or audio");
+        bar.group(70);
+        bar.toggle_of(&bold, "nxo-bold-symbolic", "Bold");
+        bar.toggle_of(&italic, "nxo-italic-symbolic", "Italic");
         bar.more(&number, "nxo-book-marked-symbolic", "Slide number");
+        // Play: from the start, or from this slide on its arrow.
+        let split = widgets::hbox(0);
+        split.add_css_class("commandbar-split");
+        split.set_valign(gtk::Align::Center);
+        let play_main = gtk::Button::from_icon_name("nxo-play-symbolic");
+        play_main.set_tooltip_text(Some("Play the slideshow from the start (F5)"));
+        let s2 = start.clone();
+        play_main.connect_clicked(move |_| s2.emit_clicked());
         let play_menu = gtk::MenuButton::new();
-        play_menu.set_tooltip_text(Some("Play the slideshow (F5, or Shift+F5 from this slide)"));
+        play_menu.set_icon_name("nxo-chevron-down-symbolic");
+        play_menu.set_tooltip_text(Some("Play from the start, or from this slide (Shift+F5)"));
         let pop = gtk::Popover::new();
         pop.add_css_class("commandbar-menu");
         pop.set_has_arrow(false);
         let rows = widgets::vbox(0);
         for b in [&start, &play] {
             b.add_css_class("commandbar-tool");
+            b.add_css_class("in-menu");
+            if let Some(c) = b.child() {
+                c.set_halign(gtk::Align::Start);
+            }
             let p = pop.clone();
             b.connect_clicked(move |_| p.popdown());
             rows.append(b);
         }
         pop.set_child(Some(&rows));
         play_menu.set_popover(Some(&pop));
-        bar.end_tool(&play_menu, "nxo-play-symbolic", "Play");
+        split.append(&play_main);
+        split.append(&play_menu);
+        bar.end(&split);
 
         // ----- The Inspector: the slide, its text, the selected object -----
         let insp = Inspector::new();
@@ -541,6 +561,7 @@ impl Present {
         slide.section("Layout").add(&layout);
         let s = slide.section("Looks");
         inspector::labelled(&looks, "nxo-layout-grid-symbolic", "Looks");
+        background.labelled("Background");
         s.row(&[looks.upcast_ref(), background.button.upcast_ref()]);
         let s = slide.section("Transition");
         inspector::labelled(&transition, "nxo-sparkles-symbolic", "Transition");
@@ -556,12 +577,14 @@ impl Present {
         s.field("Title size", &title_size);
         s.field("Body size", &body_size);
         let s = text.section("Style");
-        let style = inspector::segmented(&[bold.upcast_ref(), italic.upcast_ref()]);
-        s.row(&[style.upcast_ref(), text_color.button.upcast_ref()]);
+        s.segmented(&[bold.upcast_ref(), italic.upcast_ref()]);
+        text_color.labelled("Text colour");
+        s.add(&text_color.button);
 
         let object = insp.contextual_segment("Object");
         let s = object.section("Fill");
         inspector::labelled(&shadow, "nxo-layers-2-symbolic", "Shadow");
+        fill.labelled("Colour");
         s.row(&[fill.button.upcast_ref(), shadow.upcast_ref()]);
         s.add(&outline);
         let s = object.section("Arrange");

@@ -543,7 +543,37 @@ pub fn attach_chrome(bar: &Rc<CommandBar>, inspector: &Rc<Inspector>) {
             p.inspector.insert(kind.to_string(), on);
         })
     });
+    // Before the Inspector floats over the document, the sidebar goes to icons
+    // to make room for it (not saved as a setting; closing it brings it back).
+    inspector.connect_floating(|floating| {
+        if floating && self::inspector().is_some_and(|i| i.is_open()) {
+            make_room(true);
+        }
+    });
+    inspector.connect_open(|open| {
+        if open && self::inspector().is_some_and(|i| i.is_floating()) {
+            make_room(true);
+        } else if !open {
+            make_room(false);
+        }
+    });
     CHROME.with(|c| *c.borrow_mut() = Some((bar.clone(), inspector.clone())));
+}
+
+thread_local! {
+    /// The sidebar shows only icons to make room for the Inspector.
+    static ROOM: Cell<bool> = const { Cell::new(false) };
+}
+
+fn make_room(on: bool) {
+    if ROOM.with(|r| r.get()) == on {
+        return;
+    }
+    if on && (narrow() || prefs::get().sidebar_collapsed) {
+        return;
+    }
+    ROOM.with(|r| r.set(on));
+    refresh_compact();
 }
 
 fn inspector() -> Option<Rc<Inspector>> {
@@ -942,7 +972,7 @@ pub fn overlay() -> Option<gtk::Overlay> {
 fn refresh_compact() {
     let Some(ui) = ui() else { return };
     let nav = ui.borrow().nav.clone();
-    let compact = narrow() || prefs::get().sidebar_collapsed;
+    let compact = narrow() || prefs::get().sidebar_collapsed || ROOM.with(|r| r.get());
     if compact {
         nav.add_css_class("compact");
     } else {
@@ -956,6 +986,11 @@ fn refresh_compact() {
 
 pub fn toggle_sidebar() {
     if ui().is_some_and(|u| !u.borrow().sidebar_wanted()) {
+        return;
+    }
+    // Icons only to make room for the Inspector: the toggle just brings it back.
+    if ROOM.with(|r| r.replace(false)) {
+        refresh_compact();
         return;
     }
     prefs::update(|p| p.sidebar_collapsed = !p.sidebar_collapsed);
