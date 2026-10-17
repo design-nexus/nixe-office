@@ -524,6 +524,11 @@ fn save_as_then(then: impl FnOnce() + 'static) {
     });
 }
 
+/// Save to `path` now, without a dialog (the control interface). True when it worked.
+pub fn save_to(path: &Path) -> bool {
+    write_to(path)
+}
+
 /// Save to `path` now. True when it worked.
 fn write_to(path: &Path) -> bool {
     save_file(path, false)

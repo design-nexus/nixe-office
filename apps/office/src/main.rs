@@ -63,6 +63,10 @@ fn main() -> glib::ExitCode {
     // Developer aid: a different id gives a separate instance.
     let id = std::env::var("NXO_APP_ID").unwrap_or_else(|_| kind.app_id().to_string());
     let application = gtk::Application::builder().application_id(id).flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE).build();
+    // Nixe Assistant works the open document through this (Write only, primary instance).
+    if kind == app::Kind::Write {
+        application.connect_startup(|a| nixe_core::control::serve(a, write::control::tools(), write::control::handle));
+    }
     application.connect_command_line(|application, cl| {
         let argv: Vec<String> = cl.arguments().iter().map(|a| a.to_string_lossy().to_string()).collect();
         let value = |flag: &str| {

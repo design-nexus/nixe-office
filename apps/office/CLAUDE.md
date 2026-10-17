@@ -206,6 +206,10 @@
   crashes, slow files and formulas that come out #NAME?; `fuzz_readers` (with
   `NXO_FUZZ_SEEDS`, `NXO_FUZZ_OUT`, `NXO_FUZZ_N`) mangles seed files' XML and saves
   any crash or slow read. Run both on the debug build too: it catches overflow.
+- **Control** (`write/control.rs`, Write only): `nixe_core::control` on Write's bus name,
+  for Nixe Assistant: `write.new_document`, `open`, `read` (Markdown via
+  `Writer::document`), `insert_text` (paragraph styles, `control_insert`), `save`
+  (`doc::save_to`), `export_pdf`. Refuses to replace a document with unsaved changes.
 - Checks: `cargo clippy --all-targets -- -D warnings`, `cargo test`. The editors'
   offscreen checks need a display and GTK on one thread, so they run in turn from
   `gtk_tests::editors_behave` (`main.rs`); add new GTK checks there, never as their own

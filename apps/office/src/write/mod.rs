@@ -4,6 +4,7 @@ mod autocorrect;
 mod buffer;
 mod changes;
 mod comments;
+pub mod control;
 mod docx;
 mod figure;
 mod layout;
@@ -131,6 +132,30 @@ thread_local! {
 
 fn writer() -> Option<Rc<Writer>> {
     WRITER.with(|w| w.borrow().clone())
+}
+
+/// The document as Markdown text (the control interface's `write.read`).
+fn control_text() -> Option<String> {
+    writer().map(|w| markdown::write(&w.document(), "").0)
+}
+
+/// Insert paragraphs at the cursor or the end, in a paragraph style (the control
+/// interface's `write.insert_text`). The buffer's own handlers record it like typing.
+fn control_insert(text: &str, style: model::Style, at_end: bool) -> Result<(), String> {
+    let w = writer().ok_or("Write isn't ready")?;
+    let tb = w.tb();
+    let mut at = if at_end { tb.end_iter() } else { w.cursor_iter() };
+    let first = at.line();
+    tb.begin_user_action();
+    tb.insert(&mut at, text);
+    tb.end_user_action();
+    let last = at.line();
+    if style != model::Style::Normal {
+        buffer::update_para(tb, first, last, |p| p.style = style);
+        w.edited();
+    }
+    tb.place_cursor(&at);
+    Ok(())
 }
 
 /// Settings changed the spelling switch or language.
