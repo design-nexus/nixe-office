@@ -1,0 +1,10 @@
+{
+  "application": "office",
+  "directory": "office",
+  "packages": [
+    "nixe-office"
+  ],
+  "manifest": "Cargo.toml",
+  "prepare": [],
+  "binaries": []
+}
