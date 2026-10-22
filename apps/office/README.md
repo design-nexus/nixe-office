@@ -185,7 +185,7 @@ Files made by the first release of Office open as before.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/design-nexus/nixe/main/install.sh | bash -s -- office
+curl -fsSL https://raw.githubusercontent.com/design-nexus/nixe-office/main/install.sh | bash -s -- office
 ```
 
 This installs GTK 4, GtkSourceView 5, libspelling and an English dictionary if they're
