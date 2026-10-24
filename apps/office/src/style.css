@@ -695,7 +695,7 @@ window.office-window button.outline-item.level-h3 {
 
 .formula-bar {
   min-height: 46px;
-  padding: 0 12px 0 14px;
+  padding: 0 12px 0 0;
   border-bottom: 1px solid @hairline;
 }
 
@@ -763,7 +763,7 @@ window.office-window entry.cell-editor {
 /* Sheet tabs along the bottom of the grid. */
 .sheet-tabs {
   min-height: 34px;
-  padding: 0 8px 0 6px;
+  padding: 0;
   border-top: 1px solid @hairline;
   background: @theme_bg;
 }
@@ -796,15 +796,15 @@ window.office-window menubutton.active-filter > button {
 }
 
 .grid-frame scrollbar {
-  background: @theme_bg;
+  background: transparent;
 }
 
 .grid-frame scrollbar.vertical {
-  border-left: 1px solid @hairline;
+  border: none;
 }
 
 .grid-frame scrollbar.horizontal {
-  border-top: 1px solid @hairline;
+  border: none;
 }
 
 /* ---------- Present ---------- */

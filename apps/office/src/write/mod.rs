@@ -134,6 +134,13 @@ fn writer() -> Option<Rc<Writer>> {
     WRITER.with(|w| w.borrow().clone())
 }
 
+pub(crate) fn fit_comment_panel() {
+    if let Some(w) = writer() {
+        let panel = &w.comment_panel;
+        panel.set_visible(panel.first_child().is_some() && (!window::narrow() || panel.has_css_class("in-inspector")));
+    }
+}
+
 /// The document as Markdown text (the control interface's `write.read`).
 fn control_text() -> Option<String> {
     writer().map(|w| markdown::write(&w.document(), "").0)
@@ -663,6 +670,7 @@ impl Writer {
             if let Some(head) = panel.first_child().filter(|h| h.has_css_class("group-title")) {
                 head.set_visible(!open);
             }
+            fit_comment_panel();
         });
         let s = review_seg.section("Changes");
         inspector::labelled(&track, "nxo-file-pen-line-symbolic", "Track");

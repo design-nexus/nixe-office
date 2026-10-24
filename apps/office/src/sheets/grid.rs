@@ -47,19 +47,28 @@ impl Sheets {
         overlay.set_vexpand(true);
         let vbar = gtk::Scrollbar::new(gtk::Orientation::Vertical, Some(&self.vadj));
         let hbar = gtk::Scrollbar::new(gtk::Orientation::Horizontal, Some(&self.hadj));
-        let row = widgets_hbox();
         let zoomed = crate::widgets::zoom_box(&overlay);
         zoomed.set_hexpand(true);
         zoomed.set_vexpand(true);
         *self.zoomed.borrow_mut() = Some(zoomed.clone());
-        row.append(&zoomed);
-        row.append(&vbar);
-        let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        col.add_css_class("grid-frame");
-        col.set_hexpand(true);
-        col.set_size_request(320, -1);
-        col.append(&row);
-        col.append(&hbar);
+        let frame = gtk::Overlay::new();
+        frame.add_css_class("grid-frame");
+        frame.set_hexpand(true);
+        frame.set_vexpand(true);
+        frame.set_size_request(320, -1);
+        frame.set_child(Some(&zoomed));
+        // Scrollbars overlay the cells so the row and column headings reach the
+        // tab strip and the right edge without separate empty gutters.
+        vbar.set_halign(gtk::Align::End);
+        vbar.set_valign(gtk::Align::Fill);
+        vbar.set_margin_top(HEAD_H as i32);
+        frame.add_overlay(&vbar);
+        frame.set_measure_overlay(&vbar, false);
+        hbar.set_halign(gtk::Align::Fill);
+        hbar.set_valign(gtk::Align::End);
+        hbar.set_margin_start(HEAD_W as i32);
+        frame.add_overlay(&hbar);
+        frame.set_measure_overlay(&hbar, false);
 
         let me = Rc::downgrade(self);
         self.area.set_draw_func(move |a, cr, w, h| {
@@ -95,7 +104,7 @@ impl Sheets {
         self.connect_menu();
         self.connect_keys();
         self.connect_entry();
-        col.upcast()
+        frame.upcast()
     }
 
     // ---------- Geometry ----------
@@ -1543,8 +1552,4 @@ fn align_lines(layout: &pango::Layout, align: HAlign) {
         HAlign::Center => pango::Alignment::Center,
         HAlign::Right => pango::Alignment::Right,
     });
-}
-
-fn widgets_hbox() -> gtk::Box {
-    gtk::Box::new(gtk::Orientation::Horizontal, 0)
 }

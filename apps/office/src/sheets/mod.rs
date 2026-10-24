@@ -159,6 +159,19 @@ thread_local! {
     static SHEETS: RefCell<Option<Rc<Sheets>>> = const { RefCell::new(None) };
 }
 
+pub(crate) fn close_chart_pane() {
+    SHEETS.with(|s| {
+        if let Some(s) = s.borrow().as_ref()
+        {
+            s.chart.pane.set_visible(false);
+            let chart = s.controls.borrow().as_ref().map(|controls| controls.chart.clone());
+            if let Some(chart) = chart {
+                chart.set_active(false);
+            }
+        }
+    });
+}
+
 /// Now as a date number (TODAY takes the whole days, NOW the time as well).
 fn today() -> f64 {
     let now = glib::DateTime::now_local().ok();
@@ -737,7 +750,8 @@ impl Sheets {
     fn build_formula_bar(self: &Rc<Self>) -> gtk::Box {
         let bar = widgets::hbox(10);
         bar.add_css_class("formula-bar");
-        self.name.set_width_chars(7);
+        self.name.set_size_request(grid::HEAD_W as i32, -1);
+        self.name.set_xalign(0.5);
         self.name.add_css_class("mono");
         bar.append(&self.name);
         let fx = widgets::label("fx", "dim");
@@ -975,7 +989,7 @@ impl Sheets {
 
     /// The strip under the grid: an add button, then a tab per sheet.
     fn build_tabs(self: &Rc<Self>) -> gtk::Box {
-        let bar = widgets::hbox(4);
+        let bar = widgets::hbox(0);
         bar.add_css_class("sheet-tabs");
         let add = widgets::bar_button("nxo-plus-symbolic", "Add a sheet");
         let me = self.weak();
@@ -984,7 +998,10 @@ impl Sheets {
                 s.add_sheet();
             }
         });
-        bar.append(&add);
+        let corner = gtk::CenterBox::new();
+        corner.set_size_request(grid::HEAD_W as i32, -1);
+        corner.set_center_widget(Some(&add));
+        bar.append(&corner);
         self.tab_scroll.set_policy(gtk::PolicyType::External, gtk::PolicyType::Never);
         self.tab_scroll.set_hexpand(true);
         self.tab_scroll.set_child(Some(&self.sheet_list));
@@ -1728,7 +1745,7 @@ impl doc::Editor for Sheets {
         let wb = template.and_then(templates::build).unwrap_or_default();
         let chart = wb.sheet().chart.is_some();
         self.load(wb);
-        self.show_chart(chart);
+        self.show_chart(chart && !window::narrow());
     }
 
     fn open(&self, path: &Path) -> Result<()> {
@@ -1766,7 +1783,7 @@ impl doc::Editor for Sheets {
         };
         let chart = wb.sheet().chart.is_some();
         self.load(wb);
-        self.chart.pane.set_visible(chart);
+        self.chart.pane.set_visible(chart && !window::narrow());
         self.sync();
         Ok(())
     }

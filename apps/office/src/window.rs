@@ -450,10 +450,19 @@ fn build(app: &gtk::Application) {
     // Narrow windows (a tiled half-screen) get an icon-only sidebar.
     let apply_width = {
         let nav = nav.clone();
+        let last_width = Rc::new(Cell::new(0));
         move |w: &gtk::ApplicationWindow| {
-            let width = if w.width() > 0 { w.width() } else { w.default_width() };
-            let narrow = width > 0 && width < 980;
+            let allocated = if w.width() > 0 { w.width() } else { w.default_width() };
+            let width = w.surface().map(|s| s.width()).filter(|width| *width > 0).map_or(allocated, |width| allocated.min(width));
+            let half_screen = w.surface()
+                .and_then(|surface| surface.display().monitor_at_surface(&surface))
+                .is_some_and(|monitor| width <= monitor.geometry().width() / 2 + 32);
+            let narrow = width > 0 && (width < 980 || half_screen);
+            let resized = last_width.replace(width) != width;
             settings_dialog::fit(w);
+            if narrow && resized {
+                close_narrow_panels();
+            }
             if narrow == NARROW.with(|n| n.get()) && nav.has_css_class("sized") {
                 return;
             }
@@ -465,7 +474,19 @@ fn build(app: &gtk::Application) {
     let aw = apply_width.clone();
     window.connect_default_width_notify(move |w| aw(w));
     let aw = apply_width.clone();
-    window.connect_realize(move |w| aw(w));
+    window.connect_realize(move |w| {
+        aw(w);
+        if let Some(surface) = w.surface() {
+            let (aw, w) = (aw.clone(), w.clone());
+            // The compositor can shrink a tiled surface while GTK keeps a
+            // wider minimum allocation for the open panes. Widget resize
+            // signals then do not fire, but the surface width does change.
+            surface.connect_width_notify(move |_| {
+                let (aw, w) = (aw.clone(), w.clone());
+                glib::idle_add_local_once(move || aw(&w));
+            });
+        }
+    });
     // Tiled windows are resized by the compositor without touching the default
     // size: an invisible layer over the whole window reports each real size change.
     let probe = gtk::DrawingArea::new();
@@ -1209,6 +1230,7 @@ pub fn set_fullscreen(on: bool) {
 
 fn set_narrow(narrow: bool) {
     NARROW.with(|n| n.set(narrow));
+    crate::write::fit_comment_panel();
     let Some(ui) = ui() else { return };
     let u = ui.borrow();
     for name in ["home", "document"] {
@@ -1222,6 +1244,13 @@ fn set_narrow(narrow: bool) {
             }
         }
     }
+}
+
+fn close_narrow_panels() {
+    if let Some(i) = inspector() {
+        i.set_open(false);
+    }
+    crate::sheets::close_chart_pane();
 }
 
 pub fn narrow() -> bool {

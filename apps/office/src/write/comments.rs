@@ -317,7 +317,7 @@ impl Writer {
             }
         }
         placed.sort_by_key(|(o, _, _)| *o);
-        panel.set_visible(!placed.is_empty());
+        panel.set_visible(!placed.is_empty() && (!crate::window::narrow() || panel.has_css_class("in-inspector")));
         if !placed.is_empty() {
             let head = widgets::label("COMMENTS", "group-title");
             // In the Inspector, its section has the heading.
