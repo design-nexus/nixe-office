@@ -122,7 +122,7 @@ pub fn package(mime: &str, content: &str, styles: &str, extras: &[Extra]) -> Res
     }
     manifest.push_str("</manifest:manifest>");
     let meta = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?><office:document-meta {NAMESPACES} xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0"><office:meta><meta:generator>Nixe Office {}</meta:generator></office:meta></office:document-meta>"#,
+        r#"<?xml version="1.0" encoding="UTF-8"?><office:document-meta {NAMESPACES} xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0"><office:meta><meta:generator>Nyx Office {}</meta:generator></office:meta></office:document-meta>"#,
         env!("CARGO_PKG_VERSION")
     );
     for (name, body) in

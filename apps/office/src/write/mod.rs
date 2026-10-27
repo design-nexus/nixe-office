@@ -30,8 +30,8 @@ use crate::{color, container, prefs, widgets, window};
 use anyhow::{Result, bail};
 use buffer::{ParaProps, Tables};
 use gtk::prelude::*;
-use nixe_ui::commandbar::CommandBar;
-use nixe_ui::inspector::{self, Inspector};
+use nyx_ui::commandbar::CommandBar;
+use nyx_ui::inspector::{self, Inspector};
 use gtk::{gdk, gio, glib};
 use model::*;
 use picture::{PX, Picture};
@@ -42,7 +42,7 @@ use std::path::Path;
 use std::rc::{Rc, Weak};
 use table::TableWidget;
 
-const FORMAT: &str = "nixe-write";
+const FORMAT: &str = "nyx-write";
 const SIZES: &[&str] =
     &["8", "9", "10", "10.5", "11", "12", "13", "14", "15.5", "16", "18", "20", "24", "26", "28", "32", "36", "48", "60", "72"];
 const UNDO_LIMIT: usize = 100;

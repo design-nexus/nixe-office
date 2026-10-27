@@ -1,5 +1,5 @@
 //! Office: Write, Sheets and Present in one binary. Each runs as its own
-//! application (`nixe-write`, `nixe-sheets`, `nixe-present`).
+//! application (`nyx-write`, `nyx-sheets`, `nyx-present`).
 
 mod app;
 mod cmd;
@@ -28,22 +28,22 @@ use gtk::{gio, glib};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-const USAGE: &str = "Usage: nixe-office --app write|sheets|present [OPTIONS] [FILE]\n\
-       nixe-write [OPTIONS] [FILE]   (also nixe-sheets, nixe-present)\n\
+const USAGE: &str = "Usage: nyx-office --app write|sheets|present [OPTIONS] [FILE]\n\
+       nyx-write [OPTIONS] [FILE]   (also nyx-sheets, nyx-present)\n\
 \n\
   FILE                  open this file\n\
   --new [TEMPLATE]      start a blank file, or one from a template\n\
   --export-pdf OUT      export FILE as a PDF to OUT and quit, without a window\n";
 
 fn main() -> glib::ExitCode {
-    nixe_core::app::init(nixe_core::app::App { slug: "nixe-office", name: "Office" });
-    nixe_core::migrate::from(&["nexus-office"]);
+    nyx_core::app::init(nyx_core::app::App { slug: "nyx-office", name: "Office" });
+    nyx_core::migrate::from(&["nexus-office"]);
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print!("{USAGE}");
         return glib::ExitCode::SUCCESS;
     }
-    // nixe-write, or nixe-office --app write.
+    // nyx-write, or nyx-office --app write.
     let from_name =
         args.first().and_then(|a| std::path::Path::new(a).file_name()).and_then(|n| app::Kind::parse(&n.to_string_lossy()));
     let from_flag = args.iter().position(|a| a == "--app").and_then(|i| args.get(i + 1)).and_then(|v| app::Kind::parse(v));
@@ -63,9 +63,9 @@ fn main() -> glib::ExitCode {
     // Developer aid: a different id gives a separate instance.
     let id = std::env::var("NXO_APP_ID").unwrap_or_else(|_| kind.app_id().to_string());
     let application = gtk::Application::builder().application_id(id).flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE).build();
-    // Nixe Assistant works the open document through this (Write only, primary instance).
+    // Nyx Assistant works the open document through this (Write only, primary instance).
     if kind == app::Kind::Write {
-        application.connect_startup(|a| nixe_core::control::serve(a, write::control::tools(), write::control::handle));
+        application.connect_startup(|a| nyx_core::control::serve(a, write::control::tools(), write::control::handle));
     }
     application.connect_command_line(|application, cl| {
         let argv: Vec<String> = cl.arguments().iter().map(|a| a.to_string_lossy().to_string()).collect();
@@ -127,7 +127,7 @@ fn make_editor() -> Rc<dyn doc::Editor> {
 /// `--export-pdf OUT FILE`: open FILE, write OUT, and quit.
 fn export_headless(file: Option<&PathBuf>, out: Option<PathBuf>) -> glib::ExitCode {
     let (Some(file), Some(out)) = (file, out) else {
-        eprintln!("nixe-office: --export-pdf needs a file to open and a PDF to write");
+        eprintln!("nyx-office: --export-pdf needs a file to open and a PDF to write");
         return glib::ExitCode::FAILURE;
     };
     theme::install();
@@ -139,7 +139,7 @@ fn export_headless(file: Option<&PathBuf>, out: Option<PathBuf>) -> glib::ExitCo
             glib::ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("nixe-office: couldn't export {}: {e:#}", file.display());
+            eprintln!("nyx-office: couldn't export {}: {e:#}", file.display());
             glib::ExitCode::FAILURE
         }
     }

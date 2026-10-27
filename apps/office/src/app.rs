@@ -24,7 +24,7 @@ pub fn kind() -> Kind {
 
 impl Kind {
     pub fn parse(id: &str) -> Option<Kind> {
-        match id.trim_start_matches("nixe-").trim_start_matches("nexus-") {
+        match id.trim_start_matches("nyx-").trim_start_matches("nixe-").trim_start_matches("nexus-") {
             "write" => Some(Kind::Write),
             "sheets" => Some(Kind::Sheets),
             "present" => Some(Kind::Present),
@@ -60,9 +60,9 @@ impl Kind {
 
     pub fn app_id(self) -> &'static str {
         match self {
-            Kind::Write => "io.github.design_nexus.nixe.Write",
-            Kind::Sheets => "io.github.design_nexus.nixe.Sheets",
-            Kind::Present => "io.github.design_nexus.nixe.Present",
+            Kind::Write => "io.github.design_nexus.nyx.Write",
+            Kind::Sheets => "io.github.design_nexus.nyx.Sheets",
+            Kind::Present => "io.github.design_nexus.nyx.Present",
         }
     }
 

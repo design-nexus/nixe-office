@@ -185,12 +185,12 @@ Files made by the first release of Office open as before.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/design-nexus/nixe-office/main/install.sh | bash -s -- office
+curl -fsSL https://raw.githubusercontent.com/design-nexus/nyx-office/main/install.sh | bash -s -- office
 ```
 
 This installs GTK 4, GtkSourceView 5, libspelling and an English dictionary if they're
-missing, builds with Cargo, and installs `nixe-write`, `nixe-sheets` and
-`nixe-present` to `~/.local/bin` with launcher entries. Add `-s -- --default` after
+missing, builds with Cargo, and installs `nyx-write`, `nyx-sheets` and
+`nyx-present` to `~/.local/bin` with launcher entries. Add `-s -- --default` after
 `bash` to also make them the default apps for their file types.
 
 To remove them, run the same line with `uninstall.sh` in place of `install.sh`. Add
@@ -200,9 +200,9 @@ work. Your documents are never touched.
 ## Usage
 
 ```
-nixe-write [OPTIONS] [FILE]
-nixe-sheets [OPTIONS] [FILE]
-nixe-present [OPTIONS] [FILE]
+nyx-write [OPTIONS] [FILE]
+nyx-sheets [OPTIONS] [FILE]
+nyx-present [OPTIONS] [FILE]
 ```
 
 | Option | What |
@@ -231,11 +231,11 @@ Launching an app again while it's running brings its window forward.
 
 | Path | What |
 | --- | --- |
-| `~/.config/nixe-office/settings.toml` | Settings, shared by the three apps |
-| `~/.config/nixe-office/themes/*.toml` | Your own themes |
-| `~/.local/share/nixe-office/recent-*.json` | Each app's recent files |
-| `~/.local/state/nixe-office/recovery/` | Copies of unsaved work |
-| `~/.local/state/nixe-office/zoom-*` | Each app's zoom |
+| `~/.config/nyx-office/settings.toml` | Settings, shared by the three apps |
+| `~/.config/nyx-office/themes/*.toml` | Your own themes |
+| `~/.local/share/nyx-office/recent-*.json` | Each app's recent files |
+| `~/.local/state/nyx-office/recovery/` | Copies of unsaved work |
+| `~/.local/state/nyx-office/zoom-*` | Each app's zoom |
 
 ## Building
 

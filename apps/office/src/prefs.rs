@@ -1,6 +1,6 @@
-//! Preferences shared by Write, Sheets and Present (`~/.config/nixe-office/settings.toml`).
+//! Preferences shared by Write, Sheets and Present (`~/.config/nyx-office/settings.toml`).
 
-pub use nixe_theme::ThemeMode;
+pub use nyx_theme::ThemeMode;
 
 use serde::{Deserialize, Serialize};
 
@@ -67,4 +67,4 @@ fn default_paper() -> &'static str {
     }
 }
 
-nixe_core::prefs_store!(Prefs);
+nyx_core::prefs_store!(Prefs);

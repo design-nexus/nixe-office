@@ -1,36 +1,43 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
   <!-- Files are ZIPs whose first entry, "mimetype", holds the type (like ODF). Files
-       saved before the suite was called Nixe hold application/x-nexus-*; the other
+       saved before the suite was called Nyx hold application/x-nixe-* or, earlier,
+       application/x-nexus-*; the other
        rules match files from the first release. -->
-  <mime-type type="application/x-nixe-write">
+  <mime-type type="application/x-nyx-write">
     <comment>Write document</comment>
+    <alias type="application/x-nixe-write"/>
     <alias type="application/x-nexus-write"/>
     <generic-icon name="x-office-document"/>
     <glob weight="80" pattern="*.nwrite"/>
     <magic priority="80">
+      <match type="string" value="application/x-nyx-write" offset="38"/>
       <match type="string" value="application/x-nixe-write" offset="38"/>
       <match type="string" value="application/x-nexus-write" offset="38"/>
       <match type="string" value="manifest.json" offset="30"/>
     </magic>
   </mime-type>
-  <mime-type type="application/x-nixe-sheets">
+  <mime-type type="application/x-nyx-sheets">
     <comment>Sheets spreadsheet</comment>
+    <alias type="application/x-nixe-sheets"/>
     <alias type="application/x-nexus-sheets"/>
     <generic-icon name="x-office-spreadsheet"/>
     <glob weight="80" pattern="*.nsheets"/>
     <magic priority="80">
+      <match type="string" value="application/x-nyx-sheets" offset="38"/>
       <match type="string" value="application/x-nixe-sheets" offset="38"/>
       <match type="string" value="application/x-nexus-sheets" offset="38"/>
       <match type="string" value="&quot;format&quot;:&quot;nexus-sheets&quot;" offset="0:16384"/>
     </magic>
   </mime-type>
-  <mime-type type="application/x-nixe-present">
+  <mime-type type="application/x-nyx-present">
     <comment>Present presentation</comment>
+    <alias type="application/x-nixe-present"/>
     <alias type="application/x-nexus-present"/>
     <generic-icon name="x-office-presentation"/>
     <glob weight="80" pattern="*.npresent"/>
     <magic priority="80">
+      <match type="string" value="application/x-nyx-present" offset="38"/>
       <match type="string" value="application/x-nixe-present" offset="38"/>
       <match type="string" value="application/x-nexus-present" offset="38"/>
       <match type="string" value="&quot;format&quot;:&quot;nexus-present&quot;" offset="0:1024"/>

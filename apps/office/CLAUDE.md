@@ -1,13 +1,13 @@
 # Office Suite — notes for working on this repo
 
-- One binary, `nixe-office`, runs as Write, Sheets or Present: `--app write`, or the
-  launcher scripts `nixe-write` / `nixe-sheets` / `nixe-present` (`packaging/`).
-  Each is its own GApplication (`io.github.design_nexus.nixe.Write` …) with its own window.
-  Config, data and state folders are shared: `nixe-office`. GTK4 (gtk4-rs 0.11), no
+- One binary, `nyx-office`, runs as Write, Sheets or Present: `--app write`, or the
+  launcher scripts `nyx-write` / `nyx-sheets` / `nyx-present` (`packaging/`).
+  Each is its own GApplication (`io.github.design_nexus.nyx.Write` …) with its own window.
+  Config, data and state folders are shared: `nyx-office`. GTK4 (gtk4-rs 0.11), no
   libadwaita. The look follows `STYLE.md`; the theme, widgets, settings card, window
-  frame, command bar and Inspector come from the `nixe-*` crates. Each editor's
+  frame, command bar and Inspector come from the `nyx-*` crates. Each editor's
   `build_toolbar` makes its controls and lays them out: what you add on a
-  `nixe_ui::commandbar`, formatting in `nixe_ui::inspector` segments (contextual
+  `nyx_ui::commandbar`, formatting in `nyx_ui::inspector` segments (contextual
   segments follow the visibility of their control groups), view switches in the status
   bar (`window::status_tool`). `window::attach_chrome` adds Find, the Inspector toggle
   and the file's name, and remembers whether the Inspector is open. In Write the
@@ -17,14 +17,14 @@
 - **Shell** (`window.rs`, `home.rs`, `doc.rs`): the window has two pages, Home and the
   document. `doc.rs` owns the open file (path, dirty, unsaved-changes guard, Save/Save
   As by extension, PDF export, print, crash-recovery snapshots in
-  `~/.local/state/nixe-office/recovery/<app>/`). Each app implements `doc::Editor`
+  `~/.local/state/nyx-office/recovery/<app>/`). Each app implements `doc::Editor`
   (widget, sidebar group, templates, open/save/snapshot, undo/redo, status, `Find`,
   `Pages`, keys). Editors call `doc::edited()` on every change and
   `doc::status_changed()` when the readout may change. The find bar is inserted after
   the editor widget's first child (its command bar). The bar drops labels, then folds
   tools into `⋯`, at narrow widths instead of wrapping. Focus mode (Ctrl+Shift+F,
   `window::toggle_focus`) hides the Inspector, the sidebar and the status bar.
-  Zoom (`doc::zoom`/`set_zoom`, kept in `~/.local/state/nixe-office/zoom-<app>`, not
+  Zoom (`doc::zoom`/`set_zoom`, kept in `~/.local/state/nyx-office/zoom-<app>`, not
   the shared settings) reaches editors through `Editor::set_zoom`. Write and Sheets
   wrap their view in `widgets::zoom_box` (a layout manager that allocates the child
   at 1/zoom with a scale transform, so GTK maps input back); Present multiplies its
@@ -32,7 +32,7 @@
 - **Saving**: `save(path)` writes the format the extension names and returns what that
   format couldn't keep; `doc.rs` shows that note once per file and format.
   Native files are ZIPs (`container.rs`): `mimetype` first and stored (byte 38, used by
-  `packaging/nixe-office.xml`), `manifest.json` (version 3), `content.json`, `media/`.
+  `packaging/nyx-office.xml`), `manifest.json` (version 3), `content.json`, `media/`.
   Qt-era files: `.nwrite` ZIP with `document.html` (`write/legacy.rs`), `.nsheets` and
   `.npresent` plain JSON (`from_legacy_json`).
 - **Autosave** (`prefs.autosave`): `doc::edited` schedules `write_quietly` a few seconds
@@ -193,7 +193,7 @@
   "Object N" chart document with its own table); these follow what Collabora writes.
   Pivot tables (Excel's pivotTable parts, OpenDocument's data pilots) are read into
   `xlsx::Pivot` and rebuilt in place by `summary::summarize_at`.
-  `present/odp.rs` names its page layouts `Nixe-<layout>` so they come back exactly;
+  `present/odp.rs` names its page layouts `Nyx-<layout>` so they come back exactly;
   other files' layouts are guessed from their placeholders. `{n}` on the master is
   `text:page-number`.
 - Icons: Lucide, converted from strokes to fills (GTK's symbolic loader fills every
@@ -206,8 +206,8 @@
   crashes, slow files and formulas that come out #NAME?; `fuzz_readers` (with
   `NXO_FUZZ_SEEDS`, `NXO_FUZZ_OUT`, `NXO_FUZZ_N`) mangles seed files' XML and saves
   any crash or slow read. Run both on the debug build too: it catches overflow.
-- **Control** (`write/control.rs`, Write only): `nixe_core::control` on Write's bus name,
-  for Nixe Assistant: `write.new_document`, `open`, `read` (Markdown via
+- **Control** (`write/control.rs`, Write only): `nyx_core::control` on Write's bus name,
+  for Nyx Assistant: `write.new_document`, `open`, `read` (Markdown via
   `Writer::document`), `insert_text` (paragraph styles, `control_insert`), `save`
   (`doc::save_to`), `export_pdf`. Refuses to replace a document with unsaved changes.
 - Checks: `cargo clippy --all-targets -- -D warnings`, `cargo test`. The editors'
@@ -215,7 +215,7 @@
   `gtk_tests::editors_behave` (`main.rs`); add new GTK checks there, never as their own
   `#[test]` (parallel GTK tests crash). `NXO_SAMPLE_DIR=/tmp/x cargo test -- --ignored
   write_office_samples` writes a .docx, .xlsx and .pptx to check in other software.
-  Layout check: `NXO_SNAPSHOT=/tmp/x.png nixe-office --app sheets --new monthly-budget`
+  Layout check: `NXO_SNAPSHOT=/tmp/x.png nyx-office --app sheets --new monthly-budget`
   renders the window to a PNG and quits (`NXO_SNAPSHOT_W`/`_H`/`_DELAY`). The window can
   take keyboard focus while it's up (it ignores keys), so keep these runs few. Point
   `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_STATE_HOME`/`XDG_CACHE_HOME` at scratch dirs,

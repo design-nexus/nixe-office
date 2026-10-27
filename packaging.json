@@ -2,7 +2,7 @@
   "application": "office",
   "directory": "office",
   "packages": [
-    "nixe-office"
+    "nyx-office"
   ],
   "manifest": "Cargo.toml",
   "prepare": [],
@@ -13,9 +13,9 @@
       "test",
       "--locked",
       "-p",
-      "nixe-office",
+      "nyx-office",
       "--bin",
-      "nixe-office"
+      "nyx-office"
     ]
   ]
 }

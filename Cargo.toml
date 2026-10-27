@@ -6,7 +6,7 @@ members = ["apps/office"]
 edition = "2024"
 license = "MIT"
 authors = ["Ken Smith"]
-repository = "https://github.com/design-nexus/nixe-office"
+repository = "https://github.com/design-nexus/nyx-office"
 
 [profile.release]
 lto = "thin"

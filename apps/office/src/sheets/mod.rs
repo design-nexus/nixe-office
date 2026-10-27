@@ -28,15 +28,15 @@ use crate::print::Pages;
 use crate::{color, container, widgets, window};
 use anyhow::{Result, bail};
 use gtk::prelude::*;
-use nixe_ui::commandbar::CommandBar;
-use nixe_ui::inspector::{self, Inspector};
+use nyx_ui::commandbar::CommandBar;
+use nyx_ui::inspector::{self, Inspector};
 use gtk::{gdk, glib};
 use model::*;
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::{Rc, Weak};
 
-const FORMAT: &str = "nixe-sheets";
+const FORMAT: &str = "nyx-sheets";
 const UNDO_LIMIT: usize = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq)]

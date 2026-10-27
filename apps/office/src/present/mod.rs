@@ -20,8 +20,8 @@ use crate::print::Pages;
 use crate::{color, container, widgets, window};
 use anyhow::{Result, bail};
 use gtk::prelude::*;
-use nixe_ui::commandbar::CommandBar;
-use nixe_ui::inspector::{self, Inspector};
+use nyx_ui::commandbar::CommandBar;
+use nyx_ui::inspector::{self, Inspector};
 use gtk::{gdk, gio, glib};
 use model::*;
 use render::{Hints, Pictures};
@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::rc::{Rc, Weak};
 
-const FORMAT: &str = "nixe-present";
+const FORMAT: &str = "nyx-present";
 const UNDO_LIMIT: usize = 80;
 const SIZES: &[&str] =
     &["14", "16", "18", "20", "24", "26", "28", "32", "36", "40", "42", "44", "48", "50", "54", "60", "72", "88"];

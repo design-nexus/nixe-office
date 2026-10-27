@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Sheets
+GenericName=Spreadsheet
+Comment=Budgets, lists and charts in spreadsheets; opens Excel and CSV files
+Exec=nyx-sheets %f
+Icon=io.github.design_nexus.nyx.Sheets
+Terminal=false
+Categories=Office;Spreadsheet;GTK;
+Keywords=spreadsheet;budget;excel;xlsx;csv;table;chart;ods;
+MimeType=application/x-nyx-sheets;application/x-nexus-sheets;text/csv;application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;application/vnd.oasis.opendocument.spreadsheet;
+StartupNotify=true
+StartupWMClass=io.github.design_nexus.nyx.Sheets

@@ -39,12 +39,12 @@ fn shape_from_type(t: &str) -> Shape {
 /// Our layouts by the name we give their ODF page layouts.
 fn layout_id(l: Layout) -> &'static str {
     match l {
-        Layout::Title => "Nixe-Title",
-        Layout::Content => "Nixe-Content",
-        Layout::TwoColumns => "Nixe-TwoColumns",
-        Layout::Picture => "Nixe-Picture",
-        Layout::Section => "Nixe-Section",
-        Layout::Blank => "Nixe-Blank",
+        Layout::Title => "Nyx-Title",
+        Layout::Content => "Nyx-Content",
+        Layout::TwoColumns => "Nyx-TwoColumns",
+        Layout::Picture => "Nyx-Picture",
+        Layout::Section => "Nyx-Section",
+        Layout::Blank => "Nyx-Blank",
     }
 }
 
@@ -748,8 +748,10 @@ pub fn read(bytes: &[u8]) -> Result<(Deck, BTreeMap<String, Vec<u8>>)> {
                 }
             }
         }
-        // Our own layouts come back by name; others by what's on the slide.
+        // Our own layouts come back by name (`Nixe-` from before the suite was called
+        // Nyx); others by what's on the slide.
         let named = attr(&page, PRESENTATION, "presentation-page-layout-name")
+            .map(|n| n.replacen("Nixe-", "Nyx-", 1))
             .and_then(|n| Layout::ALL.into_iter().find(|l| layout_id(*l) == n))
             .or_else(|| {
                 let near = |a: Option<(f64, f64, f64, f64)>, b: Option<Frame>| match (a, b) {

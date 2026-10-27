@@ -4,9 +4,9 @@
 
 use crate::{app, doc, home, prefs, settings_dialog, theme, widgets};
 use gtk::prelude::*;
-use nixe_ui::chrome;
-use nixe_ui::commandbar::CommandBar;
-use nixe_ui::inspector::Inspector;
+use nyx_ui::chrome;
+use nyx_ui::commandbar::CommandBar;
+use nyx_ui::inspector::Inspector;
 use gtk::{gdk, glib};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -269,7 +269,7 @@ fn build(app: &gtk::Application) {
     window.add_css_class(&format!("app-{}", kind.id()));
     // No client-side titlebar: Hyprland manages the window.
     window.set_titlebar(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
-    nixe_ui::keys::install(&window, nixe_ui::keys::Common { shortcuts: Some(show_shortcuts), ..Default::default() });
+    nyx_ui::keys::install(&window, nyx_ui::keys::Common { shortcuts: Some(show_shortcuts), ..Default::default() });
     window.set_icon_name(Some(kind.app_id()));
     let editor = doc::editor().expect("the editor is set before the window is built");
 
@@ -1291,7 +1291,7 @@ pub fn navigate(id: &str) {
 /// Show a short message at the bottom of the window. It replaces any toast showing.
 pub fn toast(message: &str) {
     let Some(overlay) = overlay() else {
-        eprintln!("nixe-office: {message}");
+        eprintln!("nyx-office: {message}");
         return;
     };
     if let Some(old) = TOAST.with(|t| t.borrow_mut().take()) {

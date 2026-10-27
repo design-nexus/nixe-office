@@ -1,7 +1,7 @@
 //! The native file format shared by all three apps: a ZIP holding
 //!
 //! - `mimetype` (stored first and uncompressed, like ODF, so tools can sniff it),
-//! - `manifest.json` (`{"format": "nixe-write", "version": 3}`),
+//! - `manifest.json` (`{"format": "nyx-write", "version": 3}`),
 //! - `content.json` (the app's own document model),
 //! - `media/…` (pictures, referenced from the content by name).
 
@@ -28,7 +28,7 @@ pub struct Container {
     pub media: BTreeMap<String, Vec<u8>>,
 }
 
-/// `format` is `nixe-write`, `nixe-sheets` or `nixe-present`.
+/// `format` is `nyx-write`, `nyx-sheets` or `nyx-present`.
 pub fn write(format: &str, content: &[u8], media: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>> {
     use zip::write::SimpleFileOptions;
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
@@ -37,7 +37,7 @@ pub fn write(format: &str, content: &[u8], media: &BTreeMap<String, Vec<u8>>) ->
     zip.start_file("mimetype", stored)?;
     zip.write_all(format!("application/x-{format}").as_bytes())?;
     let manifest =
-        Manifest { format: format.into(), version: VERSION, generator: format!("Nixe Office {}", env!("CARGO_PKG_VERSION")) };
+        Manifest { format: format.into(), version: VERSION, generator: format!("Nyx Office {}", env!("CARGO_PKG_VERSION")) };
     zip.start_file("manifest.json", deflated)?;
     zip.write_all(&serde_json::to_vec_pretty(&manifest)?)?;
     zip.start_file("content.json", deflated)?;
@@ -146,14 +146,19 @@ pub fn read_capped(r: impl Read, max: u64) -> std::io::Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Files saved before the suite was called Nixe say `nexus-write` and so on.
-fn same_format(found: &str, wanted: &str) -> bool {
-    found == wanted || found.strip_prefix("nexus-").is_some_and(|k| wanted.strip_prefix("nixe-") == Some(k))
+/// The kind a format names: `write` for `nyx-write`, and for `nixe-write` and
+/// `nexus-write`, which files saved before the suite was called Nyx say.
+fn format_kind(format: &str) -> &str {
+    ["nyx-", "nixe-", "nexus-"].iter().find_map(|p| format.strip_prefix(p)).unwrap_or(format)
 }
 
-/// `nixe-sheets` → "Sheets".
+fn same_format(found: &str, wanted: &str) -> bool {
+    found == wanted || format_kind(found) == format_kind(wanted)
+}
+
+/// `nyx-sheets` → "Sheets".
 fn display_format(format: &str) -> String {
-    let kind = format.trim_start_matches("nixe-").trim_start_matches("nexus-");
+    let kind = format_kind(format);
     let mut c = kind.chars();
     c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
@@ -167,7 +172,7 @@ pub fn read(bytes: &[u8], format: &str) -> Result<Container> {
         bail!("this is a {} file", display_format(&manifest.format));
     }
     if manifest.version > VERSION {
-        bail!("it was made by a newer version of Nixe Office");
+        bail!("it was made by a newer version of Nyx Office");
     }
     let content = read_entry(&mut archive, "content.json")?.context("the file has no content")?;
     let mut media = BTreeMap::new();
@@ -189,18 +194,19 @@ mod tests {
     fn round_trips() {
         let mut media = BTreeMap::new();
         media.insert("a.png".to_string(), vec![1, 2, 3]);
-        let bytes = write("nixe-write", br#"{"x":1}"#, &media).unwrap();
+        let bytes = write("nyx-write", br#"{"x":1}"#, &media).unwrap();
         assert!(is_zip(&bytes));
-        // File managers find the type at byte 38, as in ODF (data/nixe-office.xml).
-        assert_eq!(&bytes[38..38 + 24], b"application/x-nixe-write");
-        let c = read(&bytes, "nixe-write").unwrap();
+        // File managers find the type at byte 38, as in ODF (data/nyx-office.xml).
+        assert_eq!(&bytes[38..38 + 23], b"application/x-nyx-write");
+        let c = read(&bytes, "nyx-write").unwrap();
         assert_eq!(c.content, br#"{"x":1}"#);
         assert_eq!(c.media["a.png"], vec![1, 2, 3]);
-        assert!(read(&bytes, "nixe-sheets").is_err());
+        assert!(read(&bytes, "nyx-sheets").is_err());
         // A file saved before the rename still opens.
         let old = write("nexus-write", br#"{"x":1}"#, &media).unwrap();
-        assert!(read(&old, "nixe-write").is_ok());
-        assert_eq!(read(&old, "nixe-sheets").err().map(|e| e.to_string()).as_deref(), Some("this is a Write file"));
+        assert!(read(&old, "nyx-write").is_ok());
+        assert!(read(&write("nixe-write", br#"{"x":1}"#, &media).unwrap(), "nyx-write").is_ok());
+        assert_eq!(read(&old, "nyx-sheets").err().map(|e| e.to_string()).as_deref(), Some("this is a Write file"));
     }
 
     #[test]

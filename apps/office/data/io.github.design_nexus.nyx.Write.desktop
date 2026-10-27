@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Write
+GenericName=Word Processor
+Comment=Write letters, recipes and other documents; opens Word files
+Exec=nyx-write %f
+Icon=io.github.design_nexus.nyx.Write
+Terminal=false
+Categories=Office;WordProcessor;GTK;
+Keywords=document;letter;word;docx;write;text;odt;
+MimeType=application/x-nyx-write;application/x-nexus-write;application/vnd.openxmlformats-officedocument.wordprocessingml.document;text/markdown;text/plain;application/vnd.oasis.opendocument.text;
+StartupNotify=true
+StartupWMClass=io.github.design_nexus.nyx.Write

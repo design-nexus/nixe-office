@@ -1,11 +1,11 @@
-//! Write's tools on the control interface (`nixe_core::control`), for Nixe Assistant:
+//! Write's tools on the control interface (`nyx_core::control`), for Nyx Assistant:
 //! start, open, read, fill and save documents directly instead of typing into the window.
 //! Nothing here throws away unsaved work: starting or opening another document is refused
 //! while the open one has unsaved changes.
 
 use super::model::Style;
 use crate::{app, doc, print};
-use nixe_core::control::{self, text};
+use nyx_core::control::{self, text};
 use serde_json::{json, Value};
 
 pub fn tools() -> Value {
