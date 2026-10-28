@@ -12,9 +12,9 @@ const GROUPS: &[(&str, &str, &str)] = &[
     ("Writing", "nxo-file-text-symbolic", "Spelling"),
     ("Presenting", "nxo-presentation-symbolic", "Presenter view"),
     ("Files", "nxo-files-symbolic", "Paper, unsaved work"),
-    ("Write window", "nxo-palette-symbolic", "Theme, glow, motion"),
-    ("Sheets window", "nxo-palette-symbolic", "Theme, glow, motion"),
-    ("Present window", "nxo-palette-symbolic", "Theme, glow, motion"),
+    ("Write window", "nxo-palette-symbolic", "Theme, accent, motion"),
+    ("Sheets window", "nxo-palette-symbolic", "Theme, accent, motion"),
+    ("Present window", "nxo-palette-symbolic", "Theme, accent, motion"),
     ("Keyboard", "input-keyboard-symbolic", "Shortcuts"),
 ];
 

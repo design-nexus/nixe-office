@@ -534,10 +534,9 @@ impl Sheets {
         s.add(&print_page);
         s.note("Paper size comes from Settings.");
 
-        // The chart pane is a view: its switch sits in the status bar.
+        // The chart pane is a view: its switch sits in the header.
         chart.remove_css_class("tool-toggle");
-        chart.add_css_class("status-help");
-        chart.add_css_class("status-icon");
+        chart.add_css_class("bar-button");
         window::status_tool(&chart);
         crate::window::attach_chrome(&bar, &insp);
         *self.controls.borrow_mut() = Some(Controls { bold, italic, numbers, formats, align, header, freeze, print, chart, color, fill, filter, wrap, checkbox });

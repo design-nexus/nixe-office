@@ -1,3 +1,72 @@
+/* Office on Nyx 2.0: only Office's own parts. One surface: the header, the sidebar,
+   the command bar and the Inspector share the window's background; spacing and cards,
+   not lines, separate them. The page, cells and slides keep document colours so the
+   screen matches print. */
+
+/* ---------- Header ---------- */
+
+.header-status {
+  font-size: 11.5px;
+  color: @theme_dim_text;
+  font-feature-settings: "tnum";
+}
+
+.tnum {
+  font-feature-settings: "tnum";
+}
+
+window.office-window .app-header button.bar-button,
+window.office-window .app-header togglebutton.bar-button,
+window.office-window .app-header button.toggle.bar-button {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: var(--nyx-radius-small);
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  color: @theme_dim_text;
+}
+
+window.office-window .app-header button.bar-button:hover {
+  background: @row_hover;
+  color: @theme_text;
+}
+
+window.office-window .app-header button.bar-button:checked {
+  background: alpha(@theme_accent, 0.16);
+  color: @theme_accent;
+}
+
+/* Zoom: − 100% + as one quiet control. */
+window.office-window .status-zoom button {
+  min-height: 28px;
+  min-width: 24px;
+  padding: 0 4px;
+  border: none;
+  border-radius: var(--nyx-radius-small);
+  background: transparent;
+  box-shadow: none;
+  color: @theme_dim_text;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+window.office-window .status-zoom button:hover {
+  background: @row_hover;
+  color: @theme_text;
+}
+
+.settings-navigation .nav-group {
+  font-size: 11px;
+}
+
+/* The icon-only sidebar hides these labels itself. The shared sheet's font-size: 0
+   for them can stick after the sidebar expands again, so they keep their size. */
+.settings-navigation.compact .nav-group {
+  font-size: 11px;
+}
+
 window.office-window scrollbar {
   background: transparent;
   padding: 0;
@@ -36,13 +105,11 @@ window.office-window scrollbar:hover slider {
 }
 
 .toast {
-  /* Above the status bar. */
-  margin: 18px 18px 52px;
+  margin: 18px;
   padding: 10px 16px;
-  border-radius: 8px;
+  border-radius: var(--nyx-radius-card);
   background: @theme_surface;
-  border: 1px solid alpha(@theme_border, 0.8);
-  box-shadow: 0 4px 16px alpha(@theme_shadow, 0.5), 0 0 14px alpha(@theme_glow, 0.14);
+  box-shadow: 0 8px 24px alpha(@theme_shadow, 0.5);
 }
 
 .settings-navigation button.nav-item.drop-hover {
@@ -71,24 +138,12 @@ window.office-window scrollbar:hover slider {
   padding-bottom: 0;
 }
 
-/* ---------- Search bar ---------- */
-
-.search-bar {
-  padding: 8px 20px;
-  background: @theme_surface;
-  border-bottom: 1px solid @hairline;
-}
-
-.narrow .search-bar {
-  padding: 6px 18px 8px;
-}
-
 window.office-window button.search-option {
   min-height: 28px;
   min-width: 34px;
   padding: 0 8px;
   font-size: 0.86em;
-  font-weight: 700;
+  font-weight: 600;
   background: transparent;
   border-color: alpha(@theme_border, 0.6);
   color: @theme_dim_text;
@@ -124,14 +179,14 @@ window.office-window button.swatch-button:hover {
 
 window.office-window button.swatch-button.selected {
   border-color: @theme_accent;
-  box-shadow: 0 0 0 1px alpha(@theme_accent, 0.38), 0 0 14px alpha(@theme_glow, 0.24);
+  box-shadow: 0 0 0 1px alpha(@theme_accent, 0.38);
 }
 
 window.office-window menubutton.colour-button > button {
   min-width: 32px;
   min-height: 32px;
   padding: 0;
-  border-radius: 7px;
+  border-radius: var(--nyx-radius-small);
   background: transparent;
   border: 1px solid transparent;
 }
@@ -151,7 +206,7 @@ window.office-window popover.prompt-popover > contents {
 }
 
 .popover-title {
-  font-weight: 700;
+  font-weight: 600;
 }
 
 window.office-window textview.prompt-text {
@@ -165,15 +220,15 @@ window.office-window textview.prompt-text text {
 }
 
 .prompt-scroll {
-  border-radius: 5px;
-  border: 1px solid alpha(@theme_border, 0.8);
+  border-radius: var(--nyx-radius-small);
+  background: @field;
 }
 
 window.office-window button.crumb-root {
   min-height: 26px;
   padding: 0 6px;
   margin: 0 -6px;
-  border-radius: 6px;
+  border-radius: var(--nyx-radius-small);
   border-color: transparent;
   background: transparent;
   box-shadow: none;
@@ -194,7 +249,7 @@ window.office-window button.bar-button {
   min-width: 30px;
   min-height: 30px;
   padding: 0;
-  border-radius: 6px;
+  border-radius: var(--nyx-radius-small);
   border-color: transparent;
   background: transparent;
   color: @theme_dim_text;
@@ -210,7 +265,7 @@ window.office-window menubutton.bar-button > button {
   min-width: 30px;
   min-height: 30px;
   padding: 0;
-  border-radius: 6px;
+  border-radius: var(--nyx-radius-small);
   border-color: transparent;
   background: transparent;
   color: @theme_dim_text;
@@ -218,19 +273,6 @@ window.office-window menubutton.bar-button > button {
 
 window.office-window menubutton.bar-button > button:hover {
   background: @row_hover;
-  color: @theme_text;
-}
-
-window.office-window button.status-help {
-  min-height: 24px;
-  padding: 0 6px;
-  border: none;
-  background: transparent;
-  color: @theme_dim_text;
-  font-weight: 500;
-}
-
-window.office-window button.status-help:hover {
   color: @theme_text;
 }
 
@@ -248,7 +290,7 @@ window.office-window button.dialog-nav {
   min-height: 0;
   padding: 10px 14px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--nyx-radius-small);
   background: transparent;
 }
 
@@ -283,9 +325,9 @@ window.office-window button.dialog-nav.active {
 window.office-window button.template-card {
   min-height: 84px;
   padding: 14px 16px;
-  border-radius: 10px;
-  border: 1px solid @hairline;
-  background: transparent;
+  border-radius: var(--nyx-radius-card);
+  border: none;
+  background: @theme_card;
 }
 
 window.office-window button.template-card:hover {
@@ -297,7 +339,7 @@ window.office-window button.template-card image {
 }
 
 .template-title {
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .template-summary {
@@ -315,7 +357,6 @@ window.office-window button.template-card image {
 .doc-toolbar {
   min-height: 46px;
   padding: 0 12px 0 14px;
-  border-bottom: 1px solid @hairline;
 }
 
 .doc-toolbar > .tool-row {
@@ -323,9 +364,8 @@ window.office-window button.template-card image {
 }
 
 .tool-group {
-  padding-right: 10px;
-  margin-right: 4px;
-  border-right: 1px solid @divider;
+  padding-right: 8px;
+  margin-right: 6px;
 }
 
 window.office-window .tool-group dropdown > button {
@@ -354,7 +394,7 @@ window.office-window button.tool-toggle {
   min-width: 30px;
   min-height: 30px;
   padding: 0;
-  border-radius: 6px;
+  border-radius: var(--nyx-radius-small);
   border-color: transparent;
   background: transparent;
   color: @theme_dim_text;
@@ -409,7 +449,6 @@ window.office-window popover.menu-popover > contents {
 .find-bar {
   min-height: 46px;
   padding: 0 12px 0 14px;
-  border-bottom: 1px solid @hairline;
 }
 
 .find-bar > * {
@@ -437,8 +476,8 @@ scrolledwindow.desk,
 
 .paper {
   background: #ffffff;
-  border: 1px solid @hairline;
   border-radius: 2px;
+  box-shadow: 0 2px 10px alpha(@theme_shadow, 0.35);
 }
 
 .page-text,
@@ -481,7 +520,7 @@ window.office-window entry.doc-cell:focus-within {
 
 window.office-window entry.doc-cell.header {
   background: #eef0f4;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 /* Page breaks, the table of contents and footnote marks sit on the page:
@@ -513,7 +552,7 @@ window.office-window entry.doc-cell.header {
 .toc-title {
   font-family: "Noto Sans", sans-serif;
   font-size: 15.5pt;
-  font-weight: 700;
+  font-weight: 600;
   color: #202329;
   margin-bottom: 4px;
 }
@@ -542,7 +581,7 @@ window.office-window button.toc-entry:hover {
 
 window.office-window button.toc-entry.toc-level-0,
 window.office-window button.toc-entry.toc-level-1 {
-  font-weight: 700;
+  font-weight: 600;
 }
 
 window.office-window button.toc-entry.toc-level-2 {
@@ -565,7 +604,7 @@ window.office-window button.note-mark {
   color: #2f5bd3;
   font-family: "Noto Sans", sans-serif;
   font-size: 7.5pt;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 window.office-window button.note-mark:hover {
@@ -580,14 +619,14 @@ window.office-window button.note-mark:hover {
 
 .comment-card {
   padding: 10px 12px;
-  border: 1px solid @hairline;
+  border: none;
   border-left: 3px solid #e3b62f;
-  border-radius: 8px;
+  border-radius: var(--nyx-radius-card);
   background: @theme_surface;
 }
 
 .comment-card.resolved {
-  border-left-color: @hairline;
+  border-left-color: alpha(@theme_text, 0.15);
   opacity: 0.6;
 }
 
@@ -602,8 +641,8 @@ window.office-window button.note-mark:hover {
 }
 
 .comment-box {
-  border: 1px solid @hairline;
-  border-radius: 8px;
+  border-radius: var(--nyx-radius-card);
+  background: @field;
 }
 
 .comment-box textview,
@@ -619,13 +658,12 @@ window.office-window button.note-mark:hover {
 .rule-swatch {
   min-width: 30px;
   padding: 2px 6px;
-  border-radius: 6px;
-  border: 1px solid @hairline;
+  border-radius: var(--nyx-radius-small);
+  box-shadow: inset 0 0 0 1px alpha(@theme_text, 0.12);
 }
 
 .rule-form {
   padding-top: 10px;
-  border-top: 1px solid @hairline;
 }
 
 /* The slideshow's players sit on the slide: plain and dark. */
@@ -635,7 +673,7 @@ window.office-window button.note-mark:hover {
 
 .slide-audio {
   padding: 4px 10px;
-  border-radius: 10px;
+  border-radius: var(--nyx-radius-card);
   background: #1b1e26;
   color: #ffffff;
 }
@@ -660,7 +698,7 @@ window.office-window button.outline-item {
   min-height: 30px;
   padding: 0 12px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--nyx-radius-small);
   background: transparent;
   color: alpha(@theme_text, 0.85);
   font-weight: 500;
@@ -673,7 +711,7 @@ window.office-window button.outline-item:hover {
 
 window.office-window button.outline-item.level-title,
 window.office-window button.outline-item.level-h1 {
-  font-weight: 700;
+  font-weight: 600;
 }
 
 window.office-window button.outline-item.level-h2 {
@@ -696,7 +734,6 @@ window.office-window button.outline-item.level-h3 {
 .formula-bar {
   min-height: 46px;
   padding: 0 12px 0 0;
-  border-bottom: 1px solid @hairline;
 }
 
 .formula-bar > * {
@@ -715,6 +752,7 @@ window.office-window button.outline-item.level-h3 {
 
 window.office-window entry.fx-entry {
   font-family: "JetBrains Mono", monospace;
+  font-size: 12.5px;
 }
 
 .grid-frame {
@@ -742,7 +780,6 @@ window.office-window entry.cell-editor {
 .chart-pane {
   min-width: 340px;
   padding: 12px 16px 16px;
-  border-left: 1px solid @hairline;
 }
 
 .chart-pane .group-title {
@@ -750,8 +787,7 @@ window.office-window entry.cell-editor {
 }
 
 .chart-card {
-  border: 1px solid @hairline;
-  border-radius: 10px;
+  border-radius: var(--nyx-radius-card);
   background: #ffffff;
   padding: 6px;
 }
@@ -764,7 +800,6 @@ window.office-window entry.cell-editor {
 .sheet-tabs {
   min-height: 34px;
   padding: 0;
-  border-top: 1px solid @hairline;
   background: @theme_bg;
 }
 
@@ -827,7 +862,6 @@ textview.slide-edit {
 }
 
 .notes-box {
-  border-top: 1px solid @hairline;
   padding: 10px 14px 12px;
 }
 
@@ -835,7 +869,7 @@ textview.slide-edit {
   margin: 0 2px 6px;
   font-size: 0.76em;
   font-weight: 600;
-  letter-spacing: 1px;
+  letter-spacing: 0.06em;
   color: @theme_dim_text;
 }
 
@@ -846,8 +880,8 @@ textview.notes-text > text {
 }
 
 .notes-box scrolledwindow {
-  border: 1px solid @hairline;
-  border-radius: 6px;
+  border-radius: var(--nyx-radius-small);
+  background: @field;
 }
 
 .slide-thumbs {
@@ -858,7 +892,7 @@ window.office-window button.slide-thumb {
   min-height: 0;
   padding: 6px 8px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--nyx-radius-small);
   background: transparent;
 }
 
@@ -871,7 +905,7 @@ window.office-window button.slide-thumb.active {
 }
 
 window.office-window button.slide-thumb drawingarea {
-  border: 1px solid @hairline;
+  box-shadow: 0 0 0 1px alpha(@theme_text, 0.08);
 }
 
 window.office-window button.slide-thumb.active drawingarea {
@@ -884,7 +918,7 @@ window.office-window button.slide-thumb.active drawingarea {
 
 .slide-sorter flowboxchild {
   padding: 8px;
-  border-radius: 8px;
+  border-radius: var(--nyx-radius-card);
 }
 
 .slide-sorter flowboxchild:hover {
@@ -896,7 +930,7 @@ window.office-window button.slide-thumb.active drawingarea {
 }
 
 .slide-sorter drawingarea {
-  border: 1px solid @hairline;
+  box-shadow: 0 0 0 1px alpha(@theme_text, 0.08);
 }
 
 .slide-sorter flowboxchild:selected drawingarea {
@@ -921,7 +955,7 @@ button.slide-thumb.active .thumb-number {
   min-width: 44px;
   min-height: 26px;
   border-radius: 4px;
-  border: 1px solid @hairline;
+  box-shadow: inset 0 0 0 1px alpha(@theme_text, 0.12);
 }
 
 window.office-window button.play-button {
@@ -936,7 +970,6 @@ window.slideshow drawingarea {
 window.presenter {
   background: @theme_bg;
   color: @theme_text;
-  font-family: "JetBrains Mono", "JetBrainsMono Nerd Font", monospace;
 }
 
 window.presenter .presenter-now {
@@ -946,7 +979,6 @@ window.presenter .presenter-now {
 .presenter-side {
   min-width: 340px;
   padding: 16px;
-  border-left: 1px solid @hairline;
 }
 
 .presenter-readout {
@@ -976,4 +1008,21 @@ window.office-window button.symbol-key {
 .comment-panel.in-inspector {
   min-width: 0;
   margin-top: 4px;
+}
+
+/* ---------- Beside the icon-only sidebar ---------- */
+
+/* The sidebar's own padding already separates it from the document, so the tool row
+   and the page don't add a gap of their own. */
+.settings-navigation.compact ~ box .commandbar {
+  padding-left: 0;
+}
+
+.settings-navigation.compact ~ box .paper-column {
+  padding-left: 4px;
+  padding-right: 8px;
+}
+
+.settings-navigation.compact ~ box .notes-box {
+  padding-left: 4px;
 }

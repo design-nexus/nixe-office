@@ -135,6 +135,12 @@ mod zoom {
             fn measure(&self, widget: &gtk::Widget, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
                 let Some(c) = child(widget) else { return (0, 0, -1, -1) };
                 let z = self.zoom.get();
+                if orientation == gtk::Orientation::Horizontal {
+                    // Asks for little width: a narrow window shrinks the child to fit instead.
+                    let (min, nat, _, _) = c.measure(orientation, -1);
+                    return ((min as f64 * z * FIT_FLOOR).ceil() as i32, (nat as f64 * z).ceil() as i32, -1, -1);
+                }
+                let z = if for_size < 0 { z } else { self.fitted(&c, for_size) };
                 let for_child = if for_size < 0 { -1 } else { (for_size as f64 / z).floor() as i32 };
                 let (min, nat, _, _) = c.measure(orientation, for_child);
                 ((min as f64 * z).ceil() as i32, (nat as f64 * z).ceil() as i32, -1, -1)
@@ -142,11 +148,31 @@ mod zoom {
 
             fn allocate(&self, widget: &gtk::Widget, width: i32, height: i32, _baseline: i32) {
                 let Some(c) = child(widget) else { return };
-                let z = self.zoom.get();
+                let z = self.fitted(&c, width);
                 let w = ((width as f64 / z).floor() as i32).max(c.measure(gtk::Orientation::Horizontal, -1).0);
                 let h = ((height as f64 / z).floor() as i32).max(c.measure(gtk::Orientation::Vertical, w).0);
                 let t = gtk::gsk::Transform::new().scale(z as f32, z as f32);
                 c.allocate(w, h, -1, Some(t));
+            }
+        }
+
+        /// The smallest share of its own minimum width the child is shrunk to.
+        const FIT_FLOOR: f64 = 0.35;
+        /// Room up to this much wider than the child fills with it (a half-screen
+        /// window), rather than leaving a thin margin on each side.
+        const FILL_UNDER: f64 = 1.12;
+
+        impl ZoomLayout {
+            /// The zoom for `width`: the chosen one; less when the child wouldn't fit
+            /// at it; a little more when it nearly fills the room anyway.
+            fn fitted(&self, c: &gtk::Widget, width: i32) -> f64 {
+                let z = self.zoom.get();
+                let min = c.measure(gtk::Orientation::Horizontal, -1).0;
+                if width <= 0 || min <= 0 {
+                    return z;
+                }
+                let fit = width as f64 / min as f64;
+                if fit < z * FILL_UNDER { fit.max(z * FIT_FLOOR) } else { z }
             }
         }
     }

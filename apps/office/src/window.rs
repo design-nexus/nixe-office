@@ -1,6 +1,7 @@
-//! The main window: the sidebar (Home, the open file, and the editor's own group: the
-//! outline, the sheets or the slides), the pages (Home and the document), and a
-//! status bar. Settings open as a card over the window (`settings_dialog`).
+//! The main window (Nyx Design 2.0): the shared header (the app and the file; search on
+//! Home; the readout, view buttons, zoom, Find, the Inspector and Settings), the sidebar
+//! (Home, the open file, and the editor's own group: the outline or the slides) and the
+//! pages (Home and the document). Settings open as a card over the window.
 
 use crate::{app, doc, home, prefs, settings_dialog, theme, widgets};
 use gtk::prelude::*;
@@ -20,11 +21,15 @@ struct Ui {
     doc_label: gtk::Label,
     current: String,
     overlay: gtk::Overlay,
-    /// The top bar and the status bar, hidden in fullscreen.
+    /// The header, hidden in fullscreen.
     chrome: Vec<gtk::Widget>,
+    header: chrome::AppHeader,
+    /// The document's readout, view buttons and zoom: shown with a document open.
+    doc_tools: Vec<gtk::Widget>,
+    readout: gtk::Label,
     search: gtk::SearchEntry,
     find: FindBar,
-    /// The top bar's sidebar toggle.
+    /// The header's sidebar toggle.
     side_toggle: gtk::Button,
     /// The editor has its own sidebar group. Without one, the document page
     /// has no sidebar at all.
@@ -76,10 +81,6 @@ pub fn present(app: &gtk::Application) {
     install_icons();
     build(app);
     navigate("home");
-    if let Some(out) = std::env::var_os("NXO_SNAPSHOT") {
-        snapshot_and_quit(app, std::path::PathBuf::from(out));
-        return;
-    }
     if let Some(ui) = ui() {
         ui.borrow().window.present();
     }
@@ -320,13 +321,6 @@ fn build(app: &gtk::Application) {
         .vexpand(true)
         .child(&list)
         .build();
-    let head = chrome::sidebar_head(kind.name(), Some("Search recent files (Ctrl+F)"));
-    head.toggle.set_tooltip_text(Some("Collapse or expand the sidebar (Ctrl+Shift+B)"));
-    head.toggle.connect_clicked(|_| toggle_sidebar());
-    if let Some(find) = &head.search {
-        find.connect_clicked(|_| find_or_search(false));
-    }
-    nav.append(&head.root);
     nav.append(&nav_scroll);
 
     // ----- Pages -----
@@ -380,19 +374,64 @@ fn build(app: &gtk::Application) {
     doc_page.add_controller(wheel);
     editor.set_zoom(doc::zoom());
 
-    // Recent files are searched from a strip over the page.
+    // ----- Header -----
+    // The app and the file; search on Home; the document's readout, view buttons and
+    // zoom, then Find, the Inspector and Settings.
+    let header = chrome::app_header(&window, kind.icon(), kind.name());
+    let side_toggle = widgets::bar_button("sidebar-show-symbolic", "Collapse or expand the sidebar (Ctrl+Shift+B)");
+    side_toggle.connect_clicked(|_| toggle_sidebar());
+    header.start.append(&side_toggle);
     let search = gtk::SearchEntry::new();
-    search.set_placeholder_text(Some("Search recent files"));
-    search.set_visible(false);
+    search.set_placeholder_text(Some("Search recent files (Ctrl+F)"));
+    search.add_css_class("bar-search");
+    search.set_width_chars(8);
+    search.set_max_width_chars(28);
     search.connect_search_changed(|e| home::set_query(e.text().trim()));
-    search.connect_stop_search(|e| {
-        e.set_text("");
-        e.set_visible(false);
-    });
-    let strip = chrome::search_strip(&search);
+    search.connect_stop_search(|e| e.set_text(""));
+    header.center.append(&search);
+    header.end.set_spacing(4);
+    let readout = widgets::label("", "header-status");
+    readout.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    readout.set_max_width_chars(30);
+    readout.set_margin_end(4);
+    header.end.append(&readout);
+    let views = widgets::hbox(2);
+    for w in STATUS_TOOLS.with(|t| t.take()) {
+        views.append(&w);
+    }
+    let focus = widgets::bar_button("view-conceal-symbolic", "Focus mode: just the document (Ctrl+Shift+F)");
+    focus.connect_clicked(|_| toggle_focus());
+    views.append(&focus);
+    let full = widgets::bar_button("view-fullscreen-symbolic", "Full screen (F11)");
+    full.connect_clicked(|_| toggle_fullscreen());
+    views.append(&full);
+    header.end.append(&views);
+    let (zoom, level) = zoom_control();
+    header.end.append(&zoom);
+    // Find and the Inspector belong to the document; Home has its search field.
+    let doc_actions = widgets::hbox(4);
+    if let Some((_, inspector)) = CHROME.with(|c| c.borrow().clone()) {
+        doc_actions.append(&find_button());
+        let toggle = inspector.toggle_button();
+        toggle.add_css_class("bar-button");
+        doc_actions.append(toggle);
+    }
+    header.end.append(&doc_actions);
+    header.end.append(&chrome::settings_button(settings_dialog::open));
+    {
+        let (r, views, zoom, actions) = (readout.clone(), views.clone(), zoom.clone(), doc_actions.clone());
+        doc::subscribe(&readout, move |_| {
+            refresh_status(&r);
+            let shown = current() == "document" && doc::is_open();
+            views.set_visible(shown);
+            actions.set_visible(shown);
+            zoom.set_visible(shown && !narrow());
+            level.set_label(&format!("{:.0}%", doc::zoom() * 100.0));
+        });
+    }
+
     let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
     column.set_hexpand(true);
-    column.append(&strip);
     column.append(&stack);
 
     let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -400,12 +439,10 @@ fn build(app: &gtk::Application) {
     body.append(&nav);
     body.append(&column);
 
-    let side_toggle = head.toggle.clone();
-    let status = status_bar();
     let frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
     frame.add_css_class("window-frame");
+    frame.append(&header.root);
     frame.append(&body);
-    frame.append(&status);
 
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&frame));
@@ -511,7 +548,10 @@ fn build(app: &gtk::Application) {
         doc_label,
         current: String::new(),
         overlay,
-        chrome: vec![strip.upcast(), status.upcast()],
+        chrome: vec![header.root.clone().upcast()],
+        doc_tools: vec![views.upcast(), zoom.upcast()],
+        readout,
+        header,
         search,
         find,
         side_toggle,
@@ -531,6 +571,7 @@ fn build(app: &gtk::Application) {
                 kind.full_name().to_string()
             }));
             refresh_title();
+            refresh_subtitle();
             if let Some(ui) = ui() {
                 let u = ui.borrow();
                 u.doc_item.set_visible(doc::is_open());
@@ -551,11 +592,8 @@ thread_local! {
 /// the Inspector toggle, the file's name) and remembers whether the
 /// Inspector is open.
 pub fn attach_chrome(bar: &Rc<CommandBar>, inspector: &Rc<Inspector>) {
-    bar.end(&find_button());
-    bar.end(inspector.toggle_button());
-    let title = bar.title_button();
-    title.set_tooltip_text(Some("Save as, under another name (Ctrl+Shift+S)"));
-    title.connect_clicked(|_| doc::save_as());
+    // The file's name is the header's subtitle, not a title on the bar.
+    bar.title_button().set_visible(false);
     let kind = app::kind().id();
     let open = prefs::get().inspector.get(kind).copied().unwrap_or(kind != "sheets");
     inspector.set_open(open);
@@ -608,22 +646,26 @@ fn toggle_inspector() {
     }
 }
 
-/// The file's name in the middle of the command bar.
+/// The command bar keeps no title of its own (the header shows the file).
 fn refresh_title() {
     let Some(bar) = CHROME.with(|c| c.borrow().as_ref().map(|(b, _)| b.clone())) else { return };
-    if !doc::is_open() {
-        bar.set_title("", "", false);
-        return;
-    }
-    let title = doc::title();
-    let (name, ext) = match title.rfind('.') {
-        Some(i) if i > 0 => (&title[..i], &title[i..]),
-        _ => (title.as_str(), ""),
-    };
-    bar.set_title(name, ext, doc::dirty());
+    bar.set_title("", "", false);
+    bar.title_button().set_visible(false);
 }
 
-/// A view button for the status bar (the outline, the chart pane, the sorter).
+/// The header's subtitle: the open file (a dot while it has unsaved changes) or Home.
+fn refresh_subtitle() {
+    let Some(ui) = ui() else { return };
+    let u = ui.borrow();
+    let text = if u.current == "document" && doc::is_open() {
+        format!("{}{}", doc::title(), if doc::dirty() { " •" } else { "" })
+    } else {
+        "Home".to_string()
+    };
+    u.header.set_subtitle(&text);
+}
+
+/// A view button for the header (the chart pane, the sorter).
 /// The editor adds them while it builds, before the window exists.
 pub fn status_tool(w: &impl IsA<gtk::Widget>) {
     STATUS_TOOLS.with(|t| t.borrow_mut().push(w.clone().upcast()));
@@ -634,8 +676,8 @@ thread_local! {
     static FOCUS: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Focus mode (Ctrl+Shift+F): just the document. The Inspector, the sidebar
-/// and the status bar hide until it's turned off again.
+/// Focus mode (Ctrl+Shift+F): just the document. The Inspector and the sidebar hide
+/// until it's turned off again; the header stays, to turn it off.
 pub fn toggle_focus() {
     let Some(ui) = ui() else { return };
     let on = !FOCUS.with(|f| f.get());
@@ -646,13 +688,7 @@ pub fn toggle_focus() {
     let u = ui.borrow();
     if on {
         u.nav.set_visible(false);
-        for w in &u.chrome {
-            w.set_visible(false);
-        }
     } else {
-        for w in &u.chrome {
-            w.set_visible(true);
-        }
         u.refresh_nav();
     }
 }
@@ -673,7 +709,6 @@ fn find_or_search(replace: bool) {
     navigate("home");
     let Some(ui) = ui() else { return };
     let search = ui.borrow().search.clone();
-    search.set_visible(true);
     search.grab_focus();
 }
 
@@ -828,62 +863,7 @@ fn hide_find() {
 
 // ---------- Status bar and shortcuts ----------
 
-/// The bar along the bottom: the shortcuts on the left, the editor's readout on the right.
-fn status_bar() -> gtk::Box {
-    let bar = widgets::hbox(16);
-    bar.add_css_class("status-bar");
-    let help = gtk::Button::new();
-    help.add_css_class("status-help");
-    let content = widgets::hbox(10);
-    content.append(&widgets::label("F1", "status-key"));
-    content.append(&widgets::label("Shortcuts", ""));
-    help.set_child(Some(&content));
-    help.set_tooltip_text(Some("Show the keyboard shortcuts"));
-    help.connect_clicked(|_| show_shortcuts());
-    bar.append(&help);
-    let spacer = widgets::hbox(0);
-    spacer.set_hexpand(true);
-    bar.append(&spacer);
-    let readout = widgets::label("", "status-readout");
-    readout.add_css_class("mono");
-    readout.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-    bar.append(&readout);
-    // The editor's view buttons, focus mode and full screen, beside the zoom.
-    let views = widgets::hbox(2);
-    views.add_css_class("status-views");
-    for w in STATUS_TOOLS.with(|t| t.take()) {
-        views.append(&w);
-    }
-    let focus = status_icon("view-conceal-symbolic", "Focus mode: just the document (Ctrl+Shift+F)");
-    focus.connect_clicked(|_| toggle_focus());
-    views.append(&focus);
-    let full = status_icon("view-fullscreen-symbolic", "Full screen (F11)");
-    full.connect_clicked(|_| toggle_fullscreen());
-    views.append(&full);
-    bar.append(&views);
-    let (zoom, level) = zoom_control();
-    bar.append(&zoom);
-    let r = readout.clone();
-    doc::subscribe(&readout, move |_| {
-        refresh_status(&r);
-        views.set_visible(current() == "document" && doc::is_open());
-        zoom.set_visible(current() == "document" && doc::is_open());
-        level.set_label(&format!("{:.0}%", doc::zoom() * 100.0));
-    });
-    bar.append(&chrome::gear(settings_dialog::open));
-    bar
-}
-
-/// A small icon button for the status bar.
-pub fn status_icon(icon: &str, tip: &str) -> gtk::Button {
-    let b = gtk::Button::from_icon_name(icon);
-    b.add_css_class("status-help");
-    b.add_css_class("status-icon");
-    b.set_tooltip_text(Some(tip));
-    b
-}
-
-/// − 100% + at the end of the status bar; the number goes back to 100%.
+/// − 100% + in the header; the number goes back to 100%.
 fn zoom_control() -> (gtk::Box, gtk::Button) {
     let b = widgets::hbox(0);
     b.add_css_class("status-zoom");
@@ -897,7 +877,7 @@ fn zoom_control() -> (gtk::Box, gtk::Button) {
     };
     button("−", "Zoom out (Ctrl+Alt+−)", || doc::zoom_step(false));
     let level = button("100%", "Actual size (Ctrl+Alt+0)", || doc::set_zoom(1.0));
-    level.add_css_class("mono");
+    level.add_css_class("tnum");
     button("+", "Zoom in (Ctrl+Alt+=)", || doc::zoom_step(true));
     (b, level)
 }
@@ -1000,9 +980,6 @@ fn refresh_compact() {
         nav.remove_css_class("compact");
     }
     set_compact_hidden(&nav, compact);
-    if let Some(head) = nav.first_child().and_downcast::<gtk::Box>() {
-        chrome::set_head_compact(&head, compact);
-    }
 }
 
 pub fn toggle_sidebar() {
@@ -1184,9 +1161,8 @@ fn install_keys(window: &gtk::ApplicationWindow) {
                 if in_doc && inspector().is_some_and(|i| i.escape()) {
                     return stop;
                 }
-                if let Some(s) = search.filter(|s| s.is_visible()) {
+                if let Some(s) = search.filter(|s| !s.text().is_empty()) {
                     s.set_text("");
-                    s.set_visible(false);
                     return stop;
                 }
                 if w2.is_fullscreen() && !in_doc {
@@ -1233,6 +1209,12 @@ fn set_narrow(narrow: bool) {
     crate::write::fit_comment_panel();
     let Some(ui) = ui() else { return };
     let u = ui.borrow();
+    // A half-screen header keeps the actions; the readout and zoom wait for room.
+    u.readout.set_visible(!narrow);
+    u.search.set_max_width_chars(if narrow { 14 } else { 28 });
+    if let Some(zoom) = u.doc_tools.get(1) {
+        zoom.set_visible(!narrow && u.current == "document" && doc::is_open());
+    }
     for name in ["home", "document"] {
         if let Some(page) = u.stack.child_by_name(name) {
             let body =
@@ -1276,7 +1258,9 @@ pub fn navigate(id: &str) {
         }
         u.current = id.to_string();
         u.refresh_nav();
+        u.search.set_visible(id == "home");
     }
+    refresh_subtitle();
     if id == "home" {
         home::refresh();
     }
@@ -1323,42 +1307,4 @@ pub fn current() -> String {
 
 pub fn window() -> Option<gtk::ApplicationWindow> {
     ui().map(|u| u.borrow().window.clone())
-}
-
-/// Developer aid: `NXO_SNAPSHOT=/path.png` renders the window to a PNG and quits.
-/// `NXO_SNAPSHOT_W`/`_H` set the size and `NXO_SNAPSHOT_DELAY` the wait in ms.
-fn snapshot_and_quit(app: &gtk::Application, out: std::path::PathBuf) {
-    let Some(window) = window() else { return };
-    window.set_opacity(0.01);
-    // The compositor may focus this window: keep stray keys from editing anything.
-    let keys = gtk::EventControllerKey::new();
-    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
-    keys.connect_key_pressed(|_, _, _, _| glib::Propagation::Stop);
-    window.add_controller(keys);
-    window.set_title(Some("Office snapshot"));
-    window.set_default_size(
-        std::env::var("NXO_SNAPSHOT_W").ok().and_then(|v| v.parse().ok()).unwrap_or(1120),
-        std::env::var("NXO_SNAPSHOT_H").ok().and_then(|v| v.parse().ok()).unwrap_or(800),
-    );
-    window.present();
-    let app = app.clone();
-    let delay = std::env::var("NXO_SNAPSHOT_DELAY").ok().and_then(|v| v.parse().ok()).unwrap_or(1500);
-    glib::timeout_add_local_once(std::time::Duration::from_millis(delay), move || {
-        if let Some(child) = window.child() {
-            let paintable = gtk::WidgetPaintable::new(Some(&child));
-            let (w, h) = (child.width(), child.height());
-            let snapshot = gtk::Snapshot::new();
-            snapshot.append_color(&gdk::RGBA::BLACK, &gtk::graphene::Rect::new(0.0, 0.0, w as f32, h as f32));
-            paintable.snapshot(&snapshot, w as f64, h as f64);
-            if let (Some(node), Some(renderer)) = (snapshot.to_node(), window.renderer()) {
-                let texture = renderer.render_texture(node, None);
-                match texture.save_to_png(&out) {
-                    Ok(()) => println!("snapshot {w}x{h} -> {}", out.display()),
-                    Err(e) => eprintln!("snapshot failed: {e}"),
-                }
-            }
-        }
-        FORCE_CLOSE.with(|f| f.set(true));
-        app.quit();
-    });
 }

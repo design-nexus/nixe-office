@@ -35,7 +35,7 @@ const UNDO_LIMIT: usize = 80;
 const SIZES: &[&str] =
     &["14", "16", "18", "20", "24", "26", "28", "32", "36", "40", "42", "44", "48", "50", "54", "60", "72", "88"];
 /// The canvas leaves this much room around the slide.
-const PAD: f64 = 28.0;
+const PAD: f64 = 16.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Target {
@@ -605,10 +605,9 @@ impl Present {
             }
         });
 
-        // The sorter is a view: its switch sits in the status bar.
+        // The sorter is a view: its switch sits in the header.
         sorter.remove_css_class("tool-toggle");
-        sorter.add_css_class("status-help");
-        sorter.add_css_class("status-icon");
+        sorter.add_css_class("bar-button");
         window::status_tool(sorter);
         crate::window::attach_chrome(&bar, &insp);
         *self.controls.borrow_mut() = Some(Controls {

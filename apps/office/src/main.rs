@@ -60,8 +60,10 @@ fn main() -> glib::ExitCode {
         unsafe { std::env::set_var("GSK_RENDERER", "ngl") };
     }
 
-    // Developer aid: a different id gives a separate instance.
-    let id = std::env::var("NXO_APP_ID").unwrap_or_else(|_| kind.app_id().to_string());
+    // A different id gives a separate instance (a test copy beside the real one).
+    let id = std::env::var("NYX_OFFICE_APP_ID")
+        .or_else(|_| std::env::var("NXO_APP_ID"))
+        .unwrap_or_else(|_| kind.app_id().to_string());
     let application = gtk::Application::builder().application_id(id).flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE).build();
     // Nyx Assistant works the open document through this (Write only, primary instance).
     if kind == app::Kind::Write {

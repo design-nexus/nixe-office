@@ -697,10 +697,6 @@ impl Writer {
             });
         }
 
-        // The outline is a view: its switch sits in the status bar.
-        let outline = window::status_icon("sidebar-show-symbolic", "Show or hide the outline (Ctrl+Shift+B)");
-        outline.connect_clicked(|_| crate::window::toggle_sidebar());
-        window::status_tool(&outline);
         crate::window::attach_chrome(&bar, &insp);
 
         *self.controls.borrow_mut() = Some(Controls {

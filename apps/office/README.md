@@ -128,7 +128,7 @@ the formatting for what's selected, in labelled sections (<kbd>Ctrl</kbd>+<kbd>A
   - Dropdown lists in cells (right-click → Dropdown list…): choices typed in, or taken
     from other cells. Pick from the cell's arrow or <kbd>Alt</kbd>+<kbd>↓</kbd>; anything
     else typed there is refused. Excel files keep them.
-  - The status bar shows the sum, average and count of the selected cells.
+  - The header shows the sum, average and count of the selected cells.
   - Starter templates: a monthly budget, a home inventory and a trip budget.
 - **Present**
   - Slides with four layouts (title, title and content, section, blank); edit the title
@@ -173,7 +173,7 @@ All three:
 - **Export as PDF** (<kbd>Ctrl</kbd>+<kbd>E</kbd>) and **print** (<kbd>Ctrl</kbd>+<kbd>P</kbd>),
   on the document's paper (Write) or the one chosen in Settings.
 - **Zoom** from 50% to 300% (<kbd>Ctrl</kbd>+scroll, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>=</kbd>
-  / <kbd>-</kbd>, or the buttons at the end of the status bar; <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>0</kbd>
+  / <kbd>-</kbd>, or the zoom buttons in the header; <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>0</kbd>
   for 100%). Each app remembers its own.
 - **Undo and redo**, and a copy of unsaved work every few seconds: if an app closes
   unexpectedly, Home offers to bring the work back.

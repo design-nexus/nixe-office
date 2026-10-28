@@ -4,13 +4,17 @@
   launcher scripts `nyx-write` / `nyx-sheets` / `nyx-present` (`packaging/`).
   Each is its own GApplication (`io.github.design_nexus.nyx.Write` …) with its own window.
   Config, data and state folders are shared: `nyx-office`. GTK4 (gtk4-rs 0.11), no
-  libadwaita. The look follows `STYLE.md`; the theme, widgets, settings card, window
-  frame, command bar and Inspector come from the `nyx-*` crates. Each editor's
-  `build_toolbar` makes its controls and lays them out: what you add on a
-  `nyx_ui::commandbar`, formatting in `nyx_ui::inspector` segments (contextual
-  segments follow the visibility of their control groups), view switches in the status
-  bar (`window::status_tool`). `window::attach_chrome` adds Find, the Inspector toggle
-  and the file's name, and remembers whether the Inspector is open. In Write the
+  libadwaita. Nyx Design 2.0 (`nyx_theme::use_design_2`, see `STYLE.md`); the theme,
+  widgets, settings card, window header, command bar and Inspector come from the
+  `nyx-*` crates. The window has one header (`chrome::app_header`): the app with the
+  file (a dot while unsaved) or Home as its subtitle, the sidebar toggle; search over
+  recent files in the middle on Home; with a document open, the editor's readout, its
+  view switches (`window::status_tool`), focus, full screen, zoom, Find and the
+  Inspector toggle, then Settings. No status bar. The command bar is the tool row under
+  the header, without a title. Each editor's `build_toolbar` makes its controls and lays
+  them out: what you add on a `nyx_ui::commandbar`, formatting in `nyx_ui::inspector`
+  segments (contextual segments follow the visibility of their control groups).
+  `window::attach_chrome` hands the window the Inspector and remembers whether it's open. In Write the
   comment cards move into the Review segment while the Inspector is open. Every window colour is a `@theme_*` token. Page
   content (paper, ink, cells, slides, charts) keeps fixed document colours so the screen
   matches print; don't theme it.
@@ -23,7 +27,7 @@
   `doc::status_changed()` when the readout may change. The find bar is inserted after
   the editor widget's first child (its command bar). The bar drops labels, then folds
   tools into `⋯`, at narrow widths instead of wrapping. Focus mode (Ctrl+Shift+F,
-  `window::toggle_focus`) hides the Inspector, the sidebar and the status bar.
+  `window::toggle_focus`) hides the Inspector and the sidebar; the header stays.
   Zoom (`doc::zoom`/`set_zoom`, kept in `~/.local/state/nyx-office/zoom-<app>`, not
   the shared settings) reaches editors through `Editor::set_zoom`. Write and Sheets
   wrap their view in `widgets::zoom_box` (a layout manager that allocates the child
@@ -215,8 +219,7 @@
   `gtk_tests::editors_behave` (`main.rs`); add new GTK checks there, never as their own
   `#[test]` (parallel GTK tests crash). `NXO_SAMPLE_DIR=/tmp/x cargo test -- --ignored
   write_office_samples` writes a .docx, .xlsx and .pptx to check in other software.
-  Layout check: `NXO_SNAPSHOT=/tmp/x.png nyx-office --app sheets --new monthly-budget`
-  renders the window to a PNG and quits (`NXO_SNAPSHOT_W`/`_H`/`_DELAY`). The window can
-  take keyboard focus while it's up (it ignores keys), so keep these runs few. Point
-  `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_STATE_HOME`/`XDG_CACHE_HOME` at scratch dirs,
-  and set `NXO_APP_ID` to run beside an open copy.
+  Layout checks: run a test copy under `NYX_OFFICE_APP_ID=io.github.design_nexus.nyx.WriteTest`
+  (or `SheetsTest`, `PresentTest`; `NXO_APP_ID` still works) on a virtual monitor of its
+  own, with `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_STATE_HOME`/`XDG_CACHE_HOME` at scratch
+  dirs, and capture it from outside (`grim`).
