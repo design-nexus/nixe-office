@@ -1,8 +1,7 @@
 //! The groups shown in the settings card.
 
 use crate::widgets::{self, Page};
-use crate::{app, prefs, theme, window};
-use gtk::prelude::*;
+use crate::{app, prefs};
 
 pub fn build(page: &Page) {
     let p = prefs::get();
@@ -82,79 +81,5 @@ pub fn build(page: &Page) {
         |on| prefs::update(|p| p.autosave = on),
     );
     g.add(&r);
-
-    // ----- This window -----
-    let g = page.group(&format!("{} window", kind.name()));
-    let app_themes = theme::all();
-    let options: Vec<(String, String)> = app_themes.iter().map(|t| (t.id.clone(), t.name.clone())).collect();
-    let (theme_row, theme_dd) = widgets::choice_row(
-        "Theme",
-        "Dracula, Catppuccin, Tokyo Night, One Dark Pro and more. Add your own in <tt>~/.config/nyx-office/themes</tt>.",
-        options,
-        &p.theme,
-        |id| {
-            prefs::update(|p| {
-                p.theme = id;
-                p.mode = prefs::ThemeMode::Theme;
-            });
-            theme::apply();
-        },
-    );
-    theme_dd.set_sensitive(p.mode == prefs::ThemeMode::Theme || !theme::omarchy_available());
-    if theme::omarchy_available() {
-        let dd = theme_dd.clone();
-        let (r, _) = widgets::switch_row(
-            "Follow Omarchy theme",
-            "Match the desktop's colors and update live whenever the Omarchy theme changes.",
-            p.mode == prefs::ThemeMode::Omarchy,
-            move |on| {
-                prefs::update(|p| p.mode = if on { prefs::ThemeMode::Omarchy } else { prefs::ThemeMode::Theme });
-                dd.set_sensitive(!on);
-                theme::apply();
-            },
-        );
-        g.add(&r);
-    }
-    g.add(&theme_row);
-
-    let swatches = widgets::hbox(4);
-    let refresh_swatches = {
-        let swatches = swatches.clone();
-        move || {
-            while let Some(c) = swatches.first_child() {
-                swatches.remove(&c);
-            }
-            let pal = theme::palette();
-            for c in [&pal.bg, &pal.surface, &pal.muted, &pal.text, &pal.accent, &pal.danger] {
-                let s = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-                s.add_css_class("swatch");
-                let provider = gtk::CssProvider::new();
-                provider.load_from_string(&format!("box {{ background: {c}; }}"));
-                #[allow(deprecated)]
-                s.style_context().add_provider(&provider, gtk::STYLE_PROVIDER_PRIORITY_USER);
-                swatches.append(&s);
-            }
-        }
-    };
-    refresh_swatches();
-    theme::subscribe(&swatches, refresh_swatches);
-    g.add(&widgets::row("Current colors", "", Some(swatches.upcast_ref())));
-    g.note("The page itself keeps its own colors, so what you see is what prints.");
-
-    g.add(&nyx_ui::widgets::accent_row(crate::app::kind().id()));
-    let (r, _) =
-        widgets::switch_row("Reduce motion", "Turn off transitions and animations in this window.", p.reduce_motion, |on| {
-            prefs::update(|p| p.reduce_motion = on);
-            theme::apply();
-        });
-    g.add(&r);
-
-    // ----- Keyboard -----
-    let g = page.group("Keyboard");
-    for (_, keys) in window::shortcut_groups() {
-        for (k, what) in keys {
-            g.add(&widgets::row(what, "", Some(widgets::key_caps(k).upcast_ref())));
-        }
-    }
     g.note(&format!("Open a file from a terminal or a binding with <tt>nyx-{} FILE</tt>.", kind.id()));
 }
